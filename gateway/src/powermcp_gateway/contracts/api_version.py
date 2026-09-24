@@ -20,17 +20,7 @@ from ..config import GatewayConfig
 from ..inventory import ToolInventory
 from .model import ContractFinding
 
-# server id -> PowerMCP 仓库内的目录名（与 doc_impl.SERVER_DOC_DIRS 同源）
-SOURCE_DIRS: dict[str, str] = {
-    "pandapower": "pandapower",
-    "pypsa": "PyPSA",
-    "surge": "surge",
-    "andes": "ANDES",
-    "egret": "Egret",
-    "opendss": "OpenDSS",
-    "hope": "HOPE",
-    "genx": "GenX",
-}
+from .server_dirs import SERVER_DIRS as SOURCE_DIRS
 
 
 def collect_import_bound_symbols(source: str) -> set[str]:

@@ -50,17 +50,8 @@ from ..config import GatewayConfig
 from ..inventory import ToolInventory
 from .model import ContractFinding
 
-# server id -> PowerMCP 仓库内的目录名（大小写敏感，实测自仓库结构）
-SERVER_DOC_DIRS: dict[str, str] = {
-    "pandapower": "pandapower",
-    "pypsa": "PyPSA",
-    "surge": "surge",
-    "andes": "ANDES",
-    "egret": "Egret",
-    "opendss": "OpenDSS",
-    "hope": "HOPE",
-    "genx": "GenX",
-}
+# 单一真源见 server_dirs.py；保留旧名以免改动本模块的既有调用点
+from .server_dirs import SERVER_DIRS as SERVER_DOC_DIRS
 
 # 实测自 8 个引擎 README 的工具清单标题（大小写不敏感）
 TOOL_SECTIONS: tuple[str, ...] = ("Available Tools", "Tools", "Tool split")
