@@ -1682,6 +1682,19 @@ git commit -m "feat(gateway): MCP 代理调用 + 契约 3 fail-closed 校验"
 
 ### Task 6: SSE 序列化与端点
 
+> ⚠️ **来自 Task 0 审查的设计后果（必须知悉）**：`EventBus.publish()` 对 EVIDENCE 通道是
+> **全有或全无** —— 只要**任一**订阅者的队列满，就整体拒绝发布。因此
+> **一个卡住/慢消费的 SSE 客户端会阻塞整个会话的审计发布**（跨通道队头阻塞）。
+>
+> 这是计划有意的取舍（"宁可拒绝发布也绝不丢证据"），本任务**不改变它**。
+> 但实现时必须让这种卡住**可诊断而不是神秘**：
+> - `session_events` 生成器必须在客户端断开时**及时退出**（`request.is_disconnected()` 轮询已写在这段代码里），
+>   否则一个已挂掉的浏览器标签页会永久占住订阅者名额；
+> - 订阅者的队列上限（1024）被打满时，应有日志/事件可循，而不是只看到后续调用莫名失败。
+>
+> 若实现中发现这与 `StreamingResponse` 的背压语义冲突（它自己不施加背压），
+> **停下来报告，不要擅自改 `publish()` 的全有或全无语义**。
+
 **Files:**
 - Create: `gateway/src/powermcp_gateway/events.py`
 - Modify: `gateway/src/powermcp_gateway/api.py`
