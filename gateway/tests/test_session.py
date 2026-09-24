@@ -182,3 +182,28 @@ def test_close_is_idempotent():
     bus.close()                               # 第二次应是 no-op，不得抛错
     with pytest.raises(RuntimeError, match="已关闭"):
         bus.publish(Channel.TELEMETRY, "x", {})
+
+
+async def test_cancelled_subscriber_leaves_no_orphan():
+    """★ 回归：订阅者被取消（SSE 客户端断开时正是如此）不得残留孤儿订阅。
+
+    上一版用 `ensure_future` 竞速等「队列」与「关闭事件」，外层被取消时
+    两个子任务无人回收 → GC 打印 `Task was destroyed but it is pending!`。
+    pytest-asyncio 会在 teardown 前取消任务，所以那个泄漏**在测试里看不见、
+    在 uvicorn 里才现形**。现版没有任何子任务，结构上不可能泄漏。
+    """
+    bus = EventBus()
+
+    async def consume():
+        async for _ in bus.subscribe():
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    assert bus.subscriber_count() == 1
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert bus.subscriber_count() == 0        # 不留孤儿

@@ -50,11 +50,9 @@ class EventBus:
 
     def __init__(self) -> None:
         self._events: list[Event] = []
-        self._subscribers: list[asyncio.Queue[Event]] = []
+        self._subscribers: list[asyncio.Queue[Event | None]] = []
         self._seq = 0
         self._closed = False
-        #: 关闭信号 —— 订阅者同时等待它与自己的队列，从而在**不丢事件**的前提下退出
-        self._closed_event = asyncio.Event()
 
     def publish(self, channel: Channel, kind: str, payload: dict) -> Event:
         if self._closed:
@@ -91,32 +89,21 @@ class EventBus:
 
         ★ 在**已关闭**的总线上调用会**立即返回**，不得挂起 ——
           否则晚挂上的订阅者永远等不到事件，还会作为孤儿滞留在 `_subscribers`。
-          （审查发现：给 `publish` 加 `_closed` 守卫后，这个入口被漏掉了。）
         ★ 终止条件：**已关闭 且 队列已排空** —— 先排空再退出，因此**零丢失**。
         """
         if self._closed:
             return
 
-        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1024)
+        q: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=1024)
         self._subscribers.append(q)
         try:
             while True:
                 if self._closed and q.empty():
                     return
-                # 同时等「队列有事件」与「总线已关闭」——
-                # 只等前者会在 close() 时永久挂起（哨兵放不进满队列）。
-                get_task = asyncio.ensure_future(q.get())
-                close_task = asyncio.ensure_future(self._closed_event.wait())
-                done, pending = await asyncio.wait(
-                    {get_task, close_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    # 吞掉 CancelledError，避免 "Task was destroyed but it is pending" 噪声
-                    await asyncio.gather(*pending, return_exceptions=True)
-                if get_task in done:
-                    yield get_task.result()
+                event = await q.get()
+                if event is None:          # 终止哨兵
+                    return
+                yield event
         finally:
             self._subscribers.remove(q)
 
@@ -129,21 +116,22 @@ class EventBus:
     def close(self) -> None:
         """关闭总线：所有订阅者会在**排空积压后**终止，**不丢弃任何事件**。
 
-        实现方式：只置标志并唤醒等待者 —— **不发哨兵、不驱逐队列**。
-        订阅者侧靠 `subscribe()` 同时等待「队列」与「关闭事件」来退出（见上）。
-
-        ★ 为什么不用哨兵（审查发现，两版都被否）：
-        - 初版 `except QueueFull: pass` 会**吞掉哨兵** → 队列满的订阅者永久挂起（已复现）；
-        - 改为「驱逐队首腾位」后，拆除路径会**静默丢掉一条可能是 EVIDENCE 的事件** ——
-          与 `publish()`「宁可拒绝发布也绝不丢证据」的取舍**自相矛盾**，
-          且当时的 docstring 拿"NDJSON 审计"当兜底，而那个组件当时**还不存在**。
+        ★ 关键观察：**队列为空时，哨兵必然放得下** —— 所以只在空队列时放哨兵。
+          队列非空时**不放也没关系**：订阅者排空后会自己检查
+          `_closed and q.empty()` 并退出。
+          这一条同时消掉了两种错误做法：
+          - 初版 `except QueueFull: pass`（吞掉哨兵 → 队列满的订阅者永久挂起）；
+          - 以及「驱逐队首腾位」（在拆除路径上静默丢掉一条可能是 EVIDENCE 的事件，
+            与 `publish()`「宁可拒绝发布也绝不丢证据」自相矛盾）。
 
         **幂等**：重复调用无副作用。
         """
         if self._closed:
             return
         self._closed = True
-        self._closed_event.set()
+        for q in list(self._subscribers):
+            if q.empty():
+                q.put_nowait(None)      # 队列空 → 一定放得下
 
 
 class SessionStore:
