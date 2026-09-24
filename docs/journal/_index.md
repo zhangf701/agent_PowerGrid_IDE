@@ -8,6 +8,19 @@
 
 ## 文档列表（倒序）
 
+### 🚩 2026-09-24 — HANDOFF（UI 规范定稿 + 子项目 3 计划与首两个任务）
+📄 [handoff_2026-09-24_gateway-t2-sdd.md](handoff_2026-09-24_gateway-t2-sdd.md)
+
+**新对话接手请先读这份。** 记录本会话增量：UI 设计规范 v1.0→v1.2（经 3 份独立审查）·
+子项目 3（T2/审计/SSE）计划 · **Task 0/1 已交付**（99 tests）· 根目录 `git init`。
+
+- ⚠️ **含一条重要的方法教训**：本会话 9 条 Important 缺陷**全部出在计划代码里**（实现者逐字照抄），
+  分四类：**错误路径处理 / 静默数据丢失 / 边界输入 / 断言无力的测试** —— 接手时按这四类去审剩余计划代码可省大量返工
+- ⚠️ **含子项目 3 的两处判据重新界定**（契约 3 被实测证伪、契约 4 改为可判定等价命题，产出 7 条）
+- **SDD 进度台账**：`.superpowers/sdd/progress.md`（接手必读，续跑依据）
+
+---
+
 ### 🏗️ 2026-09-24 — 网关交付（**子项目 2：契约引擎 T0**）
 📄 [计划与执行记录](../superpowers/plans/2026-09-24-gateway-contract-engine-t0.md) · 代码 [`gateway/`](../../gateway/) · 缺陷立项 [opendss 挂载](../superpowers/plans/2026-09-24-opendss-sdk-mount-defect.md)
 
