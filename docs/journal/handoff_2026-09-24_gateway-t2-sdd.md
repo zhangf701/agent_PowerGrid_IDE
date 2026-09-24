@@ -75,7 +75,7 @@ note: 前序 handoff 的 `git_head` 为 `N/A`（当时根目录**还不是 git �
 **预检发现并已处理**：计划原会引入**第三份** server→目录映射表（`doc_impl`/`api_version` 已有两份，
 且初稿给 `hope` 写的 `HOPE/src` 与既有的 `HOPE` 不一致 —— **"同源"其实早破了**）→ 新增 Task 2 抽成单一真源。
 
-### 五、子项目 3 执行：Task 0–5 完成
+### 五、子项目 3 执行：Task 0–6 完成
 
 - **Task 0 会话与事件总线**：`bc555b8..a9a6aa6`，**3 轮审查 3 轮修复**后 Approved
 - **Task 1 NDJSON 审计**：`e3f6150..6b2bc08`，**3 轮审查 3 轮修复**后 Approved
@@ -88,7 +88,24 @@ note: 前序 handoff 的 `git_head` 为 `N/A`（当时根目录**还不是 git �
 - **Task 5 MCP 代理调用**：`0b2c14d..61adc0d`，**2 轮审查 1 轮修复**后 Approved
   —— 派发前修正计划 5 处（含 2 处**错误路径**：缺超时、`_emit` 未处理 publish 失败）；
   首轮审查发现 1 条 Important（**plan-mandated**，经用户裁决修，见下）
-- 测试 **76 → 126 passed**（+1 integration deselected）
+- **Task 6 SSE 序列化与端点**：`9e497b4..5b786e3`，**1 轮审查 0 修复**后 Approved
+  —— 派发前修正计划 **6 处**（含 2 处**错误路径**：快照竞态、空闲断开不检测）；
+  触及 **6 个文件**且**修改已交付代码**（`api.py` / `session.py` / `test_session.py`）
+- 测试 **76 → 134 passed**（+1 integration deselected）
+
+#### ★ Task 6 的判据级改动（经用户裁决）：给 `EventBus` 补同步注册 API
+
+SSE 生成器先取历史快照（`bus.events()`）**再**订阅（`bus.subscribe()`）。但 `subscribe()`
+是 async generator，订阅者要到第一次 `__anext__()` 才注册 —— 两步之间每次 `yield` 让出的
+窗口里发布的事件会**既不在快照、也不在队列里，静默丢失**（EVIDENCE 通道前提是"不可丢"，
+影响断线重连这一核心场景）。经用户裁决：加 **`subscribe_queue()`（同步注册）+
+`unsubscribe()`（幂等）**，让「注册」与「取快照」之间无 await 窗口。
+这是对 Task 0 已交付代码的**唯一**改动（纯追加 +22/−0）。
+
+另修一处错误路径：`is_disconnected()` 的检查原本写在 `async for` 体内，而 `subscribe()`
+内部 `await q.get()` 在**无事件时永久阻塞** → 该检查**永不执行** → 已挂掉的标签页会永久
+占住订阅者名额（正是 Task 0 审查留下的 T0-M5 队头阻塞后果）。已改为 `asyncio.wait_for`
++ 超时分支轮询断开。
 
 #### ★ Task 5 的 Important：代理层丢弃了 MCP 的 `is_error`
 
@@ -154,8 +171,8 @@ MCP 工具失败时**不抛异常**，而是以 `isError=True` 返回（标准�
 - ✅ **根目录有版本控制**（38 提交，master）
 - ✅ **子项目 2 已交付**（8/9 server 可挂载）
 - ✅ **子项目 3 计划完成**（8 任务，含两处判据的实测重新界定）
-- ✅ **子项目 3 的 Task 0–5 完成并通过审查**（126 tests）
-- ⏳ **子项目 3 剩 2 个任务**（Task 6–7）
+- ✅ **子项目 3 的 Task 0–6 完成并通过审查**（134 tests）
+- ⏳ **子项目 3 剩 1 个任务**（Task 7 —— 之后进入最终全分支审查）
 - ❌ **opendss 无法经 mcp SDK 挂载** —— 根因未定，影响契约 2/8、能力矩阵 OpenDSS 行
 - ❌ **选题新颖性专查仍未做** —— 是"这些工程能否构成论文"的 gate
 - ❌ Gurobi 许可过期（2026-03-31）；Ipopt 不可用
@@ -194,7 +211,7 @@ cat .superpowers/sdd/progress.md
 # 3. 计划本体
 cat docs/superpowers/plans/2026-09-24-gateway-t2-audit-sse.md
 
-# 4. 验证测试仍全绿（期望 126 passed, 1 deselected）
+# 4. 验证测试仍全绿（期望 134 passed, 1 deselected）
 #    ⚠️ --basetemp 必须指向「尚不存在」的新目录。指向已存在且含 >50 条目的目录时，
 #    pytest 启动的 rm_rf 会被沙箱批量删除护栏拦截 → tmp_path 测试在 setup 阶段 ERROR，
 #    表现为「76 passed / 23 errors」，极易误读为代码回归。（2026-09-24 实测）
@@ -225,7 +242,11 @@ print('failures:', [(f.server, f.error[:80]) for f in inv.failures])
 
 ## 下一步（按优先级）
 
-1. **【最高】继续子项目 3 的 Task 6–7**（SDD 流程）。台账在 `.superpowers/sdd/progress.md`，从 **Task 6（SSE 序列化与端点）** 起。
+1. **【最高】继续子项目 3 的 Task 7**（SDD 流程）。台账在 `.superpowers/sdd/progress.md`。
+   这是子项目 3 的**最后一个任务**（T2 节拍打通 + 端到端验收）—— 完成后应进入
+   **最终全分支审查**（`superpowers:requesting-code-review`），台账里已累积了 6 个任务的 Minor 清单待它裁决。
+   ⚠️ Task 7 的端到端验收是**唯一**能覆盖 T6-M2 的机会（`gen()` 的断开轮询 / seq 去重 /
+   `finally: unsubscribe` / 历史补发四条核心逻辑**当前零测试**，因为 `ASGITransport` 测不了无限 SSE 流）。
    ⚠️ 派发前先做 **Pre-Flight 计划审查**：核实计划里的验收数字与事实陈述（Task 2 派发前查出 3 处缺陷，其中「既有 76」这个陈旧数字若照抄会误判回归）。
    ⚠️ 派发时**必须**带上 basetemp 环境事实（见下方"快速上手指令"第 4 条），否则测试会以「76 passed / 23 errors」的假回归形式失败。
    ⚠️ 派发前建议**先按上面四类缺陷模式审一遍 Task 5（代理，有错误路径）与 Task 6（SSE，有取消/断开路径）的计划代码** —— 它们最可能重复 Task 0 的失败模式。
