@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +34,24 @@ OPEN_SOURCE_SERVERS: tuple[str, ...] = (
 #: 否则一个已挂掉的浏览器标签页会**永久占住订阅者名额**，最终让整个会话的
 #: EVIDENCE 发布失败（见 Task 0 审查的队头阻塞后果）。
 _DISCONNECT_POLL_S = 1.0
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """应用生命周期：**关闭时必须 flush 审计**。
+
+    ★ `AuditLog` 是**批量写入**（每 32 条 flush 一次）。没有这一步，进程退出时
+      缓冲区里的 EVIDENCE 事件会**直接丢失** —— 而审计通道的设计前提是"不可丢"。
+      实测（2026-09-24 端到端验收）：单条契约违规后进程被杀，
+      `audit-<sid>.ndjson` 仍是 **0 字节**，违规记录彻底丢失。
+    """
+    yield
+    try:
+        _AUDIT.flush()
+    except Exception:
+        logger.warning("退出时 flush 审计失败 —— 缓冲区内的证据事件可能丢失", exc_info=True)
 
 _cache = T0Cache()
 _STORE = SessionStore()
@@ -157,7 +177,7 @@ def register_session_routes(app: FastAPI) -> None:
 
 
 def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
-    app = FastAPI(title="PowerMCP Gateway", version="0.1.0")
+    app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
     if cfg is not None:
         global _CONFIG
         _CONFIG = cfg
