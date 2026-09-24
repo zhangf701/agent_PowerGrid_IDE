@@ -207,3 +207,25 @@ async def test_cancelled_subscriber_leaves_no_orphan():
         await task
 
     assert bus.subscriber_count() == 0        # 不留孤儿
+
+
+# ── 以下两条覆盖本任务新增的同步注册 API ──────────────────────────────────
+
+def test_subscribe_queue_registers_synchronously():
+    """★ 注册必须**同步**生效 —— 否则「先订阅再补历史」之间会有丢失窗口。"""
+    bus = EventBus()
+    bus.publish(Channel.EVIDENCE, "before", {})
+    q = bus.subscribe_queue()
+    assert bus.subscriber_count() == 1          # 无需 await 即已注册
+    bus.publish(Channel.EVIDENCE, "after", {})
+    assert q.get_nowait().kind == "after"       # 注册之后的事件进队列
+    bus.unsubscribe(q)
+    assert bus.subscriber_count() == 0
+
+
+def test_unsubscribe_is_idempotent():
+    bus = EventBus()
+    q = bus.subscribe_queue()
+    bus.unsubscribe(q)
+    bus.unsubscribe(q)                          # 重复注销不得抛
+    assert bus.subscriber_count() == 0

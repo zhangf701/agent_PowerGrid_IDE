@@ -107,6 +107,28 @@ class EventBus:
         finally:
             self._subscribers.remove(q)
 
+    def subscribe_queue(self) -> asyncio.Queue[Event | None]:
+        """**同步**注册一个订阅者并返回其队列 —— 立即生效，无 await 窗口。
+
+        与 `subscribe()` 的区别：后者是 async generator，订阅者要到第一次
+        `__anext__()` 才真正注册。调用方若需要「注册订阅者」与「取历史快照」
+        原子（例如 SSE 端点要先订阅、再补发历史），必须用本方法 ——
+        否则两步之间 `yield` 让出的窗口里发布的事件会既不在快照里、
+        也不在订阅队列里，**静默丢失**。
+
+        调用方负责在结束时调用 `unsubscribe(q)`。
+        """
+        q: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=1024)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue[Event | None]) -> None:
+        """注销 `subscribe_queue()` 返回的队列。**幂等**。"""
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
     def subscriber_count(self) -> int:
         return len(self._subscribers)
 
