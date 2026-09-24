@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -14,6 +15,53 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .config import GatewayConfig
+
+# 依赖缺失类错误的关键词 —— 命中才给安装提示。
+# 超时/崩溃时提示 `pip install` 是没有帮助的（方案 §4.4 要的是"可执行"路径）。
+_DEP_PATTERNS = (
+    "not installed",
+    "install it with",
+    "no module named",
+    "importerror",
+    "modulenotfounderror",
+)
+
+
+def _looks_dependency_related(text: str) -> bool:
+    low = text.lower()
+    return any(p in low for p in _DEP_PATTERNS)
+
+
+def _probe_importable(probe: str) -> bool:
+    """该 linchpin 依赖在当前解释器里是否可导入。网关与 server 共用同一个 venv。"""
+    try:
+        return importlib.util.find_spec(probe) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+
+
+def install_hint_for(server: str) -> tuple[str | None, str | None]:
+    """从 `powermcp.registry` 取该 server 的可执行安装提示与 linchpin 依赖。
+
+    返回 `(hint, probe)`；registry 不可用或不认识该 server 时返回 `(None, None)`。
+    **不解析错误文本** —— 提示来源是 registry 的 `Tool.extra` + `install_hint()`，
+    错误文本只用于**判断是否属于依赖缺失**（见 `_looks_dependency_related`）。
+    """
+    try:
+        from powermcp import registry
+    except Exception:  # noqa: BLE001 —— 网关可在没有 powermcp 的环境下被导入
+        return None, None
+
+    try:
+        tool = registry.get_tool(server)
+    except Exception:  # noqa: BLE001 —— 未知 server
+        return None, None
+
+    try:
+        hint = registry.install_hint(tool.extra)
+    except Exception:  # noqa: BLE001
+        hint = None
+    return hint, getattr(tool, "probe", None)
 
 
 @dataclass(frozen=True)
@@ -40,12 +88,15 @@ class ToolRecord:
 class ServerFailure:
     server: str
     error: str
+    hint: str | None = None           # 可执行安装提示（来自 registry；仅依赖缺失类失败）
+    probe_missing: str | None = None  # 缺失的 linchpin 依赖名
 
 
 @dataclass(frozen=True)
 class ToolInventory:
     tools: tuple[ToolRecord, ...]
     failures: tuple[ServerFailure, ...]
+    requested: tuple[str, ...] = ()   # 本次请求的 server 全集（含拉起失败的）
 
     def names(self, server: str) -> tuple[str, ...]:
         return tuple(sorted(t.name for t in self.tools if t.server == server))
@@ -54,7 +105,18 @@ class ToolInventory:
         return tuple(sorted((t for t in self.tools if t.name == name), key=lambda t: t.server))
 
     def servers(self) -> tuple[str, ...]:
+        """**成功**返回工具清单的 server。"""
         return tuple(sorted({t.server for t in self.tools}))
+
+    def all_servers(self) -> tuple[str, ...]:
+        """本次请求的全部 server，**含拉起失败的**。
+
+        ★ 求值器一律迭代本方法，不要用 `servers()` ——
+        否则失败的 server 会从视野里消失，变成**静默跳过**。
+        """
+        if self.requested:
+            return tuple(sorted(self.requested))
+        return tuple(sorted({t.server for t in self.tools} | {f.server for f in self.failures}))
 
 
 async def fetch_server_tools(
@@ -140,23 +202,44 @@ async def build_inventory(
     servers: Iterable[str],
     timeout_s: float | None = None,
 ) -> ToolInventory:
-    """并发拉起多个 server；单个失败不影响其余，缺口记入 failures。"""
+    """并发拉起多个 server；单个失败不影响其余，缺口记入 failures。
+
+    失败时**必须保留可执行信息**：摊平 ExceptionGroup 取真实原因，
+    并在**确属依赖缺失**时从 registry 附上安装提示（方案 §4.4 硬要求）。
+    """
     names = list(servers)
 
-    async def one(server: str) -> tuple[str, list[ToolRecord] | None, str]:
+    async def one(server: str) -> tuple[str, list[ToolRecord] | None, ServerFailure | None]:
         try:
-            return server, await fetch_server_tools(cfg, server, timeout_s), ""
+            return server, await fetch_server_tools(cfg, server, timeout_s), None
         except Exception as exc:  # noqa: BLE001 —— 单 server 失败不应拖垮整体
-            return server, None, _describe_error(exc)
+            error = _describe_error(exc)
+            hint, probe = install_hint_for(server)
+
+            # 只在"看起来与依赖缺失有关"时才给安装提示，避免误导
+            # （超时、崩溃时提示 `pip install` 帮不上忙）
+            probe_missing = probe if (probe is not None and not _probe_importable(probe)) else None
+            dependency_related = _looks_dependency_related(error) or probe_missing is not None
+
+            return server, None, ServerFailure(
+                server=server,
+                error=error,
+                hint=hint if dependency_related else None,
+                probe_missing=probe_missing,
+            )
 
     results = await asyncio.gather(*(one(s) for s in names))
 
     tools: list[ToolRecord] = []
     failures: list[ServerFailure] = []
-    for server, recs, err in results:
-        if recs is None:
-            failures.append(ServerFailure(server=server, error=err))
+    for server, recs, failure in results:
+        if failure is not None:
+            failures.append(failure)
         else:
-            tools.extend(recs)
+            tools.extend(recs or [])
 
-    return ToolInventory(tools=tuple(tools), failures=tuple(failures))
+    return ToolInventory(
+        tools=tuple(tools),
+        failures=tuple(failures),
+        requested=tuple(sorted(names)),
+    )

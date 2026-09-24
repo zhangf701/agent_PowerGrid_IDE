@@ -88,13 +88,26 @@ async def evaluate_t0(
                 )
             )
 
-    # 挂了但拿不到清单的 server 本身也是一条 incident
+    # 挂了但拿不到清单的 server 本身也是一条 finding。
+    # ★ 失败原因若**自带可执行修复路径**（依赖缺失类），记为 structural 而非 incident ——
+    #   "知道怎么修" 与 "出了事故" 是两种不同的信号，混在一起会让事故标记失去意义。
     for failure in inv.failures:
         findings.append(
             ContractFinding(
-                contract=8, state="unknown", reason="incident", subject=failure.server,
-                detail=f"server `{failure.server}` 未能拉起：{failure.error}",
-                evidence={"server": failure.server, "error": failure.error},
+                contract=8,
+                state="unknown",
+                reason="structural" if failure.hint else "incident",
+                subject=failure.server,
+                detail=(
+                    f"server `{failure.server}` 未能拉起：{failure.error}"
+                    + (f" 修复：{failure.hint}" if failure.hint else "")
+                ),
+                evidence={
+                    "server": failure.server,
+                    "error": failure.error,
+                    "hint": failure.hint,
+                    "probe_missing": failure.probe_missing,
+                },
             )
         )
 

@@ -114,9 +114,12 @@ class DocImplEvaluator:
 
     def evaluate(self, inv: ToolInventory, cfg: GatewayConfig) -> list[ContractFinding]:
         findings: list[ContractFinding] = []
+        mounted = set(inv.servers())
 
-        for server in inv.servers():
-            actual = set(inv.names(server))
+        # ★ 迭代 all_servers() 而非 servers()：拉起失败的 server 也要被检查到。
+        #   首版用 servers() 时，失败的 server 从视野里消失 —— 契约 2 变成"静默跳过"，
+        #   看起来"没问题"，实际是"没检查"。
+        for server in inv.all_servers():
             dirname = self._doc_dirs.get(server)
             readme = (cfg.powermcp_root / dirname / "README.md") if dirname else None
 
@@ -129,6 +132,23 @@ class DocImplEvaluator:
                     )
                 )
                 continue
+
+            if server not in mounted:
+                # 拿不到运行时工具清单 → **无法比对**。
+                # 报 violated 会是误报（README 里的名字并非"不存在"，而是"无从核对"）。
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="unknown", reason="structural", subject=server,
+                        detail=(
+                            f"`{server}` 未能拉起，拿不到运行时工具清单，**无法比对**文档与实现。"
+                            f"（该失败本身记在**契约 8**）"
+                        ),
+                        evidence={"server": server, "readme": str(readme), "mounted": False},
+                    )
+                )
+                continue
+
+            actual = set(inv.names(server))
 
             declared = extract_declared_tool_names(readme.read_text(encoding="utf-8"))
             declared_missing = sorted(declared - actual)

@@ -10,6 +10,7 @@ from powermcp_gateway.inventory import (
     _is_timeout,
     _timeout_error,
     build_inventory,
+    install_hint_for,
 )
 
 
@@ -152,3 +153,79 @@ def test_timeout_error_carries_server_and_stage():
     assert "90s" in text                          # 等了多久
     assert "握手" in text                          # 卡在哪一阶段
     assert text != "TimeoutError:"                # 不再是无信息的空消息
+
+
+# —— ★ 完成标准 #5：可执行修复路径从 registry 取，且只在"依赖缺失"时才给 ——
+
+def test_install_hint_for_known_server_with_extra():
+    hint, probe = install_hint_for("andes")
+    assert hint == "pip install powermcp[andes]"
+    assert probe == "andes"
+
+
+def test_install_hint_for_core_server_has_no_extra():
+    hint, probe = install_hint_for("pandapower")
+    assert hint == "pip install powermcp"      # 核心包，无 extra
+    assert probe == "pandapower"
+
+
+def test_install_hint_for_unknown_server_is_none():
+    hint, probe = install_hint_for("no_such_server")
+    assert hint is None
+    assert probe is None
+
+
+def test_all_servers_includes_failed_ones():
+    """★ 缺陷 B：未拉起的 server 不得从求值器视野里消失。"""
+    inv = ToolInventory(
+        tools=(ToolRecord.from_sdk("pandapower", _fake_sdk_tool()),),
+        failures=(ServerFailure("opendss", "LaunchError: ..."),),
+        requested=("pandapower", "opendss"),
+    )
+    assert inv.servers() == ("pandapower",)
+    assert inv.all_servers() == ("opendss", "pandapower")
+
+
+def test_all_servers_falls_back_without_requested():
+    """未显式传 requested 时，用 tools ∪ failures 兜底，失败 server 仍不丢。"""
+    inv = ToolInventory(
+        tools=(ToolRecord.from_sdk("surge", _fake_sdk_tool("compute_lodf")),),
+        failures=(ServerFailure("genx", "boom"),),
+    )
+    assert inv.all_servers() == ("genx", "surge")
+
+
+async def test_build_inventory_records_hint_on_dependency_failure(monkeypatch):
+    """拉起失败且**看起来是依赖缺失**时，failure 必须带上可执行修复路径（方案 §4.4）。"""
+
+    async def boom(cfg, server, timeout_s=None):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [
+            RuntimeError("ANDES: required package 'andes' is not installed. "
+                         "Install it with: pip install powermcp[andes]"),
+        ])
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    result = await build_inventory(cfg=None, servers=["andes"])  # type: ignore[arg-type]
+
+    assert result.requested == ("andes",)
+    assert result.all_servers() == ("andes",)
+    f = result.failures[0]
+    assert "pip install powermcp[andes]" in f.error     # 摊平后的真实原因
+    assert f.hint == "pip install powermcp[andes]"      # 结构化修复路径
+
+
+async def test_timeout_failure_gets_no_install_hint(monkeypatch):
+    """超时不是依赖缺失 —— 给安装提示是误导。
+
+    方案 §4.4 要的是"**可执行**修复路径"，不是"随便给条命令"。
+    """
+
+    async def boom(cfg, server, timeout_s=None):
+        raise TimeoutError("opendss 在 90s 内未完成 MCP 握手")
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    result = await build_inventory(cfg=None, servers=["opendss"])  # type: ignore[arg-type]
+
+    assert result.failures[0].hint is None
