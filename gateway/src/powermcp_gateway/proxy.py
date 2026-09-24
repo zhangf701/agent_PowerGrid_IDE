@@ -199,6 +199,11 @@ async def call_tool(
           → 既不报违规也不报放弃）→ `else` 分支用 `schema_is_unusable()` 检出后
           **同样**发 unknown。
       两者只能触发其一（`else` 仅在未抛异常时执行），因此一次调用**不会**出现两条 unknown。
+
+    ★ **但"无法判定"不得压过"确实违规"**（独立验证者 N1）：若 schema 既畸形、又确实
+      缺必填参数，调用已被**校验并拒发**（`ok=False`）—— 此时报 unknown 不但冗余，
+      还会带上"本次调用未被拦截"这种**与事实相反**的声明。故 unknown 仅在
+      **没有任何 violation** 时补发；违规才是唯一可执行的结论。
     """
     try:
         violations = validate_args(schema, args)
@@ -220,14 +225,22 @@ async def call_tool(
         #   而同类畸形若落在 `properties` 本身，走的是上面的异常路径 → **会**报
         #   `contract_unknown`。两种同类畸形、两种待遇，与「绝不静默」的口径有张力
         #   （独立验证者 C-1）。这里补一条 structural unknown，让它们**待遇一致**。
-        #   ⚠️ 只在异常路径**未**触发时补发，避免同一次调用出现两条 unknown。
-        if schema_is_unusable(schema):
+        #
+        # ⚠️ 两个必须有的前提（否则会制造**假声明**）：
+        #   1. 只在异常路径**未**触发时补发（`else` 天然保证），避免同一次调用两条 unknown；
+        #   2. ★ 只在**没有 violation** 时补发。反例（独立验证者 N1 实测）：schema 既畸形
+        #      又确实缺必填参数时，调用已被**校验并拒发**（`ok=False`）—— 此时再报
+        #      "无法判定 / 本次调用未被校验"是**事实错误**，而且让前端对同一次调用同时
+        #      看到 "违反" 与 "未判定" 两条互斥结论。
+        #      本质上：unknown 的存在意义是补上**静默放行**那一种漏；调用既已被 fail-closed
+        #      拦下，就没有静默可言，此时违规才是唯一可执行的结论。
+        if not violations and schema_is_unusable(schema):
             _emit_finding(bus, audit, session_id, "contract_unknown", ContractFinding(
                 contract=3, state="unknown", reason="structural", subject=server,
                 detail=(
                     "该工具声明的 input_schema 含无法判定的字段"
                     "（`type`/`anyOf` 形态不合法，或 `properties` 结构异常）—— "
-                    "参数校验对它不可用，本次调用**未被校验**。"
+                    "参数校验无法据此得出违规结论，本次调用**未被拦截**（已放行转发）。"
                 ),
                 evidence={"server": server, "tool": tool, "method": "proxy-validate"},
             ))

@@ -552,3 +552,37 @@ def test_audit_persistence_failure_does_not_break_the_call(monkeypatch, caplog):
     assert outcome.ok is True, "审计持久化失败不该影响调用结果"
     assert [e.kind for e in bus.events()] == ["tool_call"], "事件仍应在内存历史中"
     assert "未持久化" in caplog.text, "审计未持久化必须留下可诊断的告警"
+
+
+def test_violation_takes_precedence_over_unusable_schema(monkeypatch):
+    """★ 独立验证者 N1：schema 既畸形、又确实违规时，**只报违规**。
+
+    反例（本修复前）：`{"properties": {"x": {"type": 5}}, "required": ["y"]}` + 空 `args`
+    会**同时**发出 `contract_unknown` 与 `contract_violation`，而 unknown 的 detail 断言
+    "本次调用未被拦截" —— 该调用其实**已被校验并拒发**（`ok=False`），那是一句**与事实
+    相反**的声明；前端还会对同一次调用同时看到"违反"与"未判定"两条互斥结论。
+
+    理由：unknown 的存在意义是补上**静默放行**那一种漏；调用既然已被 fail-closed 拦下，
+    就没有静默可言 —— 违规才是唯一可执行的结论。
+    """
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        raise AssertionError("违规调用不得被转发")
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+
+    outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="run_power_flow", args={},
+        schema={"properties": {"x": {"type": 5}}, "required": ["y"]},
+        bus=bus, session_id="s1",
+    ))
+
+    assert outcome.ok is False, "缺必填参数必须 fail-closed"
+    kinds = [e.kind for e in bus.events()]
+    assert kinds.count("contract_violation") == 1, f"应恰好 1 条违规，实际 {kinds}"
+    assert "contract_unknown" not in kinds, (
+        f"已被拒发的调用不得再报『无法判定』（会带出与事实相反的声明），实际 {kinds}"
+    )
