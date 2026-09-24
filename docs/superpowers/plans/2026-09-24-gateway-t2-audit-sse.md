@@ -940,8 +940,8 @@ Expected: FAIL —— 仅 `test_is_single_source_of_truth` 失败（两处仍是
 在其位置改为：
 
 ```python
-# 单一真源见 server_dirs.py；保留旧名以免改动调用点与既有测试
-from .server_dirs import SERVER_DIRS as SERVER_DOC_DIRS  # noqa: E402
+# 单一真源见 server_dirs.py；保留旧名以免改动本模块的既有调用点
+from .server_dirs import SERVER_DIRS as SERVER_DOC_DIRS
 ```
 
 在 `gateway/src/powermcp_gateway/contracts/api_version.py` 中，
@@ -949,11 +949,12 @@ from .server_dirs import SERVER_DIRS as SERVER_DOC_DIRS  # noqa: E402
 与紧随其后的整个 `SOURCE_DIRS: dict[str, str] = { ... }` 块，改为：
 
 ```python
-from .server_dirs import SERVER_DIRS as SOURCE_DIRS  # noqa: E402
+from .server_dirs import SERVER_DIRS as SOURCE_DIRS
 ```
 
-> ⚠️ 用 `as` 别名而不是改所有调用点：既有测试引用了 `SERVER_DOC_DIRS` / `SOURCE_DIRS` 这两个名字，
-> 改名的收益为零、回归风险不为零。**先收敛真源，不顺手改名。**
+> ⚠️ 用 `as` 别名而不是把调用点改名为 `SERVER_DIRS`：实测这两个名字**只在本模块内部**被读取
+> （`doc_impl` 第 113 行 `dict(SERVER_DOC_DIRS)`、`api_version` 第 79 行 `dict(SOURCE_DIRS)`），
+> **测试并未引用它们**。改名的收益为零、回归面不为零。**先收敛真源，不顺手改名。**
 
 - [ ] **Step 6: 跑全量单元测试，确认无回归**
 
@@ -961,7 +962,7 @@ from .server_dirs import SERVER_DIRS as SOURCE_DIRS  # noqa: E402
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration"
 ```
-Expected: 全部 PASS（既有 76 + 本任务 4）
+Expected: 全部 PASS（既有 99 + 本任务 4 = 103）
 
 - [ ] **Step 7: 提交**
 
