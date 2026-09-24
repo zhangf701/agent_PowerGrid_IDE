@@ -78,13 +78,17 @@ gateway/src/powermcp_gateway/
 ├── contracts/
 │   ├── model.py                  ← 不动（复用）
 │   ├── registry.py               ← 不动（契约 3 是事件驱动，不进 REGISTRY）
+│   ├── server_dirs.py            ← 新增：server id → 目录名（**单一真源**）
+│   ├── doc_impl.py               ← 修改：删本地副本，改引用 server_dirs
+│   ├── api_version.py            ← 修改：删本地副本，改引用 server_dirs
 │   ├── params.py                 ← 新增：契约 3 —— schema × args 校验（纯函数）
 │   ├── status_mapping.py         ← 新增：契约 4 —— 状态映射可信度（AST）
 │   └── engine.py                 ← 不动（T2 是事件驱动，不走周期性求值器）
-└── api.py                        ← 修改：/sessions · /tools/call · SSE 端点
+└── api.py                        ← 重写：/sessions · /tools/call · SSE 端点
 
 gateway/tests/
 ├── test_session.py · test_audit.py · test_events.py
+├── test_server_dirs.py
 ├── test_contract_params.py · test_contract_status_mapping.py
 ├── test_proxy.py · test_api_t2.py
 ```
@@ -520,7 +524,161 @@ git commit -m "feat(gateway): NDJSON 审计（通道 A，仅证据）"
 
 ---
 
-### Task 2: 契约 4 —— 状态映射可信度
+### Task 2: 抽取共享的 server → 目录映射表
+
+**Files:**
+- Create: `gateway/src/powermcp_gateway/contracts/server_dirs.py`
+- Modify: `gateway/src/powermcp_gateway/contracts/doc_impl.py`（删本地 `SERVER_DOC_DIRS` 定义，改为引用）
+- Modify: `gateway/src/powermcp_gateway/contracts/api_version.py`（删本地 `SOURCE_DIRS` 定义，改为引用）
+- Test: `gateway/tests/test_server_dirs.py`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `SERVER_DIRS: dict[str, str]` —— server id → PowerMCP 仓库内的目录名（**单一真源**）
+
+**为什么单独一个任务**：这个映射表在既有代码里**已经有两份**：
+`doc_impl.SERVER_DOC_DIRS` 与 `api_version.SOURCE_DIRS`，两者当前逐项相同。
+`api_version` 的注释甚至写着「与 doc_impl.SERVER_DOC_DIRS 同源」——
+**作者知道该同源，但只写了注释、没做抽取**。Task 3 需要第三份，三份手工同步必然断裂。
+
+> ⚠️ **同源实际上已经破了**：本计划初稿给 `hope` 写的是 `HOPE/src`，而既有两份是 `HOPE`。
+> 两者都能工作（`rglob` 会递归进 `src/`），但取值不同就说明"同源"只是口号。
+> 本任务统一为 `HOPE`。
+
+> 📌 `powerio` **不在此表中** —— 它由自己的发行版提供（`python -m powerio.mcp`），
+> PowerMCP 仓库内没有它的目录。这不是遗漏。
+
+- [ ] **Step 1: 写失败的测试**
+
+```python
+import pytest
+
+from powermcp_gateway.contracts.server_dirs import SERVER_DIRS
+
+EXPECTED = {
+    "pandapower": "pandapower",
+    "pypsa": "PyPSA",
+    "surge": "surge",
+    "andes": "ANDES",
+    "egret": "Egret",
+    "opendss": "OpenDSS",
+    "hope": "HOPE",
+    "genx": "GenX",
+}
+
+
+def test_mapping_matches_expected():
+    assert SERVER_DIRS == EXPECTED
+
+
+def test_powerio_is_intentionally_absent():
+    """powerio 由自己的发行版提供，仓库内没有它的目录 —— 不是遗漏。"""
+    assert "powerio" not in SERVER_DIRS
+
+
+def test_is_single_source_of_truth():
+    """★ 既有两处必须改为**引用**本模块，不得再各自持有副本。"""
+    from powermcp_gateway.contracts import api_version, doc_impl
+
+    assert api_version.SOURCE_DIRS is SERVER_DIRS
+    assert doc_impl.SERVER_DOC_DIRS is SERVER_DIRS
+
+
+def test_every_dir_exists_in_the_repo():
+    from powermcp_gateway.config import GatewayConfig
+
+    root = GatewayConfig.discover().powermcp_root
+    for server, dirname in SERVER_DIRS.items():
+        assert (root / dirname).is_dir(), f"{server} -> {dirname} 在仓库中不存在"
+```
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_server_dirs.py -v
+```
+Expected: FAIL —— `ModuleNotFoundError: No module named 'powermcp_gateway.contracts.server_dirs'`
+
+- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/server_dirs.py`**
+
+```python
+"""server id → PowerMCP 仓库内目录名 —— **单一真源**。
+
+本表原先在 `doc_impl.SERVER_DOC_DIRS` 与 `api_version.SOURCE_DIRS` 各有一份，
+`api_version` 的注释还写着「与 doc_impl.SERVER_DOC_DIRS 同源」——
+知道该同源却只写了注释，于是从"一处定义"退化成"两处手工同步 + 一句祈祷"。
+新增第三个消费者（`status_mapping`）之前先抽取，否则必然断裂。
+
+键一律是 `powermcp/registry.py` 的 `Tool.name`（小写 server id）。
+
+⚠️ `powerio` 不在此表中：它由自己的发行版提供（`python -m powerio.mcp`），
+   PowerMCP 仓库内没有它的目录。这不是遗漏。
+"""
+
+from __future__ import annotations
+
+SERVER_DIRS: dict[str, str] = {
+    "pandapower": "pandapower",
+    "pypsa": "PyPSA",
+    "surge": "surge",
+    "andes": "ANDES",
+    "egret": "Egret",
+    "opendss": "OpenDSS",
+    "hope": "HOPE",
+    "genx": "GenX",
+}
+```
+
+- [ ] **Step 4: 跑测试，确认前两条通过**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_server_dirs.py -v
+```
+Expected: FAIL —— 仅 `test_is_single_source_of_truth` 失败（两处仍是副本），其余通过
+
+- [ ] **Step 5: 改 `doc_impl.py` 与 `api_version.py` 为引用**
+
+在 `gateway/src/powermcp_gateway/contracts/doc_impl.py` 中，
+**删除**这段本地定义（原第 53–63 行附近的 `SERVER_DOC_DIRS: dict[str, str] = { ... }` 整块），
+在其位置改为：
+
+```python
+# 单一真源见 server_dirs.py；保留旧名以免改动调用点与既有测试
+from .server_dirs import SERVER_DIRS as SERVER_DOC_DIRS  # noqa: E402
+```
+
+在 `gateway/src/powermcp_gateway/contracts/api_version.py` 中，
+**删除**注释「`# server id -> PowerMCP 仓库内的目录名（与 doc_impl.SERVER_DOC_DIRS 同源）`」
+与紧随其后的整个 `SOURCE_DIRS: dict[str, str] = { ... }` 块，改为：
+
+```python
+from .server_dirs import SERVER_DIRS as SOURCE_DIRS  # noqa: E402
+```
+
+> ⚠️ 用 `as` 别名而不是改所有调用点：既有测试引用了 `SERVER_DOC_DIRS` / `SOURCE_DIRS` 这两个名字，
+> 改名的收益为零、回归风险不为零。**先收敛真源，不顺手改名。**
+
+- [ ] **Step 6: 跑全量单元测试，确认无回归**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration"
+```
+Expected: 全部 PASS（既有 76 + 本任务 4）
+
+- [ ] **Step 7: 提交**
+
+```bash
+cd d:/coding/powerMcp_Pskills
+git add gateway/
+git commit -m "refactor(gateway): 抽取 server→目录映射为单一真源（消除三份手工同步）"
+```
+
+---
+
+### Task 3: 契约 4 —— 状态映射可信度
 
 **Files:**
 - Create: `gateway/src/powermcp_gateway/contracts/status_mapping.py`
@@ -711,17 +869,8 @@ STATUS_KEYS = frozenset({"status", "converged", "success", "succeeded", "ok"})
 #: 视为"报告成功"的字面量
 _SUCCESS_LITERALS = ("success", "completed", True)
 
-# server id -> PowerMCP 仓库内的目录名（与 doc_impl / api_version 同源）
-SOURCE_DIRS: dict[str, str] = {
-    "pandapower": "pandapower",
-    "pypsa": "PyPSA",
-    "surge": "surge",
-    "andes": "ANDES",
-    "egret": "Egret",
-    "opendss": "OpenDSS",
-    "hope": "HOPE/src",
-    "genx": "GenX",
-}
+# 目录映射取自单一真源（Task 2）—— 本模块**不再自带副本**
+from .server_dirs import SERVER_DIRS
 
 
 def analyse_tool_fn(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, tuple[str, ...]]:
@@ -770,7 +919,7 @@ class StatusMappingEvaluator:
     timeframe = "T0"
 
     def __init__(self, source_dirs: dict[str, str] | None = None) -> None:
-        self._dirs = dict(source_dirs) if source_dirs is not None else dict(SOURCE_DIRS)
+        self._dirs = dict(source_dirs) if source_dirs is not None else dict(SERVER_DIRS)
 
     def evaluate(self, inv: ToolInventory, cfg: GatewayConfig) -> list[ContractFinding]:
         findings: list[ContractFinding] = []
@@ -865,7 +1014,7 @@ git commit -m "feat(gateway): 契约 4 状态映射可信度（判据经实测�
 
 ---
 
-### Task 3: 契约 3 —— 参数校验（纯函数）
+### Task 4: 契约 3 —— 参数校验（纯函数）
 
 **Files:**
 - Create: `gateway/src/powermcp_gateway/contracts/params.py`
@@ -878,7 +1027,7 @@ git commit -m "feat(gateway): 契约 4 状态映射可信度（判据经实测�
   - `validate_args(schema: dict, args: dict) -> tuple[ArgViolation, ...]`
   - **本模块不定义 Evaluator**（见文件末尾说明）
 
-> ★ 本任务只做**纯函数**校验，不做代理（代理在 Task 4）。
+> ★ 本任务只做**纯函数**校验，不做代理（代理在 Task 5）。
 > 为了可测，校验与调用严格分离。
 >
 > ★ **契约 3 不走 `REGISTRY`**：它是事件驱动的（finding 在代理层产生并以
@@ -1094,14 +1243,14 @@ git commit -m "feat(gateway): 契约 3 参数校验纯函数（判据改为代�
 
 ---
 
-### Task 4: 代理调用（契约 3 的落地点）
+### Task 5: 代理调用（契约 3 的落地点）
 
 **Files:**
 - Create: `gateway/src/powermcp_gateway/proxy.py`
 - Test: `gateway/tests/test_proxy.py`
 
 **Interfaces:**
-- Consumes: `ToolInventory` / `ToolRecord`（既有）· `validate_args` / `ArgViolation`（Task 3）· `EventBus` / `Channel`（Task 0）· `AuditLog`（Task 1）
+- Consumes: `ToolInventory` / `ToolRecord`（既有）· `validate_args` / `ArgViolation`（Task 4）· `EventBus` / `Channel`（Task 0）· `AuditLog`（Task 1）
 - Produces:
   - `CallOutcome`：`ok: bool` · `server: str` · `tool: str` · `result: dict | None` · `violations: tuple[ArgViolation, ...]` · `error: str | None`
   - `async def call_tool(cfg, server, tool, args, *, schema, bus=None, audit=None, session_id=None) -> CallOutcome`
@@ -1341,7 +1490,7 @@ git commit -m "feat(gateway): MCP 代理调用 + 契约 3 fail-closed 校验"
 
 ---
 
-### Task 5: SSE 序列化与端点
+### Task 6: SSE 序列化与端点
 
 **Files:**
 - Create: `gateway/src/powermcp_gateway/events.py`
@@ -1681,14 +1830,14 @@ git commit -m "feat(gateway): SSE 双通道 + 会话/代理端点"
 
 ---
 
-### Task 6: T2 节拍打通 + 端到端验收
+### Task 7: T2 节拍打通 + 端到端验收
 
 **Files:**
 - Test: `gateway/tests/test_api_t2.py`（追加）
-- **不改任何实现文件** —— T2 入口在 Task 5 Step 7 已随 `api.py` 重写完成
+- **不改任何实现文件** —— T2 入口在 Task 6 Step 7 已随 `api.py` 重写完成
 
 **Interfaces:**
-- Consumes: `call_with_contracts` / `_STORE` / `_AUDIT`（Task 5 Step 7 已全部提供）· `call_tool`（Task 4）
+- Consumes: `call_with_contracts` / `_STORE` / `_AUDIT`（Task 6 Step 7 已全部提供）· `call_tool`（Task 5）
 - Produces: 无新符号 —— 本任务只补**测试与端到端验收**
 
 > ★ 这是**把 T2 契约接到代理层**的那一步。契约 3 的违规由 `call_tool` 直接产生，
@@ -1783,12 +1932,12 @@ Expected: FAIL —— `AttributeError: module 'powermcp_gateway.api' has no attr
 
 - [ ] **Step 3: 确认无需改动实现**
 
-`call_with_contracts` / `_STORE` / `_AUDIT` 已在 **Task 5 Step 7 的重写**中引入
+`call_with_contracts` / `_STORE` / `_AUDIT` 已在 **Task 6 Step 7 的重写**中引入
 （签名 `call_with_contracts(sid, server, tool, args, *, get_schema)`）。
 本任务**只加测试与端到端验收**，不新增实现代码。
 
 若 Step 2 的失败信息不是 `AttributeError: ... has no attribute 'call_with_contracts'`，
-说明 Task 5 Step 7 没做完 —— 回到那里补齐，**不要在本任务里另写一份**。
+说明 Task 6 Step 7 没做完 —— 回到那里补齐，**不要在本任务里另写一份**。
 
 - [ ] **Step 4: 跑测试，确认通过**
 
