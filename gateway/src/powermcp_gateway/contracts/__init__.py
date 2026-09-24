@@ -17,3 +17,10 @@ __all__ = [
     "UnknownReason",
     "summarize",
 ]
+
+from .namespacing import NamespacingEvaluator
+from .registry import REGISTRY
+
+REGISTRY.register(NamespacingEvaluator())
+
+__all__ += ["REGISTRY", "NamespacingEvaluator"]
