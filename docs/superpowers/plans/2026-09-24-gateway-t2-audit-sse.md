@@ -2814,3 +2814,66 @@ cd d:/coding/powerMcp_Pskills/gateway
 - **子项目 1**：设计系统落地（tokens → CSS 变量 / Tailwind / 5 个签名组件 / Zod 边界）
 - **子项目 5**：前端视图（聊天面板 + 契约面板），消费本计划的 `/sessions/{sid}/events`
 - **opendss 挂载缺陷**：[立项文档](2026-09-24-opendss-sdk-mount-defect.md)
+
+---
+
+## 执行记录（2026-09-24 回填）
+
+### 状态
+
+| 项 | 结果 |
+|---|---|
+| Task 完成度 | **7 / 7**（Task 0–7） |
+| 交付文件 | 新增 `events.py` · `proxy.py` · `contracts/server_dirs.py` · `contracts/params.py` · `contracts/status_mapping.py` + 5 个测试文件；**修改** `api.py` · `session.py` · `test_session.py` · `test_api_t2.py` |
+| 单元测试 | **138 passed**（`pytest -m "not integration"`） |
+| 集成测试 | 1 deselected（未跑） |
+| `PowerMCP/` 改动 | **0 行** |
+| 审查 | Task 0–6 各经独立子代理审查；**Task 7 因账户频率限制由控制器实现 + 自查，未经独立审查** |
+
+### 完成标准 5/5
+
+| # | 标准 | 实测 |
+|---|---|---|
+| ① | 契约 4 检出「报成功却不读状态」的求解型工具 | ✅ **6 个**（`pypsa`×2 / `andes`×1 / `egret`×3）；`pypsa`/`andes`/`egret` = degraded，`pandapower`/`surge`/`hope`/`opendss` = satisfied，`genx` = unknown |
+| ② | 契约 3：未声明参数被拒且**未转发** | ✅ 端到端实测 `ok=false`、`violations[0].kind=unknown_arg`、`arg=linearized` |
+| ③ | SSE 双通道以 event 名区分 | ✅ `event: evidence` / `event: telemetry`；`id:` = 单调 seq |
+| ④ | 审计落盘、`replay()` 可还原 | ✅ **需进程优雅退出**（lifespan flush）—— 实测退出前 **0 字节** → 优雅退出后 **339 字节**，含 `contract_violation` |
+| ⑤ | 无回归 | ✅ 既有 134 个测试全过（子项目 2 的 76 + 子项目 3 的 Task 0–6） |
+
+### 与「本计划规格」的偏差（均经用户裁决或实测修正）
+
+| Task | 原规格 | 已交付实现 |
+|---|---|---|
+| 3 | 只认 `@mcp.tool` 装饰器 | **同时识别函数式 `mcp.tool()(fn)`** —— OpenDSS 55 个工具的唯一形态 |
+| 3 | `checked == 0` → `satisfied` | **→ `unknown/structural`**（原口径是假绿灯） |
+| 3 | 实测 7 条 | **6 条**（`andes.run_time_domain_simulation` 实际读了状态） |
+| 5 | `_dispatch` 无超时 | **加 `asyncio.timeout(cfg.server_timeout_s)`**（与 `inventory` 一致） |
+| 5 | `_emit` 不处理发布失败 | **try/except + `logger.warning`**（`publish` 在总线关闭时 raise） |
+| 5 | `_dispatch` 丢弃 `is_error` | **回传 `is_error`** → `call_tool` 报 `ok=False`（MCP 标准错误形态） |
+| 6 | 先取快照再订阅 | **新增 `EventBus.subscribe_queue()` 先同步注册再取快照**（消除丢失窗口） |
+| 6 | `is_disconnected()` 在 `async for` 内 | **`asyncio.wait_for` + 超时轮询**（原写法空闲时永不执行） |
+| 6 | SSE 测试用 `c.stream` | **直接调 `route.endpoint()`**（`ASGITransport` 测不了无限流，实测挂死） |
+| 7 | 不改任何实现文件 | **加 lifespan shutdown 钩子**（审计在进程退出时会丢） |
+
+### 回填时同步的文档缺陷（7 类）
+
+1. Task 2 Step 6 验收数字「既有 76」→ 实测基线 **99**
+2. Task 2 Step 5 称「既有测试引用了 `SERVER_DOC_DIRS`/`SOURCE_DIRS`」→ 实测**测试并未引用**
+3. Task 4 `test_violations_are_sorted_and_deduped` 断言**必然失败**（缺 `network_name` → 多一条 `missing_required`）
+4. Task 4 `params.py` 有 3 个未使用 import（`Iterable`/`ToolInventory`/`ContractFinding`，后两者与"纯函数"声明矛盾）
+5. Task 5 `_dispatch` 缺超时、`_emit` 未处理发布失败（两处错误路径）
+6. Task 6 快照竞态、空闲断开不检测、`json.loads(data)["contract"]` 断言错、SSE 测试挂死
+7. Task 7 四处陈旧数字（6→8 passed / 76→134 基线 / 契约4 7→6 条）+ 缺 basetemp
+
+> 这 7 类均在**派发前**由控制器实测发现并修正 —— 若照抄，实现者会在 Step 4 卡住、或产出与代码行为不符的文档。
+
+### 遗留
+
+- ⚠️ **Task 7 未经独立子代理审查**（账户频率限制 429）。代码经控制器实测（8 passed / 138 passed / 端到端成功），
+  但**缺少独立审查者裁决** —— **下次会话应优先补做**。
+- ⚠️ **最终全分支审查尚未执行**。`.superpowers/sdd/progress.md` 已累积 Task 0–6 的 Minor 清单（共 30+ 条）待它裁决。
+- **opendss 无法经 mcp SDK 挂载**（唯一真阻塞，根因未定）。
+- 各任务的 Minor 待裁决：契约 4 ×6（含值比较大小写敏感致 `{"status":"SUCCESS"}` 漏检）、契约 3 ×3、
+  Task 5 ×6、Task 6 ×6。
+- `session.py` 的 `_handles` 无 close 路径（T1-M7）；`gen()` 的全部行为仍零测试（T6-M2，
+  `ASGITransport` 测不了无限流）。
