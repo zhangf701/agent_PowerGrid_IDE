@@ -88,8 +88,13 @@ def test_session_store_unknown_id_raises():
         SessionStore().get("nope")
 
 
+# ── 以下三条为审查发现的回归测试 ──────────────────────────────────────────
+
 async def test_close_terminates_subscriber_with_full_queue():
-    """★ 回归：审查复现的挂死 —— close() 必须让队列已满的订阅者也退出。"""
+    """★ 回归：`close()` 必须让队列已满的订阅者也退出。
+
+    （初版 `except QueueFull: pass` 吞掉终止哨兵 → 该订阅者永久挂起。）
+    """
     bus = EventBus()
     got: list[int] = []
 
@@ -125,5 +130,55 @@ def test_publish_evidence_refuses_when_a_subscriber_queue_is_full():
 def test_publish_after_close_raises():
     bus = EventBus()
     bus.close()
+    with pytest.raises(RuntimeError, match="已关闭"):
+        bus.publish(Channel.TELEMETRY, "x", {})
+
+
+async def test_subscribe_after_close_returns_immediately():
+    """★ 回归：close() **之后**才挂上的订阅者不得挂起。
+
+    （给 `publish` 加 `_closed` 守卫时曾漏掉这个入口 —— 晚到的订阅者
+      永远等不到事件，还会作为孤儿滞留在 `_subscribers`。）
+    """
+    bus = EventBus()
+    bus.close()
+
+    got: list[int] = []
+    async for ev in bus.subscribe():          # 未修复时会永久挂起
+        got.append(ev.seq)
+
+    assert got == []
+    assert bus.subscriber_count() == 0        # 不留孤儿
+
+
+async def test_close_does_not_drop_evidence_when_queue_is_full():
+    """★ 回归：队列**恰好填满**时 close()，不得丢弃任何一条 EVIDENCE。
+
+    （曾为塞入终止哨兵而驱逐队首 —— 在拆除路径上静默丢掉一条证据，
+      与 `publish()`「宁可拒绝发布也绝不丢证据」的取舍自相矛盾。）
+    """
+    bus = EventBus()
+    got: list[int] = []
+
+    async def consume():
+        async for ev in bus.subscribe():
+            got.append(ev.seq)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+
+    for i in range(1024):                     # 恰好填满 maxsize=1024（不触背压）
+        bus.publish(Channel.EVIDENCE, "critical", {"i": i})
+    assert got == [], "发布循环无 await，消费者不应在此前被调度"
+
+    bus.close()
+    await asyncio.wait_for(task, timeout=2)
+    assert got == list(range(1, 1025)), "close() 丢弃了证据事件"
+
+
+def test_close_is_idempotent():
+    bus = EventBus()
+    bus.close()
+    bus.close()                               # 第二次应是 no-op，不得抛错
     with pytest.raises(RuntimeError, match="已关闭"):
         bus.publish(Channel.TELEMETRY, "x", {})
