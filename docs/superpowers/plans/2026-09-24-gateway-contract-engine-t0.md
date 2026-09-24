@@ -98,7 +98,7 @@ d:/coding/powerMcp_Pskills/                 ← git init 于此
   - `GatewayConfig.discover(root: Path | None = None) -> GatewayConfig`
   - 异常 `ConfigError`
 
-- [ ] **Step 1: 在项目根初始化 git 仓库**
+- [x] **Step 1: 在项目根初始化 git 仓库**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -107,7 +107,7 @@ git init
 
 > ⚠️ 这是环境变更操作，计划执行前需用户确认。若根目录已有 `.git` 则跳过本步。
 
-- [ ] **Step 2: 写 `.gitignore`（必须在任何 `git add` 之前）**
+- [x] **Step 2: 写 `.gitignore`（必须在任何 `git add` 之前）**
 
 创建 `d:/coding/powerMcp_Pskills/.gitignore`：
 
@@ -132,7 +132,7 @@ __pycache__/
 gateway/.cache/
 ```
 
-- [ ] **Step 3: 验证 `PowerMCP/` 确实被忽略**
+- [x] **Step 3: 验证 `PowerMCP/` 确实被忽略**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -141,7 +141,7 @@ git check-ignore -v PowerMCP/
 ```
 Expected: `git check-ignore` 输出匹配到 `/PowerMCP/` 那一行；`grep -c` 输出 `0`。
 
-- [ ] **Step 4: 写 `gateway/pyproject.toml`**
+- [x] **Step 4: 写 `gateway/pyproject.toml`**
 
 ```toml
 [build-system]
@@ -174,7 +174,7 @@ markers = [
 ]
 ```
 
-- [ ] **Step 5: 安装到 `PowerMCP/.venv`（可编辑模式）**
+- [x] **Step 5: 安装到 `PowerMCP/.venv`（可编辑模式）**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -182,7 +182,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: `Successfully installed powermcp-gateway-0.1.0`（或已安装的最新版本提示）。
 
-- [ ] **Step 6: 写失败的测试 `gateway/tests/test_config.py`**
+- [x] **Step 6: 写失败的测试 `gateway/tests/test_config.py`**
 
 ```python
 from pathlib import Path
@@ -214,7 +214,7 @@ def test_discover_reports_missing_venv(tmp_path: Path):
         GatewayConfig.discover(root=tmp_path)
 ```
 
-- [ ] **Step 7: 跑测试，确认失败**
+- [x] **Step 7: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -222,7 +222,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError: No module named 'powermcp_gateway.config'`
 
-- [ ] **Step 8: 写 `gateway/src/powermcp_gateway/config.py`**
+- [x] **Step 8: 写 `gateway/src/powermcp_gateway/config.py`**
 
 ```python
 """网关的路径与超时解析。
@@ -283,7 +283,7 @@ class GatewayConfig:
         return cls(powermcp_root=root, python=python)
 ```
 
-- [ ] **Step 9: 跑测试，确认通过**
+- [x] **Step 9: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -291,7 +291,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（3 passed）
 
-- [ ] **Step 10: 提交**
+- [x] **Step 10: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -361,7 +361,7 @@ Install it with: pip install powermcp[andes]` **完全丢失**。
 > ★ 连带：契约 8 的失败项 `reason` 改为 **`"structural" if failure.hint else "incident"`** ——
 > 「知道怎么修」与「出了事故」是两种不同信号，混在一起会让事故标记失去意义。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 from types import SimpleNamespace
@@ -597,7 +597,7 @@ async def test_timeout_failure_gets_no_install_hint(monkeypatch):
     assert result.failures[0].hint is None
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -605,7 +605,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError: No module named 'powermcp_gateway.inventory'`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/inventory.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/inventory.py`**
 
 ```python
 """MCP stdio 客户端与工具清单。
@@ -855,7 +855,7 @@ async def build_inventory(
     )
 ```
 
-- [ ] **Step 4: 跑单元测试，确认通过**
+- [x] **Step 4: 跑单元测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -863,7 +863,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（20 passed）
 
-- [ ] **Step 5: 跑集成测试（真实拉起 pandapower，约 30 秒）**
+- [x] **Step 5: 跑集成测试（真实拉起 pandapower，约 30 秒）**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -871,7 +871,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（1 passed）—— 实测 pandapower 返回 **8** 个工具。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -902,7 +902,7 @@ git commit -m "feat(gateway): MCP stdio 客户端与工具清单"
 
 > 本任务是 **UI 规范 §4.3 双轨汇总的服务端实现**。两端的汇总语义必须逐字一致 —— 测试里用规范表格里的例子做断言。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 import pytest
@@ -979,7 +979,7 @@ def test_violated_outranks_degraded():
     assert s.primary == "violated"
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -987,7 +987,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError: No module named 'powermcp_gateway.contracts'`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/model.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/model.py`**
 
 ```python
 """契约状态模型与汇总。
@@ -1077,7 +1077,7 @@ def summarize(findings: Iterable[ContractFinding]) -> ReportSummary:
     return ReportSummary(worst, structural, incident)  # type: ignore[arg-type]
 ```
 
-- [ ] **Step 4: 写 `gateway/src/powermcp_gateway/contracts/__init__.py`**
+- [x] **Step 4: 写 `gateway/src/powermcp_gateway/contracts/__init__.py`**
 
 ```python
 from .model import (
@@ -1101,7 +1101,7 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 5: 跑测试，确认通过**
+- [x] **Step 5: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1109,7 +1109,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（9 passed）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -1132,7 +1132,7 @@ git commit -m "feat(gateway): 契约状态模型与双轨汇总"
   - `EvaluatorRegistry`：`register(ev)`（编号冲突时抛 `ValueError`）· `all() -> tuple[ContractEvaluator, ...]` · `get(contract: int)`
   - `REGISTRY: EvaluatorRegistry` —— 模块级单例，后续 Task 逐个注册
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 import pytest
@@ -1178,7 +1178,7 @@ def test_get_unknown_raises():
         EvaluatorRegistry().get(5)
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1186,7 +1186,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/registry.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/registry.py`**
 
 ```python
 """契约求值器的协议与注册表。"""
@@ -1236,7 +1236,7 @@ class EvaluatorRegistry:
 REGISTRY = EvaluatorRegistry()
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1244,7 +1244,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（4 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -1271,7 +1271,7 @@ git commit -m "feat(gateway): 契约求值器协议与注册表"
 
 **已知证据（必须被这条规则抓到）**：`load_network` 同时存在于 pandapower / pypsa / surge。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 from types import SimpleNamespace
@@ -1354,7 +1354,7 @@ def test_real_collision_load_network_spans_three_servers():
     assert f.evidence["servers"] == ["pandapower", "pypsa", "surge"]
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1362,7 +1362,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/namespacing.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/namespacing.py`**
 
 ```python
 """契约 5：命名空间。
@@ -1447,7 +1447,7 @@ class NamespacingEvaluator:
         return findings
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1455,7 +1455,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（6 passed）
 
-- [ ] **Step 5: 在 `contracts/__init__.py` 末尾注册**
+- [x] **Step 5: 在 `contracts/__init__.py` 末尾注册**
 
 在 `gateway/src/powermcp_gateway/contracts/__init__.py` 追加：
 
@@ -1468,7 +1468,7 @@ REGISTRY.register(NamespacingEvaluator())
 __all__ += ["REGISTRY", "NamespacingEvaluator"]
 ```
 
-- [ ] **Step 6: 跑全部单元测试确认无回归**
+- [x] **Step 6: 跑全部单元测试确认无回归**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1476,7 +1476,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（全部）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -1571,7 +1571,7 @@ git commit -m "feat(gateway): 契约 5 命名空间求值器"
 > **不声称完全消除误报** —— 但每条 finding 都带 `evidence`，可下钻核对（P4）。
 
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 from types import SimpleNamespace
@@ -1815,7 +1815,7 @@ def test_section_without_tool_names_is_not_satisfied(tmp_path):
     assert findings[0].evidence["undocumented"] == ["a_tool"]
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -1823,7 +1823,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/doc_impl.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/doc_impl.py`**
 
 ```python
 r"""契约 2：文档-实现一致性。
@@ -2017,7 +2017,7 @@ class DocImplEvaluator:
         return findings
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2025,7 +2025,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（15 passed）
 
-- [ ] **Step 5: 注册并在真实数据上跑一次**
+- [x] **Step 5: 注册并在真实数据上跑一次**
 
 在 `contracts/__init__.py` 追加：
 
@@ -2044,7 +2044,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（全部）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -2074,7 +2074,7 @@ git commit -m "feat(gateway): 契约 2 文档-实现一致性求值器"
 
 > ⚠️ 引擎↔约定的键**一律小写 server id**。这条在 UI 规范 §4.5 里有明确记载：用显示名（`PyPSA`）会导致查表未命中、静默标错。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 import json
@@ -2149,7 +2149,7 @@ def test_real_tokens_file_loads_and_covers_nine_engines():
     assert c.identifier["andes"] == "unknown"
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2157,7 +2157,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/conventions.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/conventions.py`**
 
 ```python
 """契约 6 / 7：标识符与量纲约定。
@@ -2275,7 +2275,7 @@ class DimensionsEvaluator:
         )]
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2283,7 +2283,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（5 passed）
 
-- [ ] **Step 5: 注册**
+- [x] **Step 5: 注册**
 
 在 `contracts/__init__.py` 追加：
 
@@ -2295,7 +2295,7 @@ REGISTRY.register(DimensionsEvaluator())
 __all__ += ["DimensionsEvaluator", "IdentifiersEvaluator", "load_conventions"]
 ```
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -2320,7 +2320,7 @@ git commit -m "feat(gateway): 契约 6/7 约定表加载与自洽校验"
 > **它看不到的**：`net = pp.create_empty_network(); net.deepcopy()` —— 接收者 `net` 是局部变量。
 > **这正是已知缺陷 `net.deepcopy()` 的形态**，所以本求值器对这类代码会返回 `unknown / structural`，**绝不猜**。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 from powermcp_gateway.contracts.api_version import (
@@ -2391,7 +2391,7 @@ def test_syntax_error_is_structural_unknown(tmp_path):
     assert findings[0].reason == "structural"
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2399,7 +2399,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/api_version.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/api_version.py`**
 
 ```python
 """契约 1：API 版本（启发式 + 显式未知）。
@@ -2522,7 +2522,7 @@ class ApiVersionEvaluator:
         return findings
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2530,7 +2530,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（5 passed）
 
-- [ ] **Step 5: 注册**
+- [x] **Step 5: 注册**
 
 在 `contracts/__init__.py` 追加：
 
@@ -2541,7 +2541,7 @@ REGISTRY.register(ApiVersionEvaluator())
 __all__ += ["ApiVersionEvaluator"]
 ```
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -2568,7 +2568,7 @@ git commit -m "feat(gateway): 契约 1 API 版本（启发式 + 显式未知）"
 **要点**：缓存按 `(server 组合, 工具面指纹)` 而非时间 —— 工具面没变就不重算。
 求值器若抛异常，**必须降级为该契约的 `incident` 未知**，不得让整个报告失败。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 from types import SimpleNamespace
@@ -2702,7 +2702,7 @@ async def test_failed_server_without_hint_is_incident(monkeypatch):
     assert c8 and c8[0].reason == "incident"
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2710,7 +2710,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/engine.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/engine.py`**
 
 ```python
 """T0 契约求值编排与缓存。"""
@@ -2837,7 +2837,7 @@ async def evaluate_t0(
     return report
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2845,7 +2845,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（7 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -2871,7 +2871,7 @@ git commit -m "feat(gateway): T0 求值编排与缓存"
 > `/contracts/t0` 是 P1 的**核心端点** —— 前端的契约面板（子项目 5）从它取数据。
 > `summary.primary` 的取值集合必须与 UI 规范的 `SignatureKey` 一致（含 `incident`）。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 import pytest
@@ -2904,7 +2904,7 @@ async def test_servers_lists_open_source_nine(app):
         assert closed not in servers
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2912,7 +2912,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
-- [ ] **Step 3: 写 `gateway/src/powermcp_gateway/api.py`**
+- [x] **Step 3: 写 `gateway/src/powermcp_gateway/api.py`**
 
 ```python
 """网关 HTTP API。"""
@@ -2973,7 +2973,7 @@ def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
     return app
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -2981,7 +2981,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（2 passed）
 
-- [ ] **Step 5: 真实启动并手工核验一次**
+- [x] **Step 5: 真实启动并手工核验一次**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
@@ -3002,7 +3002,7 @@ Expected:
 > 因此**不要期待某个特定 server 出现在 `failures` 里** —— 那会随环境变化。
 > 失败路径的验收改用注入方式，见「完成标准」第 5 条。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
@@ -3010,7 +3010,7 @@ git add gateway/
 git commit -m "feat(gateway): HTTP API 暴露 T0 契约状态"
 ```
 
-- [ ] **Step 7: 写 `gateway/README.md` 并提交**
+- [x] **Step 7: 写 `gateway/README.md` 并提交**
 
 ```markdown
 # PowerMCP Gateway
