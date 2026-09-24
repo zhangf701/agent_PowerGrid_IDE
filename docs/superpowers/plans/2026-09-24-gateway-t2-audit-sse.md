@@ -2589,10 +2589,18 @@ git commit -m "feat(gateway): SSE 双通道 + 会话/代理端点"
 
 **Interfaces:**
 - Consumes: `call_with_contracts` / `_STORE` / `_AUDIT`（Task 6 Step 7 已全部提供）· `call_tool`（Task 5）
-- Produces: 无新符号 —— 本任务只补**测试与端到端验收**
+- Produces: ~~无新符号~~ → 实际新增 `_lifespan`（见 Step 3 的裁决偏离）
 
-> ★ 这是**把 T2 契约接到代理层**的那一步。契约 3 的违规由 `call_tool` 直接产生，
-> 这里负责把它包装成规范要求的 `ContractFinding` 形状并推送 —— 前端契约面板消费的正是这个形状。
+> ★ 这是**把 T2 契约接到代理层**的那一步。契约 3 的违规由 `call_tool` 直接产生。
+
+> ⛔ **规格勘误（2026-09-24 收尾审查）**：本节原文写「这里负责把它包装成规范要求的
+> `ContractFinding` 形状并推送 —— 前端契约面板消费的正是这个形状」。**Task 7 并未实现该包装**：
+> `call_tool` 发出的是裸事件 `{contract, server, tool, violations}`，且本任务没有改动它。
+> 这不是实现者的疏忽 —— 本节散文与 Task 5 的代码块互相矛盾，而**代码块被逐字执行了**；
+> 也没有任何测试断言该形状（`test_contract_violation_is_reported_as_finding` 只断言
+> `payload["contract"] == 3`，名字 overpromise）。
+> 该形状错配由收尾审查的 **I-1** 发现并修复（见文末「最终审查与修复」）：
+> 违规事件现已改为 `ContractFinding` 同形，可参与 `summarize()` 双轨汇总。
 
 - [ ] **Step 1: 写失败的测试（追加到 `test_api_t2.py`）**
 
@@ -2800,11 +2808,17 @@ cd d:/coding/powerMcp_Pskills/gateway
    —— **对照组不得误报**。（数字为 Task 3 的实测结果；原计划此处写「7 条 / andes×2」，
    是判据修正前的旧数 —— `andes.run_time_domain_simulation` 实际**读了**状态故不报。）
 2. **契约 3**：传 `linearized` 这类未声明参数时**被拒绝且未转发**（`ok=false`，事件流有 `contract_violation`）
-3. **SSE 双通道**：`event: evidence` 与 `event: telemetry` 分别出现；`id:` 单调递增
+3. **SSE 双通道**：`event:` 名按通道区分（`evidence` / `telemetry`）；`id:` 单调递增。
+   ⛔ **规格勘误（2026-09-24 收尾审查）**：原文写「分别出现」，读起来像已端到端观测到两条通道。
+   实测：**网关没有任何 telemetry 生产者** —— `Channel.TELEMETRY` 全仓库只出现在
+   `session.py` 的定义与 `DROPPABLE` 表里。因此该条**只在单元层可验证**
+   （`test_events.py` 用构造出的 telemetry 事件断言 `event: telemetry`）。
+   双通道的**物理分离**确实是实现好的；但"两个通道都有真实生产者"目前不成立。
 4. **审计**：`~/.powermcp/audit/audit-<sid>.ndjson` 只含 `evidence` 行；`replay()` 能还原。
    ⚠️ **前提是进程优雅退出** —— lifespan 的 shutdown 会 flush；被强杀时批量缓冲会丢
    （这是本任务修复的缺口，见 Task 7 Step 3 与 `test_shutdown_flushes_audit`）
 5. **无回归**：既有 134 个测试仍全过（子项目 2 的 76 个 + 子项目 3 的 Task 0–6）
+   —— 收尾审查的修复完成后为 **173 passed, 1 deselected**（见文末「最终审查与修复」）
 
 ---
 
@@ -2854,6 +2868,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 | 6 | `is_disconnected()` 在 `async for` 内 | **`asyncio.wait_for` + 超时轮询**（原写法空闲时永不执行） |
 | 6 | SSE 测试用 `c.stream` | **直接调 `route.endpoint()`**（`ASGITransport` 测不了无限流，实测挂死） |
 | 7 | 不改任何实现文件 | **加 lifespan shutdown 钩子**（审计在进程退出时会丢） |
+| 7 | Interfaces 称"包装成 `ContractFinding` 形状并推送" | **Task 7 未实现**（规格散文与 Task 5 代码块互相矛盾）→ 由**收尾审查 I-1** 补做（见文末） |
 
 ### 回填时同步的文档缺陷（7 类）
 
@@ -2869,11 +2884,76 @@ cd d:/coding/powerMcp_Pskills/gateway
 
 ### 遗留
 
-- ⚠️ **Task 7 未经独立子代理审查**（账户频率限制 429）。代码经控制器实测（8 passed / 138 passed / 端到端成功），
-  但**缺少独立审查者裁决** —— **下次会话应优先补做**。
-- ⚠️ **最终全分支审查尚未执行**。`.superpowers/sdd/progress.md` 已累积 Task 0–6 的 Minor 清单（共 30+ 条）待它裁决。
-- **opendss 无法经 mcp SDK 挂载**（唯一真阻塞，根因未定）。
-- 各任务的 Minor 待裁决：契约 4 ×6（含值比较大小写敏感致 `{"status":"SUCCESS"}` 漏检）、契约 3 ×3、
-  Task 5 ×6、Task 6 ×6。
-- `session.py` 的 `_handles` 无 close 路径（T1-M7）；`gen()` 的全部行为仍零测试（T6-M2，
-  `ASGITransport` 测不了无限流）。
+- ✅ **Task 7 的独立审查已补做**（2026-09-24 收尾，报告 `.superpowers/sdd/task-7-review.md`）。
+- ✅ **最终全分支审查已执行**（base `5111d47`，报告 `.superpowers/sdd/final-branch-review.md`）：
+  4 条 Important + 台账 35 条 Minor 已逐条分诊并处置。
+- **opendss 无法经 mcp SDK 挂载**（唯一真阻塞，根因未定）——**仍未解决**。
+- ✅ 已修：契约 4 值比较大小写敏感（`{"status":"SUCCESS"}` 假阴性）与 `1 == True` 假阳性；
+  ✅ 已修：`_handles` 无 close 路径（T1-M7）；✅ 已修：`gen()` 全部行为零测试（T6-M2）。
+- 台账判为「延后接受 / 不予处理」的 15 条 Minor **未改动**（多为纯假设问题或已有明确触发条件），
+  触发条件见修订后的台账 `.superpowers/sdd/progress.md`。
+
+---
+
+## 最终审查与修复（2026-09-24 收尾）
+
+> 本节由**收尾会话**追加。上一节「执行记录」记录的是 Task 0–7 交付当时的状态；
+> 本节记录**其后的两轮审查与全部修复**。
+
+### 一、补做的两轮审查
+
+| 审查 | 范围 | 结论 |
+|---|---|---|
+| **Task 7 补审** | `5b786e3..c9bc5e7` | 生产代码正确（lifespan 接线无误、端到端确实生效）。**1 条 Critical 属"验证缺口"**：`test_shutdown_flushes_audit` 手搓 `api_mod._lifespan(app)` 绕过 FastAPI 生命周期，而 `_lifespan` 不使用 `app` —— 删掉 `lifespan=_lifespan` 该测试**仍全绿**（变异探针 1A）。即 Task 7 的唯一生产改动**当时没有真正的回归护栏** |
+| **最终全分支审查** | `5111d47..c9bc5e7`（40 commits） | **4 条 Important** + 台账 35 条 Minor 逐条分诊（**成立 33 / 不成立 2 / 已修复 0**）+ 台账外新发现 6 条 + **5 条变异探针**实测 |
+
+### 二、4 条 Important 与处置
+
+| # | 问题 | 处置 |
+|---|---|---|
+| **I-1** | 契约 3 违规事件的 payload 不是 `ContractFinding` 形状（缺 `state`/`reason`/`subject`/`detail`/`evidence`）→ 无法参与 `summarize()` 双轨汇总 → **主徽标永远不会因契约 3 变红**（fail-open） | ✅ 改为用 `ContractFinding` **构造**再 `asdict`（形状由模型保证，`__post_init__` 不变量生效）；同时区分两个 kind：`contract_violation`（真违规）/ `contract_unknown`（无法判定） |
+| **I-2** | 慢（未断开）SSE 客户端 → 该会话**所有** EVIDENCE 发布被拒 → 事件**既不进历史也不落审计**（由台账 T0-M5 的"设计取舍"升级为**可达缺陷**） | ✅ **根治**：`EventBus` 解耦「持久记录」与「订阅投递」——记录永远先发生、不再因满队列拒绝发布；滞后订阅者被标记并计数（`lagged_queues` 现状量 / `lagged_deliveries` 累计被跳过条数）；`gen()` 检测到自身滞后即主动结束响应，由历史全量重放兜底 |
+| **I-3** | `validate_args` 写在 `try` 之外，畸形 schema 的 `TypeError` 逃出 → **HTTP 500**（= 台账 T4-M3 + T5-M6 的**同一条**，因拆记在两个 Task 里而长期未修） | ✅ `_accepted_types` 对畸形输入安全返回 `()`；`call_tool` 内另加 `try` 兜底，异常降级为 `contract_unknown`（**放行转发但不静默**——畸形 schema 不是"调用有问题"的证据，拒发会打断合法调用；但也不能静默，故如实报 `unknown/structural`） |
+| **I-4** | 契约 4 值比较大小写敏感 → `{"status":"SUCCESS"}` **假阴性**（假绿灯）；同处 `1 == True` → 假阳性 | ✅ 大小写归一 + `is True`。**重测基线不变**：仍 **6 条** risky（`pypsa`×2 / `andes`×1 / `egret`×3）—— 当前源码无全大写写法、也未用数值 `1` 作状态值，故修的是**潜在**缺陷 |
+
+### 三、护栏补强（本周期最重要的方法教训）
+
+审查的变异探针揭示：本周期的高价值修复**集中在错误路径，而恰恰错误路径的测试覆盖最差** ——
+
+| 探针 | 变异 | 修复前的实测 |
+|---|---|---|
+| **A** | `_dispatch` 删掉 `is_error` 回传 | `test_proxy.py` **仍 7 passed** —— 本周期最高价值修复**没有护栏** |
+| **C** | 同时破坏 `gen()` 的 seq 去重与 `finally: unsubscribe` | **仍 10 passed** —— 本周期修的"空闲断开轮询"等核心错误路径零覆盖 |
+
+已补护栏：`_dispatch` 的 `is_error` 与"超时补上下文"（用 monkeypatch **传输层**的方式真跑 `_dispatch`，而非绕过它）、`gen()` 的 7 条行为测试、`lifespan` 改走 `app.router.lifespan_context`（**真实接线**，并以"删掉 `lifespan=` 必须变红"反向验证）、`REGISTRY` 契约集合断言、路由级 6 条端到端测试。
+
+> **约定（下个周期沿用）**：修复错误路径必须与「钉住该错误路径的测试」**成对交付**，
+> 且各自用变异探针自证 —— **把修复改回旧行为，那条测试必须变红**。
+
+### 四、修复提交
+
+| 提交 | 内容 |
+|---|---|
+| `68fbe22` | **批次 1**：I-1 / I-2 / I-3 / I-4 + 审计三修（读侧不变量复核、`close()` 释放 fd、严格 LF）+ 全部护栏 + 死代码清理（`events.sse_stream`、3 处死 import、`Last-Event-ID` 过度承诺） |
+| `4732694` | **批次 2**：HTTP 层错误映射（请求体缺字段 500→**400**；配置失败→**503**，与 `/contracts/t0` 同语义）+ 路由端到端覆盖 + `is_error` 的错误消息带上工具的**真实输出** |
+
+测试：**138 → 173 passed, 1 deselected**。`PowerMCP/` 仍 **0 行改动**。
+
+### 五、台账 Minor 的分诊结论
+
+- **当期修（已修）**：`T0-M3`（拒绝路径可诊断性 —— 随 I-2 一并消解）、`T0-M7`、`T1-M4`、`T1-M7`、`T1-M8`、`T3-M2`+`T3-M3`、`T4-M1`、`T6-M2`、`T6-M3` + 3 处死 import。
+- **延后接受 / 不予处理（15 条，未改动）**：`T0-M4`（**描述有误**：该 KeyError 在状态变更**之前**触发，实为安全位置，非台账所称"最坏位置"）、`T0-M6`（经逐行复核**不成立**）、`T1-M3`、`T1-M5`、`T1-M6`、`T2-M1` 之外的清理项、`T3-M4`、`T3-M5`、`T3-M6`、`T4-M2`、`T5-M4`、`T6-M1`、`T6-M5`、`T6-M6` —— 多为纯假设问题或已有文档化触发条件。
+
+### 六、残留（仍开放，需后续处理）
+
+1. **opendss 无法经 mcp SDK 挂载** —— 唯一真阻塞，根因未定（[立项文档](2026-09-24-opendss-sdk-mount-defect.md)）。
+2. **`_emit` 的"先 publish、后 append 审计"顺序**：若 `bus.publish` 成功而 `audit.append` 失败（磁盘/权限），
+   事件在**内存历史**里有、**NDJSON 持久审计**里没有（只留一条 warning）。可达性取决于磁盘故障。
+   **尚未修**，已在台账登记。
+3. `T6-M5`（每次 `/tools/call` 都重新拉起 MCP server 进程）/ `T6-M6`（`_STORE` 无淘汰）
+   —— 留待**子项目 4（进程监管）**。
+4. **前端契约形状（交子项目 5）**：契约 3 在事件流上有**两个** kind ——
+   `contract_violation`（判定为违规，`state="violated"`）与 `contract_unknown`（无法判定，
+   `state="unknown"`/`reason="structural"`）；两者 payload **同为 `ContractFinding` 同形**。
+   **子项目 5 的 Zod 入站边界须按 `kind` 分派、按 `state` 汇入双轨汇总**，不可混用。
+5. **`Channel.TELEMETRY` 无生产者**（见完成标准 ③ 的勘误）—— 双通道分离已实现，但第二个通道尚未被使用。
