@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
@@ -18,6 +18,7 @@ from mcp.client.stdio import stdio_client
 
 from .audit import AuditLog
 from .config import GatewayConfig
+from .contracts.model import ContractFinding
 from .contracts.params import ArgViolation, validate_args
 from .session import Channel, EventBus
 
@@ -112,6 +113,27 @@ def _emit(bus: EventBus | None, audit: AuditLog | None, session_id: str | None,
         )
 
 
+def _emit_finding(
+    bus: EventBus | None,
+    audit: AuditLog | None,
+    session_id: str | None,
+    kind: str,
+    finding: ContractFinding,
+) -> None:
+    """把一个 `ContractFinding` 以事件 payload 形式发出。
+
+    ★ payload 必须与 `/contracts/t0` 的 finding **同形**（`dataclasses.asdict`）：
+      前端契约面板按同一套形状解析；且 `ContractFinding.state` 是 `summarize()`
+      的输入 —— 缺了 `state` 的裸字典无法参与双轨汇总，主徽标永远不会因它变红
+      （又是静默 fail-open）。
+
+    ★ 用 `ContractFinding(...)` **构造**而非手拼字典，形状与不变式由模型保证：
+      `__post_init__` 会校验契约编号、`unknown ⇔ reason` 的配对，畸形 payload
+      在构造期就炸，不会流进事件流。
+    """
+    _emit(bus, audit, session_id, kind, asdict(finding))
+
+
 async def call_tool(
     cfg: GatewayConfig,
     server: str,
@@ -123,13 +145,41 @@ async def call_tool(
     audit: AuditLog | None = None,
     session_id: str | None = None,
 ) -> CallOutcome:
-    violations = validate_args(schema, args)
+    """转发一次工具调用，并在转发**之前**用声明的 schema 校验参数（契约 3）。
+
+    ★ 校验失效时的取舍（**显式设计决定**）：`validate_args` 自身若因 schema 畸形
+      而抛异常，**不 fail-closed 拒发** —— 畸形 schema 不是"这次调用有问题"的证据，
+      拒发会打断一个本来合法的调用。但也绝不静默：发一条
+      `state="unknown" / reason="structural"` 的 finding，把"看不到"如实报出来，
+      与契约 4 的 `checked == 0 → unknown/structural` 同一口径（UI 规范 P5 禁止
+      静默 fail-open）。校验层是唯一能阻止坏调用的地方，不该对坏输入裸奔。
+    """
+    try:
+        violations = validate_args(schema, args)
+    except Exception as exc:
+        logger.warning("参数校验器无法判定（schema 畸形？）", exc_info=True)
+        # 注意 kind：**无法判定 ≠ 存在违规** —— 用独立的 `contract_unknown`，
+        # 与真违规的 `contract_violation` 区分。理由：任何按 kind 过滤的消费者
+        # （前端按 kind 分派、完成标准按 kind 验收）若把 unknown 当违规，就是**假警报**；
+        # 靠消费者记得读 state 才不出错，正是本项目反复否掉的"静默兜底"。
+        _emit_finding(bus, audit, session_id, "contract_unknown", ContractFinding(
+            contract=3, state="unknown", reason="structural", subject=server,
+            detail=f"参数校验器无法判定：{type(exc).__name__}: {exc}"[:200],
+            evidence={"server": server, "tool": tool, "method": "proxy-validate"},
+        ))
+        violations = ()
 
     if violations:
-        _emit(bus, audit, session_id, "contract_violation", {
-            "contract": 3, "server": server, "tool": tool,
-            "violations": [v.__dict__ for v in violations],
-        })
+        _emit_finding(bus, audit, session_id, "contract_violation", ContractFinding(
+            contract=3, state="violated", reason=None, subject=server,
+            detail="; ".join(v.detail for v in violations),
+            evidence={
+                "server": server,
+                "tool": tool,
+                "violations": [asdict(v) for v in violations],
+                "method": "proxy-validate",
+            },
+        ))
         return CallOutcome(
             ok=False, server=server, tool=tool, violations=violations,
             error="; ".join(v.detail for v in violations),

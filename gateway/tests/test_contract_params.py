@@ -53,6 +53,30 @@ def test_anyof_with_null_accepts_none():
     assert validate_args(schema, {"opts": None}) == ()
 
 
-def test_violations_are_sorted_and_deduped():
+def test_malformed_schema_values_do_not_raise():
+    """★ 畸形 schema 不得让校验器抛异常 —— 异常会逃出 call_tool 变成 HTTP 500。
+
+    原实现 `tuple(t)`（对 `type=5`）/ `tuple(x["type"] ...)`（对 `anyOf=5`）直接崩。
+    修正后安全退化为 `()`，与「非 dict 的 prop 跳过」的 fail-open 立场一致。
+    """
+    for prop in ({"type": 5}, {"anyOf": 5}, {"type": ["str", 5]},
+                 {"type": None}, {"anyOf": None}):
+        out = validate_args({"properties": {"x": prop}}, {"x": 1})
+        assert isinstance(out, tuple), f"prop={prop} 应返回元组而非抛异常"
+
+
+def test_malformed_type_list_keeps_only_strings():
+    """list 型 `type` 里的非 str 元素被丢弃、只留 str（取舍见 `_accepted_types` docstring）。"""
+    schema = {"properties": {"x": {"type": ["string", 5]}}}
+    assert validate_args(schema, {"x": "ok"}) == ()
+    assert [v.kind for v in validate_args(schema, {"x": 1})] == ["wrong_type"]
+
+
+def test_violations_are_sorted():
+    """违规按参数名排序。
+
+    注：名字原为 `..._and_deduped` —— 但「去重」不可达（输入 dict 的键天然唯一，
+    unknown_arg 分支也用了 `set()`），故改名如实描述被测行为（只改名字，不改行为）。
+    """
     v = validate_args(SCHEMA, {"network_name": "n", "zzz": 1, "aaa": 2})
     assert [x.arg for x in v] == ["aaa", "zzz"]

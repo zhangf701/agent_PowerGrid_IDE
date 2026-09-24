@@ -49,11 +49,37 @@ def _type_ok(expected: str, value: Any) -> bool:
 
 
 def _accepted_types(prop: dict) -> tuple[str, ...]:
+    """提取 prop 声明的可接受 JSON 类型名；**对畸形输入安全退化为 `()`**。
+
+    与 `validate_args` 对「非 dict 的 prop」的 fail-open 立场一致（第 84-87 行）：
+    校验器只做它看得懂的事，看不懂就不下结论，**绝不因 schema 畸形而抛异常**。
+
+    取舍（显式记录）：
+      - `type` 是 str          → `(t,)`
+      - `type` 是 list/tuple   → 只保留其中**是 str** 的元素（丢弃非 str 项）
+      - `type` 其它类型（int/dict/None…）→ `()`
+      - `anyOf` 是 list/tuple  → 取其中 dict 元素且 `type` 为 str 的项的 type
+      - `anyOf` 其它类型       → `()`
+      - 二者都缺失            → 维持既有语义 `()`
+
+    原实现对 `type=5`、`anyOf=5` 会 `TypeError: 'int' object is not iterable`
+    （`tuple(5)`），异常会逃出 `proxy.call_tool` 变成 HTTP 500。
+    """
     if "type" in prop:
         t = prop["type"]
-        return (t,) if isinstance(t, str) else tuple(t)
+        if isinstance(t, str):
+            return (t,)
+        if isinstance(t, (list, tuple)):
+            return tuple(x for x in t if isinstance(x, str))
+        return ()
     if "anyOf" in prop:
-        return tuple(x["type"] for x in prop["anyOf"] if isinstance(x, dict) and "type" in x)
+        a = prop["anyOf"]
+        if isinstance(a, (list, tuple)):
+            return tuple(
+                x["type"] for x in a
+                if isinstance(x, dict) and isinstance(x.get("type"), str)
+            )
+        return ()
     return ()
 
 
@@ -99,10 +125,19 @@ def validate_args(schema: dict, args: dict) -> tuple[ArgViolation, ...]:
 # 契约 3 没有"周期性求值器"。
 #
 # 与契约 1/2/4/5/6/7 不同，契约 3 是**事件驱动**的：它的 finding 产生在
-# `proxy.call_tool()` 转发校验那一刻，以 `contract_violation` 事件的形式
-# 进入会话总线（通道 A）与 NDJSON 审计。
+# `proxy.call_tool()` 转发校验那一刻，以事件的形式进入会话总线（通道 A）
+# 与 NDJSON 审计。
+#
+# ★ 事件流上契约 3 有**两个 kind**（都是 `ContractFinding` 同形 payload —— 见 I-1）：
+#     - `contract_violation`：**判定为违规**（`state="violated"`）—— 校验器据声明
+#       schema 判定这次调用确实有问题（如 `linearized` 未知参数），调用被拒发。
+#     - `contract_unknown`：**无法判定**（`state="unknown"` / `reason="structural"`）
+#       —— 校验器自身对畸形 schema 无法下结论，调用**照常转发**，但如实报告"看不到"。
+#   前端按 `kind` 分派、按 `state` 汇入双轨汇总（§UI 规范 v1.2 的 unknown 两分）。
+#   两者**不可混用**：把"无法判定"塞进 `contract_violation` 会让按 kind 过滤的消费者
+#   产生**假警报** —— 与"假绿灯"是同一枚硬币的另一面。
 #
 # 因此本模块**不定义 Evaluator、不注册进 REGISTRY** —— 那是刻意的：
 # 一个 `evaluate() -> []` 的求值器只会是死代码，还会误导人以为契约 3 是周期求值的。
-# 前端契约面板消费的是事件流里的 `contract_violation`，不是 T0 报告。
+# 前端契约面板消费的是事件流里的这两个 kind，不是 T0 报告。
 # ───────────────────────────────────────────────────────────────────────────

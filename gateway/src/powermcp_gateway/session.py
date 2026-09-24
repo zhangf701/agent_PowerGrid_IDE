@@ -4,16 +4,39 @@
   审计一旦可丢，审计就不可信 —— 契约面板全部结论随之失效。
 ★ 单调序列号（方案 §11.7-③）：多引擎结果到达顺序不确定，必须靠序列号排序，
   否则一致性视图会**静默给出错误的一致性结论**。
+
+★ 背压不变式（I-2 根治，**有意替换旧语义**）：
+  旧实现是「全有或全无」—— 任一订阅者队列满即 `raise RuntimeError` **拒绝发布**，
+  理由是"宁可拒绝发布也绝不丢证据"。但该取舍有一个被审查实测确证的致命后果：
+  一个**连着但不读**的 SSE 客户端会让队列填满 → 此后该会话所有 EVIDENCE 发布被拒
+  → 事件既不进总线历史、也不落 NDJSON 审计（只有一条没人看的 warning），
+  直接击穿「EVIDENCE 不可丢」这一子项目 3 的核心前提。
+
+  新不变式：**持久记录（历史 + NDJSON 审计）永不因旁观者阻塞而丢失**。
+  `publish()` **先记录、后扇出**：`_seq` 递增与 `_events.append` 在任何扇出之前完成，
+  因此发布**不再因满队列而失败**。扇出改为**尽力而为**：
+    - 可丢通道（`DROPPABLE` 为真，如 TELEMETRY）：满则跳过，**每条**计入 `dropped_telemetry`；
+    - 不可丢通道（EVIDENCE）：满则**不报错**。每当某条 EVIDENCE **未能投递到某订阅者**
+      （该队列满），就把 `lagged_deliveries` **累计 +1**；该队列**首次**判满时加入
+      `_lagged`（现状量，供 `is_lagged()` 判定）并 `logger.warning` **一次**。
+      ⚠️ `lagged_deliveries` 是**丢失量级**（累计条数）而非「每队列计 1」——
+      否则一个卡死客户端丢了一万条，计数仍停在 1，看不出降级规模。
+  为什么这样仍然"一条证据都不丢"：一个停滞的订阅者**只影响它自己的投递连续性**，
+  它会被标记为滞后、由其消费者（SSE 端点）主动结束连接，重连后靠历史全量重放恢复
+  —— 端到端证据因此**一条都不丢**（记录从未被丢弃，只是投递延后/重建）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import enum
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 
 class Channel(enum.Enum):
@@ -53,36 +76,81 @@ class EventBus:
         self._subscribers: list[asyncio.Queue[Event | None]] = []
         self._seq = 0
         self._closed = False
+        #: 已滞后的订阅者队列（**现状量**：当前处于滞后态的队列集合）。
+        self._lagged: set[asyncio.Queue[Event | None]] = set()
+        #: 累计被跳过、**未能投递到订阅者**的 EVIDENCE 条数（**累计量**：每次满即 +1）。
+        self._lagged_deliveries = 0
+        #: 累计丢弃遥测事件数（**累计量**：可丢通道每遇满队列即 +1）。
+        self._dropped_telemetry = 0
 
     def publish(self, channel: Channel, kind: str, payload: dict) -> Event:
+        """发布一条事件。
+
+        ★ 先记录、后扇出（见模块 docstring 的背压不变式）：
+          1. `_seq += 1` 与 `_events.append(event)` **无条件先发生** ——
+             持久记录不依赖任何订阅者，因此**不会因满队列而失败**；
+          2. 之后才尽力扇出。扇出**绝不抛异常**：
+             - 可丢通道满 → 跳过并计 `dropped_telemetry`；
+             - 不可丢通道满 → `lagged_deliveries` 累计 +1；该队列**首次**判满时
+               标记滞后并告警**一次**（此后不再刷屏，但计数继续累加）。
+
+        只有向**已关闭**的总线发布才 `raise RuntimeError`（这是编程错误，保留）。
+        """
         if self._closed:
             raise RuntimeError("EventBus 已关闭，不能再发布事件")
 
-        # ★ 证据通道：**先全量校验，再动任何状态**（审查发现）
-        #   初版是在投递循环里 raise —— 那时 _events 已追加、部分订阅者已收到，
-        #   发布方重试又会 _seq += 1 再追加一条 → 不可丢的审计流里出现重复记录。
-        #   现在：拒绝时不消耗 seq、不追加历史、不投递给任何人 —— 全有或全无。
-        if not DROPPABLE[channel]:
-            full = [q for q in self._subscribers if q.full()]
-            if full:
-                raise RuntimeError(
-                    f"证据通道有 {len(full)} 个订阅者队列已满，拒绝发布 "
-                    f"{kind}(channel={channel.value}) —— 证据不可丢，不做半投递"
-                )
-
+        # ① 持久记录 —— 先于任何扇出，且不依赖订阅者。
         self._seq += 1
         event = Event(seq=self._seq, channel=channel, kind=kind, payload=payload, at=_now())
         self._events.append(event)
 
+        # ② 尽力扇出。未注册的通道按「不可丢」处理（保守）—— 同时消除硬下标 KeyError。
+        droppable = DROPPABLE.get(channel, False)
         for q in self._subscribers:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
-                if not DROPPABLE[channel]:
-                    # 不可达：单线程 asyncio 下，上面的预校验与这里之间没有 await，
-                    # 队列不可能被填满。保留 raise 作为断言，而非静默丢弃证据。
-                    raise AssertionError("预校验通过后仍遇到满队列 —— 不应发生")
+                if droppable:
+                    self._dropped_telemetry += 1
+                else:
+                    # 不可丢通道：不报错。**累计**记录「这一条没能投递给该订阅者」。
+                    self._lagged_deliveries += 1
+                    if q not in self._lagged:
+                        # 首次判满：标记滞后（现状量）+ 告警**一次**（噪声控制）。
+                        # 计数与告警是两件事 —— 此后不再刷屏，但计数继续累加。
+                        self._lagged.add(q)
+                        logger.warning(
+                            "订阅者队列已满，标记为滞后（channel=%s, kind=%s, seq=%d）—— "
+                            "持久记录不受影响；该订阅者应由其消费者结束连接并按历史全量重放",
+                            channel.value, kind, event.seq,
+                        )
         return event
+
+    def is_lagged(self, q: asyncio.Queue[Event | None]) -> bool:
+        """该订阅者队列是否已滞后（曾因不可丢通道满而被跳过投递）。
+
+        供消费者（SSE 端点）主动结束连接、触发重连后按历史全量重放。
+        """
+        return q in self._lagged
+
+    def stats(self) -> dict:
+        """只读观测快照 —— 让"证据流已降级"可被诊断，而非只有一条 warning。
+
+        逐键语义（**现状量 vs 累计量**必须分清，否则会误读降级规模）：
+          - `queues`            **现状量**：当前订阅者数；
+          - `events`            **现状量**：持久历史条数；
+          - `lagged_queues`     **现状量**：当前处于滞后态的订阅者队列数；
+          - `lagged_deliveries` **累计量**：迄今被跳过、未能投递给订阅者的 EVIDENCE 条数
+                                （每次因某队列满而投递失败即 +1，含首次判满那条）；
+          - `dropped_telemetry` **累计量**：迄今被丢弃的 TELEMETRY 条数。
+        """
+        return {
+            "queues": len(self._subscribers),
+            "events": len(self._events),
+            "lagged_queues": len(self._lagged),
+            "lagged_deliveries": self._lagged_deliveries,
+            "dropped_telemetry": self._dropped_telemetry,
+        }
 
     async def subscribe(self) -> AsyncIterator[Event]:
         """订阅事件流。
@@ -123,11 +191,16 @@ class EventBus:
         return q
 
     def unsubscribe(self, q: asyncio.Queue[Event | None]) -> None:
-        """注销 `subscribe_queue()` 返回的队列。**幂等**。"""
+        """注销 `subscribe_queue()` 返回的队列。**幂等**。
+
+        同时清除其滞后标记 —— 否则已注销的队列会作为悬垂引用留在 `_lagged` 中，
+        既泄漏内存，又让 `stats()["lagged_queues"]` 长期虚高。
+        """
         try:
             self._subscribers.remove(q)
         except ValueError:
             pass
+        self._lagged.discard(q)
 
     def subscriber_count(self) -> int:
         return len(self._subscribers)
@@ -144,7 +217,7 @@ class EventBus:
           这一条同时消掉了两种错误做法：
           - 初版 `except QueueFull: pass`（吞掉哨兵 → 队列满的订阅者永久挂起）；
           - 以及「驱逐队首腾位」（在拆除路径上静默丢掉一条可能是 EVIDENCE 的事件，
-            与 `publish()`「宁可拒绝发布也绝不丢证据」自相矛盾）。
+            与 `publish()`「持久记录永不丢弃」的不变式自相矛盾）。
 
         **幂等**：重复调用无副作用。
         """

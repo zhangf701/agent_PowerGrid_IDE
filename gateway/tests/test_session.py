@@ -88,7 +88,7 @@ def test_session_store_unknown_id_raises():
         SessionStore().get("nope")
 
 
-# ── 以下三条为审查发现的回归测试 ──────────────────────────────────────────
+# ── 以下 7 条为审查发现的回归测试 ──────────────────────────────────────────
 
 async def test_close_terminates_subscriber_with_full_queue():
     """★ 回归：`close()` 必须让队列已满的订阅者也退出。
@@ -113,18 +113,84 @@ async def test_close_terminates_subscriber_with_full_queue():
     assert bus.subscriber_count() == 0
 
 
-def test_publish_evidence_refuses_when_a_subscriber_queue_is_full():
-    """★ 回归：证据通道不做半投递 —— 队列满时整体拒绝，且拒绝不留痕。"""
+def test_publish_evidence_keeps_record_when_a_subscriber_queue_is_full():
+    """★ 钉住 I-2 的**新**不变式：不可丢通道遇到满队列时**不拒绝发布**。
+
+    本条**替代**旧的 `test_publish_evidence_refuses_when_a_subscriber_queue_is_full` ——
+    旧不变式「任一订阅者队列满即拒绝发布（全有或全无）」**已被有意替换**
+    （见 `session.py` 模块 docstring 的背压不变式）。替换理由：一个「连着但不读」的
+    旁观客户端曾能让整个会话的 EVIDENCE 发布被拒 → 证据既不进历史、也不落审计。
+    新不变式是「持久记录永不因旁观者阻塞而丢失」：发布**不抛异常**，事件照常入历史，
+    该满队列被标记为**滞后**，其余未满订阅者不受牵连。
+    """
+    bus = EventBus()
+
+    full_q: asyncio.Queue = asyncio.Queue(maxsize=1)
+    full_q.put_nowait("filler")               # 把该订阅者队列占满
+    bus._subscribers.append(full_q)
+
+    live_q = bus.subscribe_queue()            # 一个未满的正常订阅者（旁路）
+
+    # ③ publish 不得抛异常（旧实现会在此处 raise RuntimeError）
+    event = bus.publish(Channel.EVIDENCE, "critical", {})
+
+    # ① 事件仍进入持久历史，seq 正常递增
+    assert event.seq == 1
+    assert [e.seq for e in bus.events()] == [1]
+
+    # ② 满队列被标记为滞后，stats 如实反映
+    assert bus.is_lagged(full_q) is True
+    assert bus.stats()["lagged_queues"] == 1
+    assert bus.stats()["lagged_deliveries"] == 1
+
+    # ④ 未满的订阅者不被牵连，仍正常收到该事件
+    assert live_q.get_nowait().seq == 1
+
+    # B1：`lagged_deliveries` 是**累计被跳过条数** —— 每条未能投递到 full_q 的都 +1；
+    #     `lagged_queues`（现状量）仍为 1，且 warning 只发一次（计数与噪声控制分离）。
+    event2 = bus.publish(Channel.EVIDENCE, "critical2", {})
+    assert event2.seq == 2
+    assert [e.seq for e in bus.events()] == [1, 2]
+    assert bus.stats()["lagged_queues"] == 1
+    assert bus.stats()["lagged_deliveries"] == 2
+    assert live_q.get_nowait().seq == 2          # 旁路仍两条都收到
+
+    bus.unsubscribe(live_q)
+
+
+def test_lagged_deliveries_counts_every_skipped_evidence_delivery():
+    """★ B1：`lagged_deliveries` 是**累计被跳过条数**，不是「每队列首次计 1」。
+
+    后者下，一个卡死客户端丢了一万条、计数仍停在 1 —— 看不出降级规模，
+    I-2「让证据流降级可观测」的意义随之失效。`lagged_queues` 是现状量，
+    `lagged_deliveries` 是累计量，二者互补。
+    """
     bus = EventBus()
     q: asyncio.Queue = asyncio.Queue(maxsize=1)
-    q.put_nowait("filler")                    # 把队列占满
+    q.put_nowait("filler")                       # 占满
     bus._subscribers.append(q)
 
-    with pytest.raises(RuntimeError, match="证据不可丢"):
-        bus.publish(Channel.EVIDENCE, "critical", {})
+    for i in range(5):
+        bus.publish(Channel.EVIDENCE, "e", {"i": i})
 
-    assert bus.events() == ()                 # 被拒绝的事件没有进入历史
-    assert bus.publish(Channel.TELEMETRY, "noise", {}).seq == 1   # seq 也未被消耗
+    assert len(bus.events()) == 5                # 持久记录 5 条，一条不丢
+    assert bus.stats()["lagged_queues"] == 1     # 现状量
+    assert bus.stats()["lagged_deliveries"] == 5  # 累计量：5 条都没能投递到 q
+
+
+def test_dropped_telemetry_counts_every_dropped_event():
+    """可丢通道满队列 —— **每条**丢弃都计入 `dropped_telemetry`（累计量）。"""
+    bus = EventBus()
+    q: asyncio.Queue = asyncio.Queue(maxsize=1)
+    q.put_nowait("filler")
+    bus._subscribers.append(q)
+
+    for i in range(3):
+        bus.publish(Channel.TELEMETRY, "noise", {"i": i})
+
+    assert bus.stats()["dropped_telemetry"] == 3
+    assert bus.stats()["lagged_queues"] == 0     # 可丢通道不产生滞后
+    assert len(bus.events()) == 3
 
 
 def test_publish_after_close_raises():

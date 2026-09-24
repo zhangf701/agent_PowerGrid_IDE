@@ -138,3 +138,113 @@ def test_replay_preserves_events_containing_unicode_line_separators(tmp_path):
     events = log.replay("s1")
     assert [e.seq for e in events] == [1, 2, 3], "含 U+2028/2029/0085 的完整事件被丢弃"
     assert events[0].payload["text"] == "a\u2028b"
+
+
+# ── 以下为本轮修复（T1-M4 / T1-M7 / T1-M8）的回归测试 ────────────────────
+
+def _write_raw(log: AuditLog, session_id: str, raw: str) -> None:
+    """绕过 append，向审计文件**原始**追加一行（模拟外部/损坏写入）。"""
+    with log.path_for(session_id).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(raw + "\n")
+
+
+def test_replay_skips_payload_that_is_not_a_dict(tmp_path):
+    """★ 回归（T1-M4）：读侧必须**复核不变量**，不得把 falsy payload 静默归一成 {}。
+
+    旧写法 `d.get("payload") or {}`（`audit.py`）把 0 / "" / [] / False 全部吞成 `{}`
+    —— 即审计证据被**静默改写**。审计证据的可信度是这一层的全部意义，
+    "静默归一"不可接受：这样的行必须按**损坏行**跳过并告警。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))                        # 正常行
+    log.flush()
+    _write_raw(log, "s1", json.dumps(
+        {"seq": 2, "channel": "evidence", "kind": "x", "payload": 0,
+         "at": "2026-09-24T00:00:00Z"}))
+    _write_raw(log, "s1", json.dumps(
+        {"seq": 3, "channel": "evidence", "kind": "x", "payload": [],
+         "at": "2026-09-24T00:00:00Z"}))
+
+    events = log.replay("s1")
+    assert [e.seq for e in events] == [1], "payload=0 / [] 的行被读回，未按损坏行跳过"
+    assert all(e.payload != {} for e in events), "坏行被静默归一成了 payload={}"
+
+
+def test_replay_skips_seq_that_is_not_an_int(tmp_path):
+    """★ 回归（T1-M4）：`seq` 必须是 int 且非 bool —— 字符串 seq 按损坏行跳过。"""
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.flush()
+    _write_raw(log, "s1", json.dumps(
+        {"seq": "3", "channel": "evidence", "kind": "x", "payload": {},
+         "at": "2026-09-24T00:00:00Z"}))
+    _write_raw(log, "s1", json.dumps(
+        {"seq": True, "channel": "evidence", "kind": "x", "payload": {},
+         "at": "2026-09-24T00:00:00Z"}))          # bool 也是 int —— 必须排除
+
+    assert [e.seq for e in log.replay("s1")] == [1]
+
+
+def test_close_actually_closes_and_flushes(tmp_path):
+    """★ 回归（T1-M7）：`close()` 必须真的关闭句柄 + flush + **幂等**。
+
+    旧实现只有 `open("a")`、永不 close —— 长生命周期的网关每会话泄漏一个 fd；
+    Windows 上还持续占住文件（阻碍外部工具读取/轮转）。close 必须先 flush，
+    否则缓冲区内的证据会丢。
+
+    ⚠️ 区分力：**必须断言写入句柄 `.closed`** —— 若只断言 `replay()` 能读到内容，
+    则一个「no-op close」也会通过（`replay()` 内部自己会 `flush()`），测试将毫无区分力。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    fh = log._handle("s1")                           # 写入句柄（close 前应打开）
+    assert not fh.closed
+
+    log.close()
+    assert fh.closed, "close() 未真正关闭文件句柄（fd 泄漏）"
+
+    log.close()                                      # 第二次应是 no-op，不得抛
+    assert [e.seq for e in log.replay("s1")] == [1]  # close 生效（flush 已落盘）
+
+
+def test_append_after_close_reopens(tmp_path):
+    """★ 回归（T1-M7）：close() 之后再 append 不得崩 —— 应重新打开文件。"""
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.close()
+    log.append("s1", _ev(2))                         # 重新打开，不得抛
+    assert [e.seq for e in log.replay("s1")] == [1, 2]
+
+
+def test_close_closes_handles_even_if_flush_raises(tmp_path, monkeypatch):
+    """★ B2：即使 flush 抛异常，close() **仍必须关闭句柄**（释放 fd 是第一职责）。
+
+    若 flush 失败就把句柄一起留着，T1-M7 的「每会话泄漏一个 fd」会在失败路径上原样复发。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    fh = log._handle("s1")
+
+    def _boom():
+        raise RuntimeError("flush 爆炸")
+
+    monkeypatch.setattr(fh, "flush", _boom)
+
+    log.close()                                      # 不得外抛
+    assert fh.closed, "flush 失败后 close() 未关闭句柄（fd 泄漏复发）"
+
+
+def test_append_writes_strict_lf(tmp_path):
+    """★ 回归（T1-M8）：写侧必须是**严格 LF**（跨进程 NDJSON）。
+
+    Windows 上默认文本模式会把 "\\n" 翻译成 "\\r\\n"（实测 `b"\\r\\n" in raw == True`）。
+    读侧虽用 .strip() 容忍，但方案把 NDJSON 定位为跨进程证据格式，
+    外部消费者不应被迫同样容忍。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.flush()
+
+    raw = log.path_for("s1").read_bytes()
+    assert b"\r\n" not in raw, "写侧输出了 CRLF，非严格 NDJSON"
+    assert raw.endswith(b"\n")

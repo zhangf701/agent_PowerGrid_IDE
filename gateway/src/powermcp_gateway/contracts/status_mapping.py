@@ -20,6 +20,12 @@
   andes.run_eigenvalue_analysis     无读取                        → 报
   egret.solve_unit_commitment_problem / solve_ac_opf / solve_dc_opf 无读取 → 报
 
+复审（2026-09-24）：修正**值比较**（字符串大小写归一 + `True` 改用 `is True`，杜绝
+`1 == True` 假阳性）后按同一探针重测，上述 **6 条 risky 完全不变**，risky 集合不变
+（仍为 pypsa×2 / andes×1 / egret×3；pandapower/surge/hope/opendss=satisfied，genx=unknown）。
+当前仓库源码未出现全大写 "SUCCESS" 或数值 1 作状态值，故本次修正是**行为保持**的：
+它修掉的是**潜在**的假绿灯（`"SUCCESS"` 漏检 → risky 少报）与假阳性（`1` 误判 → risky 多报）。
+
 ⚠️ 判据必须区分「分层设计」与「以成功掩盖失败」：pandapower 的 `status: "success"`
    是**传输层**语义，物理结果在 `converged` 字段 —— 那是正确设计，不得误报。
 
@@ -62,7 +68,6 @@ from __future__ import annotations
 
 import ast
 import re
-from pathlib import Path
 
 from ..config import GatewayConfig
 from ..inventory import ToolInventory
@@ -79,8 +84,10 @@ SOLVE_NAME = re.compile(
 #: 表达"结果状态"的字段名
 STATUS_KEYS = frozenset({"status", "converged", "success", "succeeded", "ok"})
 
-#: 视为"报告成功"的字面量
-_SUCCESS_LITERALS = ("success", "completed", True)
+#: 视为"报告成功"的**字符串**字面量（比较前一律先 `.lower()`）。
+#: `True` 不在此列 —— 它用身份比较 `is True` 单独判定，避免 Python 的
+#: `1 == True` / `1.0 == True` 把数值 1 误判为"报告成功"（假阳性）。
+_SUCCESS_LITERALS = ("success", "completed")
 
 
 def analyse_tool_fn(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, tuple[str, ...]]:
@@ -103,7 +110,14 @@ def analyse_tool_fn(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, t
                 continue
 
             if isinstance(value, ast.Constant):
-                if value.value in _SUCCESS_LITERALS:
+                v = value.value
+                # ⚠️ 值比较必须做两件事，否则要么漏检要么误报：
+                #   - 字符串一律 lower：`{"status": "SUCCESS"}` 是最常见的全大写写法，
+                #     原实现（`v in ("success","completed",True)`）漏检它 = 假绿灯；
+                #   - `True` 用 `is True` 身份比较：`1 == True`（且 `1.0 == True`），
+                #     原实现把 `{"status": 1}` 误判为报告成功 = 假阳性。
+                # 键的归一（`key.value.lower()`）在上一段，值这侧此前漏了。
+                if v is True or (isinstance(v, str) and v.lower() in _SUCCESS_LITERALS):
                     reports_success = True
             elif isinstance(value, ast.Attribute):
                 reads.append(ast.unparse(value))

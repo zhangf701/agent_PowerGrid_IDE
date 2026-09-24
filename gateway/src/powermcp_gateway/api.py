@@ -40,18 +40,23 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """应用生命周期：**关闭时必须 flush 审计**。
+    """应用生命周期：**关闭时必须 flush 并 close 审计**。
 
-    ★ `AuditLog` 是**批量写入**（每 32 条 flush 一次）。没有这一步，进程退出时
+    ★ `AuditLog` 是**批量写入**（每 32 条 flush 一次）。没有 flush，进程退出时
       缓冲区里的 EVIDENCE 事件会**直接丢失** —— 而审计通道的设计前提是"不可丢"。
       实测（2026-09-24 端到端验收）：单条契约违规后进程被杀，
       `audit-<sid>.ndjson` 仍是 **0 字节**，违规记录彻底丢失。
+    ★ 没有 close，则每个新会话泄漏一个文件句柄（`audit.py` 只 `open("a")` 从不关闭），
+      Windows 上还会持续占住文件（T1-M7）。
+
+    ⚠️ flush/close 失败**不得阻塞进程退出、不得外抛** —— 只记 warning（保持既有语义）。
     """
     yield
     try:
         _AUDIT.flush()
+        _AUDIT.close()
     except Exception:
-        logger.warning("退出时 flush 审计失败 —— 缓冲区内的证据事件可能丢失", exc_info=True)
+        logger.warning("退出时 flush/close 审计失败 —— 缓冲区内的证据事件可能丢失", exc_info=True)
 
 _cache = T0Cache()
 _STORE = SessionStore()
@@ -121,6 +126,16 @@ def register_session_routes(app: FastAPI) -> None:
                     last_seq = event.seq
 
                 while True:
+                    # ★ 尽力而为的滞后检查（I-2）：若本订阅者队列已被标记滞后
+                    #   （不可丢通道满 → 总线跳过投递），主动结束本响应，
+                    #   让浏览器重连并按历史全量重放 —— 而不是继续半速跟随。
+                    #   注意：gen() 可能挂起在 yield 上，所以这只是尽力而为；
+                    #   核心不变式（持久记录先于扇出、不丢）不依赖这一步。
+                    if bus.is_lagged(q):
+                        logger.warning(
+                            "SSE 订阅者已滞后，主动结束连接以触发重连全量重放 (sid=%s)", sid
+                        )
+                        return
                     try:
                         event = await asyncio.wait_for(
                             q.get(), timeout=_DISCONNECT_POLL_S

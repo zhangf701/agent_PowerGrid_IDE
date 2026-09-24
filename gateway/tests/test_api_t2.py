@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -7,6 +9,53 @@ from powermcp_gateway.api import create_app
 @pytest.fixture
 def app():
     return create_app()
+
+
+# ── SSE 生成器（gen()）的测试工装 ──────────────────────────────────────────
+
+def _events_endpoint(app, sid):
+    """返回 `(endpoint, request)`，用于**直接驱动** SSE 生成器。
+
+    在 `ASGITransport` 下 `gen()` 永不结束，无法整体 await（见本文件既有注释），
+    故取出 `route.endpoint` 手工构造 `Request` 并逐步驱动 `resp.body_iterator`。
+
+    ⚠️ 必须给 `Request` 注入 `receive`：starlette 1.6 的 `is_disconnected()` 会
+      `await self._receive()`，裸 `Request` 用 `empty_receive` 会 **抛 RuntimeError**。
+      注入一个「返回非 disconnect 消息」的 receive → 恒得 False（模拟客户端仍连着）。
+    """
+    from starlette.requests import Request
+
+    route = next(r for r in app.routes
+                 if getattr(r, "path", None) == "/sessions/{sid}/events")
+
+    async def _receive():
+        return {"type": "http.request"}
+
+    request = Request({"type": "http", "method": "GET", "path": "/x",
+                       "headers": [], "query_string": b""}, receive=_receive)
+    return route.endpoint, request
+
+
+async def _drive(gen) -> list[str]:
+    """把生成器跑到结束，收集所有 SSE 帧（若挂起则由调用方的 wait_for 兜底）。"""
+    out: list[str] = []
+    async for chunk in gen:
+        out.append(chunk)
+    return out
+
+
+async def _wait_until(pred, timeout: float = 2.0) -> None:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while not pred():
+        if loop.time() > deadline:
+            raise AssertionError("等待条件超时")
+        await asyncio.sleep(0.005)
+
+
+def _sse_id(frame: str) -> int:
+    """取 SSE 帧的 `id:` 字段（= 事件的单调序列号）。"""
+    return int(frame.split("id: ", 1)[1].split("\n", 1)[0])
 
 
 async def test_create_session(app):
@@ -76,9 +125,18 @@ async def test_call_with_valid_args_streams_tool_call_event(app, monkeypatch):
     assert "tool_call" in [e.kind for e in api_mod._STORE.bus(sid).events()]
 
 
-async def test_contract_violation_is_reported_as_finding(app, monkeypatch):
+async def test_contract_violation_is_emitted_as_contract_finding(app, monkeypatch):
+    """★ 契约违规事件必须与 `/contracts/t0` 的 finding **同形**（原测试名 overpromise）。
+
+    原名为 `..._is_reported_as_finding`，却只断言 `payload["contract"] == 3`
+    —— 名字承诺的「被报告为 finding」毫无覆盖（台账反复出现的「测试名 overpromise」）。
+    本测试**在 api 层**（经 `call_with_contracts`，即 `api.py` 的接线）补上形状断言：
+    payload 必须能原样 `ContractFinding(**payload)` 构造，且关键字段/evidence 正确。
+    （proxy 层的同形状断言由 `test_proxy.py` 覆盖 —— 两层各测各的，不重复。）
+    """
     import powermcp_gateway.proxy as proxy
     from powermcp_gateway import api as api_mod
+    from powermcp_gateway.contracts.model import ContractFinding
 
     async def fake_dispatch(cfg, server, tool, args):
         return {}
@@ -97,8 +155,16 @@ async def test_contract_violation_is_reported_as_finding(app, monkeypatch):
 
     assert outcome.ok is False
     viol = [e for e in api_mod._STORE.bus(sid).events() if e.kind == "contract_violation"]
-    assert viol
-    assert viol[0].payload["contract"] == 3
+    assert viol, "未发出 contract_violation 事件"
+
+    payload = viol[0].payload
+    # ★ 形状断言：payload 必须能被 ContractFinding **原样构造**（同形 + 通过 __post_init__ 校验）
+    finding = ContractFinding(**payload)
+    assert finding.state == "violated"
+    assert finding.subject == "pandapower"
+    assert finding.contract == 3
+    assert finding.reason is None
+    assert finding.evidence["violations"][0]["arg"] == "nets"   # 传入的拼错参数名
 
 
 async def test_audit_file_records_the_violation(tmp_path, monkeypatch):
@@ -158,3 +224,224 @@ async def test_shutdown_flushes_audit(tmp_path, monkeypatch):
         pass
 
     assert scratch.path_for("s1").stat().st_size > 0, "shutdown 未 flush 审计"
+
+
+async def test_shutdown_closes_audit_handles(tmp_path, monkeypatch):
+    """★ 回归（T1-M7）：lifespan shutdown 必须 **close** 审计句柄。
+
+    `AuditLog` 只 `open("a")`、从不关闭 —— 长生命周期的网关每会话泄漏一个 fd，
+    Windows 上还持续占住文件（阻碍外部工具读取/轮转）。
+
+    ⚠️ 区分力：断言写入句柄 `.closed`。若只断言「replay 能读到内容」，
+    一个 no-op close 也会通过（replay 内部自己会 flush）—— 测试将毫无区分力。
+    经 `app.router.lifespan_context(app)` 进出 —— 走的正是 FastAPI 注册的 lifespan 接线。
+    """
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.audit import AuditLog
+    from powermcp_gateway.session import Channel, Event
+
+    scratch = AuditLog(tmp_path)
+    monkeypatch.setattr(api_mod, "_AUDIT", scratch)
+    app = api_mod.create_app()
+
+    scratch.append("s1", Event(seq=1, channel=Channel.EVIDENCE, kind="k",
+                               payload={}, at="2026-09-24T00:00:00Z"))
+    fh = scratch._handle("s1")
+    assert not fh.closed
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert fh.closed, "lifespan shutdown 未 close 审计句柄（fd 泄漏）"
+
+
+# ── gen()（SSE 生成器）行为测试 ────────────────────────────────────────────
+# 这些直接驱动 `route.endpoint` 返回的 `resp.body_iterator`，覆盖 gen() 的接线行为。
+
+async def test_events_stream_backfills_history_to_late_subscriber(app):
+    """★ gen() ①：晚订阅者先收到**历史补发** —— 断线重连不丢早先的证据。"""
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.session import Channel
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    bus.publish(Channel.EVIDENCE, "a", {})       # 在订阅**之前**发布 → 只能靠历史补发
+    bus.publish(Channel.EVIDENCE, "b", {})
+
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    gen = resp.body_iterator                     # 尚未启动（async generator）
+
+    first = await asyncio.wait_for(gen.__anext__(), 2)
+    second = await asyncio.wait_for(gen.__anext__(), 2)
+    assert [_sse_id(first), _sse_id(second)] == [1, 2]
+
+    bus.close()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), 2)
+    assert bus.subscriber_count() == 0
+
+
+async def test_events_stream_delivers_live_events(app):
+    """★ gen() ②：订阅之后发布的事件被**实时**投递（含 is_disconnected 检查不误杀）。"""
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.session import Channel
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    gen = resp.body_iterator
+
+    pending = asyncio.create_task(gen.__anext__())
+    await _wait_until(lambda: bus.subscriber_count() == 1)   # gen 已订阅并阻塞在 q.get()
+    bus.publish(Channel.EVIDENCE, "live", {})
+
+    frame = await asyncio.wait_for(pending, 2)
+    assert _sse_id(frame) == 1
+    assert '"kind": "live"' in frame
+
+    bus.close()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), 2)
+
+
+async def test_events_stream_terminates_when_bus_closes(app):
+    """★ gen() ③：总线关闭后，先排空积压再结束 —— **不得永久挂起**。"""
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.session import Channel
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    bus.publish(Channel.EVIDENCE, "a", {})
+
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    task = asyncio.create_task(_drive(resp.body_iterator))
+
+    await _wait_until(lambda: bus.subscriber_count() == 1)
+    bus.close()                                  # 队列空 → 放入终止哨兵
+
+    frames = await asyncio.wait_for(task, 2)     # 挂起则 → TimeoutError → 失败
+    assert [_sse_id(f) for f in frames] == [1]   # 历史既已投递，又正常结束
+
+
+async def test_events_stream_unsubscribes_on_completion(app):
+    """★ gen() ④：生成器结束（客户端断开/总线关闭）后必须注销订阅 —— 不留孤儿。"""
+    from powermcp_gateway import api as api_mod
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    task = asyncio.create_task(_drive(resp.body_iterator))
+
+    await _wait_until(lambda: bus.subscriber_count() == 1)
+    assert bus.subscriber_count() == 1
+
+    bus.close()
+    await asyncio.wait_for(task, 2)
+    assert bus.subscriber_count() == 0            # finally: bus.unsubscribe(q)
+
+
+async def test_events_stream_self_terminates_when_lagged(app):
+    """★ gen() ⑤（I-2）：队列被撑满而标记滞后后，生成器**主动结束**。
+
+    滞后即「该订阅者已跟不上」—— 让其结束连接、由浏览器重连并按历史全量重放，
+    而不是继续半速跟随。这是 `api.py` 里 `bus.is_lagged(q)` 接线的行为断言。
+    """
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.session import Channel
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    task = asyncio.create_task(_drive(resp.body_iterator))
+
+    await _wait_until(lambda: bus.subscriber_count() == 1)
+    for i in range(1025):                        # 撑满 maxsize=1024 并触发满队列
+        bus.publish(Channel.EVIDENCE, "noise", {"i": i})
+    assert bus.stats()["lagged_queues"] == 1
+
+    await asyncio.wait_for(task, 3)              # 滞后 → gen 主动 return（不挂起）
+    assert bus.subscriber_count() == 0           # 且已注销
+
+
+async def test_events_stream_deduplicates_history_and_live(app, monkeypatch):
+    """★ gen() ⑥（C1，审查探针 C 靶心）：同一条事件**既在历史快照又在订阅队列**时只投一次。
+
+    `event.seq <= last_seq: continue` 这条去重分支因 `subscribe_queue()` 与
+    `bus.events()` 相邻同步调用而**不可自然触发**，须注入才测得到：
+    monkeypatch **该 bus 实例**的 `events`，在返回真实快照**之前**先 `publish` 一条
+    —— 于是它既进了返回的快照、也进了已订阅的队列。
+    """
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.session import Channel
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    real_events = bus.events
+
+    def events_and_inject():
+        bus.publish(Channel.EVIDENCE, "injected", {})   # 既进快照、也进订阅队列
+        return real_events()
+
+    monkeypatch.setattr(bus, "events", events_and_inject)
+
+    endpoint, request = _events_endpoint(app, sid)
+    resp = await endpoint(sid, request)
+    gen = resp.body_iterator
+
+    first = await asyncio.wait_for(gen.__anext__(), 2)
+    assert _sse_id(first) == 1                    # 历史补发出了这条
+
+    # 队列里还留着同一条（seq=1）：去重分支命中 → 不再产出，阻塞在 q.get()
+    pending = asyncio.create_task(gen.__anext__())
+    await asyncio.sleep(0.02)
+    assert not pending.done(), "seq 去重失效：同一条事件被第二次投递"
+
+    bus.close()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(pending, 2)
+
+
+async def test_events_stream_stops_on_client_disconnect(app, monkeypatch):
+    """★ gen() ⑦（C2，审查探针 C 靶心）：空闲轮询到客户端已断开 → 结束并注销订阅。
+
+    覆盖 `except asyncio.TimeoutError:` 里的 `if await request.is_disconnected(): return`
+    （Task 6 修的另一个核心错误路径）。**有界等待**：变异时表现为失败而非挂死。
+    """
+    from powermcp_gateway import api as api_mod
+
+    monkeypatch.setattr(api_mod, "_DISCONNECT_POLL_S", 0.01)   # 加速轮询
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
+
+    bus = api_mod._STORE.bus(sid)
+    endpoint, request = _events_endpoint(app, sid)
+
+    async def _disconnected():
+        return True                                # 客户端已断开
+
+    monkeypatch.setattr(request, "is_disconnected", _disconnected)
+
+    resp = await endpoint(sid, request)
+    gen = resp.body_iterator
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), 1)   # 有界：挂死 → TimeoutError → 失败
+    assert bus.subscriber_count() == 0            # 断开后已注销

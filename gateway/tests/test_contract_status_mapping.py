@@ -57,6 +57,36 @@ def test_conditional_status_counts_as_read():
     assert reads, "条件表达式的状态应被视为读取（值不是字面量常量）"
 
 
+def _status_fn(value_src: str) -> ast.FunctionDef:
+    return _fn(f'''
+    def tool():
+        return {{"status": {value_src}}}
+    ''')
+
+
+def test_value_comparison_is_case_insensitive():
+    """★ `{"status": "SUCCESS"}` 是最常见的全大写写法，必须算「报告成功」。
+
+    原实现 `value.value in ("success","completed",True)` 漏检 `SUCCESS` —— 契约 4
+    存在的理由正是防「求解失败被报成成功」，漏检即**假绿灯**。
+    """
+    for src in ('"SUCCESS"', '"success"', '"Completed"', '"COMPLETED"'):
+        hard, _ = analyse_tool_fn(_status_fn(src))
+        assert hard is True, f"{src} 应被判定为报告成功"
+
+
+def test_boolean_and_numeric_one_are_distinguished():
+    """★ `1 == True`（且 `1.0 == True`）—— 数值 1 不得被当成「报告成功」。
+
+    原实现把 `{"status": 1}` / `{"status": 1.0}` 误判为成功 = **假阳性**。
+    只有 `True`（身份为 bool 的 True）才算成功。
+    """
+    assert analyse_tool_fn(_status_fn("True"))[0] is True
+    for src in ("1", "1.0", "0", "False", '"0"', '"failed"'):
+        hard, _ = analyse_tool_fn(_status_fn(src))
+        assert hard is False, f"{src} 不应被判定为报告成功"
+
+
 # —— 端到端：真实仓库上的对照 ——
 
 def test_pypsa_run_power_flow_is_flagged(tmp_path):
