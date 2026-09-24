@@ -2348,6 +2348,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -2372,6 +2374,24 @@ OPEN_SOURCE_SERVERS: tuple[str, ...] = (
 #: 否则一个已挂掉的浏览器标签页会**永久占住订阅者名额**，最终让整个会话的
 #: EVIDENCE 发布失败（见 Task 0 审查的队头阻塞后果）。
 _DISCONNECT_POLL_S = 1.0
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """应用生命周期：**关闭时必须 flush 审计**。
+
+    ★ `AuditLog` 是**批量写入**（每 32 条 flush 一次）。没有这一步，进程退出时
+      缓冲区里的 EVIDENCE 事件会**直接丢失** —— 而审计通道的设计前提是"不可丢"。
+      实测（2026-09-24 端到端验收）：单条契约违规后进程被杀，
+      `audit-<sid>.ndjson` 仍是 **0 字节**，违规记录彻底丢失。
+    """
+    yield
+    try:
+        _AUDIT.flush()
+    except Exception:
+        logger.warning("退出时 flush 审计失败 —— 缓冲区内的证据事件可能丢失", exc_info=True)
 
 _cache = T0Cache()
 _STORE = SessionStore()
@@ -2497,7 +2517,7 @@ def register_session_routes(app: FastAPI) -> None:
 
 
 def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
-    app = FastAPI(title="PowerMCP Gateway", version="0.1.0")
+    app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
     if cfg is not None:
         global _CONFIG
         _CONFIG = cfg
@@ -2559,8 +2579,13 @@ git commit -m "feat(gateway): SSE 双通道 + 会话/代理端点"
 ### Task 7: T2 节拍打通 + 端到端验收
 
 **Files:**
+- Modify: `gateway/src/powermcp_gateway/api.py`（**仅加 lifespan**，见 Step 3）
 - Test: `gateway/tests/test_api_t2.py`（追加）
-- **不改任何实现文件** —— T2 入口在 Task 6 Step 7 已随 `api.py` 重写完成
+
+> ⚠️ **原计划声明"不改任何实现文件"** —— 但端到端验收发现：`AuditLog` 是批量写入
+> （每 32 条 flush），而网关没有 shutdown 钩子，**进程退出时缓冲区里的 EVIDENCE 事件
+> 直接丢失**（实测单条违规后 `audit-<sid>.ndjson` 仍是 0 字节）。经用户裁决加一个
+> lifespan 钩子。**除 lifespan 外不改任何实现。**
 
 **Interfaces:**
 - Consumes: `call_with_contracts` / `_STORE` / `_AUDIT`（Task 6 Step 7 已全部提供）· `call_tool`（Task 5）
@@ -2646,6 +2671,34 @@ async def test_audit_file_records_the_violation(tmp_path, monkeypatch):
     kinds = [e.kind for e in scratch.replay(sid)]
     assert "contract_violation" in kinds
     assert scratch.path_for(sid).is_file()
+
+
+async def test_shutdown_flushes_audit(tmp_path, monkeypatch):
+    """★ 关闭时**必须** flush 审计 —— 否则缓冲区里的证据事件直接丢失。
+
+    `AuditLog` 是批量写入（每 32 条 flush 一次）。网关没有 shutdown 钩子时，
+    进程退出会让缓冲区内容丢失 —— 实测单条违规后审计文件仍是 **0 字节**。
+
+    直接进出 lifespan，不用 `TestClient` —— 后者会在测试输出里引入
+    starlette 内部的 `DeprecationWarning`，污染输出。
+    """
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.audit import AuditLog
+    from powermcp_gateway.session import Channel, Event
+
+    scratch = AuditLog(tmp_path)
+    monkeypatch.setattr(api_mod, "_AUDIT", scratch)
+
+    app = api_mod.create_app()
+
+    scratch.append("s1", Event(seq=1, channel=Channel.EVIDENCE, kind="k",
+                               payload={}, at="2026-09-24T00:00:00Z"))
+    assert scratch.path_for("s1").stat().st_size == 0, "未 flush 前不应落盘"
+
+    async with api_mod._lifespan(app):      # 进入 / 退出 lifespan
+        pass
+
+    assert scratch.path_for("s1").stat().st_size > 0, "shutdown 未 flush 审计"
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -2656,14 +2709,25 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: FAIL —— `AttributeError: module 'powermcp_gateway.api' has no attribute 'call_with_contracts'`
 
-- [ ] **Step 3: 确认无需改动实现**
+- [ ] **Step 3: 确认 `call_with_contracts` 已存在，并给 `api.py` 加 lifespan 钩子**
 
 `call_with_contracts` / `_STORE` / `_AUDIT` 已在 **Task 6 Step 7 的重写**中引入
-（签名 `call_with_contracts(sid, server, tool, args, *, get_schema)`）。
-本任务**只加测试与端到端验收**，不新增实现代码。
+（签名 `call_with_contracts(sid, server, tool, args, *, get_schema)`）—— **这些不用你补**。
 
 若 Step 2 的失败信息不是 `AttributeError: ... has no attribute 'call_with_contracts'`，
 说明 Task 6 Step 7 没做完 —— 回到那里补齐，**不要在本任务里另写一份**。
+
+**但本任务要改一处实现**（经用户裁决）：`api.py` 目前**没有 shutdown 钩子**，
+而 `AuditLog` 是批量写入（每 32 条 flush）—— 进程退出时缓冲区里的 EVIDENCE 事件
+会**直接丢失**。实测：单条契约违规后进程被杀，`audit-<sid>.ndjson` 仍是 **0 字节**。
+
+按 brief 里 `api.py` 的代码，确认这三处就位（brief 的 `api.py` 是完整版，照它写即可）：
+
+1. import 段含 `import logging` 与 `from contextlib import asynccontextmanager`
+2. `_DISCONNECT_POLL_S` 之后含 `logger = logging.getLogger(__name__)` 与 `_lifespan`
+3. `create_app` 里是 `FastAPI(..., lifespan=_lifespan)`
+
+⚠️ **除 lifespan 外不要改 `api.py` 的其他内容**。
 
 - [ ] **Step 4: 跑测试，确认通过**
 
@@ -2671,7 +2735,7 @@ Expected: FAIL —— `AttributeError: module 'powermcp_gateway.api' has no attr
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r7
 ```
-Expected: PASS（7 passed —— 既有 4 + 本任务 3）
+Expected: PASS（8 passed —— 既有 4 + 本任务 4）
 
 - [ ] **Step 5: 全量回归**
 
@@ -2679,7 +2743,7 @@ Expected: PASS（7 passed —— 既有 4 + 本任务 3）
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r7b
 ```
-Expected: 全部 PASS（既有 134 + 本任务 3 = 137）
+Expected: 全部 PASS（既有 134 + 本任务 4 = 138）
 
 - [ ] **Step 6: 真实端到端手工验收**
 
@@ -2700,7 +2764,14 @@ curl -s -X POST "localhost:8766/sessions/$SID/tools/call" -H 'content-type: appl
 Expected：
 1. 返回体 `ok=false`，`violations[0].kind == "unknown_arg"`，`arg == "linearized"`
 2. SSE 流里出现 `event: evidence` + `"kind": "contract_violation"`、`"contract": 3`
-3. `~/.powermcp/audit/audit-<sid>.ndjson` 里有对应行
+3. `~/.powermcp/audit/audit-<sid>.ndjson` 里有对应行 —— ⚠️ **但必须在进程优雅退出之后看**。
+   审计是**批量写入**（每 32 条 flush 一次），所以**进程被强杀**时文件可能仍是 **0 字节**
+   （控制器实测：退出前 0 字节 → 优雅退出后 339 字节）。这正是本任务加 lifespan 钩子的原因。
+
+   验证方式（按可靠性排序）：
+   1. `pytest tests/test_api_t2.py::test_shutdown_flushes_audit` —— 最可靠，无环境依赖
+   2. 用 `uvicorn.Server` 的 `server.should_exit = True` 触发优雅退出，再检查文件
+      ⚠️ **Windows 沙箱下 `kill -INT` / `timeout -s INT` 不送达信号**，不要依赖它们
 
 - [ ] **Step 7: 提交并回填执行记录**
 
@@ -2730,7 +2801,9 @@ cd d:/coding/powerMcp_Pskills/gateway
    是判据修正前的旧数 —— `andes.run_time_domain_simulation` 实际**读了**状态故不报。）
 2. **契约 3**：传 `linearized` 这类未声明参数时**被拒绝且未转发**（`ok=false`，事件流有 `contract_violation`）
 3. **SSE 双通道**：`event: evidence` 与 `event: telemetry` 分别出现；`id:` 单调递增
-4. **审计**：`~/.powermcp/audit/audit-<sid>.ndjson` 只含 `evidence` 行；`replay()` 能还原
+4. **审计**：`~/.powermcp/audit/audit-<sid>.ndjson` 只含 `evidence` 行；`replay()` 能还原。
+   ⚠️ **前提是进程优雅退出** —— lifespan 的 shutdown 会 flush；被强杀时批量缓冲会丢
+   （这是本任务修复的缺口，见 Task 7 Step 3 与 `test_shutdown_flushes_audit`）
 5. **无回归**：既有 134 个测试仍全过（子项目 2 的 76 个 + 子项目 3 的 Task 0–6）
 
 ---
