@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
@@ -51,17 +51,36 @@ class EventBus:
         self._events: list[Event] = []
         self._subscribers: list[asyncio.Queue[Event | None]] = []
         self._seq = 0
+        self._closed = False
 
     def publish(self, channel: Channel, kind: str, payload: dict) -> Event:
+        if self._closed:
+            raise RuntimeError("EventBus 已关闭，不能再发布事件")
+
+        # ★ 证据通道：**先全量校验，再动任何状态**（审查发现）
+        #   初版是在投递循环里 raise —— 那时 _events 已追加、部分订阅者已收到，
+        #   发布方重试又会 _seq += 1 再追加一条 → 不可丢的审计流里出现重复记录。
+        #   现在：拒绝时不消耗 seq、不追加历史、不投递给任何人 —— 全有或全无。
+        if not DROPPABLE[channel]:
+            full = [q for q in self._subscribers if q.full()]
+            if full:
+                raise RuntimeError(
+                    f"证据通道有 {len(full)} 个订阅者队列已满，拒绝发布 "
+                    f"{kind}(channel={channel.value}) —— 证据不可丢，不做半投递"
+                )
+
         self._seq += 1
         event = Event(seq=self._seq, channel=channel, kind=kind, payload=payload, at=_now())
         self._events.append(event)
+
         for q in self._subscribers:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
                 if not DROPPABLE[channel]:
-                    raise  # 证据通道绝不静默丢弃
+                    # 不可达：单线程 asyncio 下，上面的预校验与这里之间没有 await，
+                    # 队列不可能被填满。保留 raise 作为断言，而非静默丢弃证据。
+                    raise AssertionError("预校验通过后仍遇到满队列 —— 不应发生")
         return event
 
     async def subscribe(self):
@@ -83,11 +102,28 @@ class EventBus:
         return tuple(self._events)
 
     def close(self) -> None:
-        for q in self._subscribers:
-            try:
-                q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
+        """关闭总线：所有订阅者都会终止。
+
+        ★ 修订（审查发现）：初版 `except QueueFull: pass` 会**吞掉终止哨兵** ——
+        队列已满的订阅者再也等不到 `None`，`await q.get()` 永久挂起。
+        审查者已复现（1024 条 TELEMETRY 后 close → 任务永不结束）。
+
+        现在的做法：队列满时**丢弃队首一条**以腾位给哨兵。
+        这是有意的取舍 —— `close()` 是会话拆除路径，为一个已不再消费的订阅者
+        无限阻塞没有意义；且被丢弃的事件仍在 `self._events` 与 NDJSON 审计中，
+        **不会真正丢失**，只是该订阅者看不到积压的那一条。
+        """
+        self._closed = True
+        for q in list(self._subscribers):
+            while True:
+                try:
+                    q.put_nowait(None)      # 终止哨兵
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        q.get_nowait()      # 丢队首，腾位置
+                    except asyncio.QueueEmpty:
+                        break               # 竞态下已空，重试一次 put
 
 
 class SessionStore:
