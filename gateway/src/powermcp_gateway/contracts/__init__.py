@@ -29,3 +29,9 @@ from .doc_impl import DocImplEvaluator
 
 REGISTRY.register(DocImplEvaluator())
 __all__ += ["DocImplEvaluator"]
+
+from .conventions import DimensionsEvaluator, IdentifiersEvaluator, load_conventions
+
+REGISTRY.register(IdentifiersEvaluator())
+REGISTRY.register(DimensionsEvaluator())
+__all__ += ["DimensionsEvaluator", "IdentifiersEvaluator", "load_conventions"]
