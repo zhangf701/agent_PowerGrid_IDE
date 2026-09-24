@@ -70,6 +70,7 @@ d:/coding/powerMcp_Pskills/                 ← git init 于此
 │       ├── test_config.py
 │       ├── test_inventory.py
 │       ├── test_contract_model.py
+│       ├── test_contract_registry.py
 │       ├── test_contract_namespacing.py
 │       ├── test_contract_doc_impl.py
 │       ├── test_contract_conventions.py
@@ -200,7 +201,8 @@ def test_discover_finds_repo_and_interpreter():
 
 
 def test_discover_from_explicit_root(tmp_path: Path):
-    with pytest.raises(ConfigError, match="powermcp/registry.py"):
+    # 路径分隔符跨平台：Windows 上异常消息里是 powermcp\registry.py
+    with pytest.raises(ConfigError, match=r"powermcp[\\/]registry\.py"):
         GatewayConfig.discover(root=tmp_path)
 
 
@@ -336,8 +338,15 @@ unhandled errors in a TaskGroup (1 sub-exception)
 Install it with: pip install powermcp[andes]` **完全丢失**。
 
 这直接违反**方案 §4.4**：*「⚠️ / ❌ 必须给出可执行修复路径」* —— 也让能力矩阵的修复指引失效。
-**修法**：递归摊平 `BaseExceptionGroup`，并把 `powermcp.registry` 已有的
-`Tool.extra` + `install_hint()` 取出来作为 `hint`。
+**修法**：递归摊平 `BaseExceptionGroup`（已交付 `_describe_error`），并把 `powermcp.registry`
+已有的 `Tool.extra` + `install_hint()` 取出来作为 `hint`（已交付 `install_hint_for`）。
+
+> ★ **已交付实现额外加了「门控」**（原方案未写，实测后补）：
+> 只有"看起来属于依赖缺失"时才给安装提示 —— `_looks_dependency_related(error)` 命中关键词，
+> 或 `_probe_importable(probe)` 判定该 linchpin 依赖确实不可导入。
+> **超时/崩溃时提示 `pip install` 帮不上忙**，给了反而不满足"可执行"的要求。
+> 另：`asyncio.timeout` 原生抛出的 `TimeoutError` **消息为空**，detail 会退化成
+> `"TimeoutError:"` —— 已交付 `_is_timeout` / `_timeout_error` 补上 server 名、超时值与卡住的阶段。
 
 #### 缺陷 B：未请求到的 server 从 `servers()` 里消失
 
@@ -345,10 +354,16 @@ Install it with: pip install powermcp[andes]` **完全丢失**。
 契约 2 根本没检查到 opendss（首版恰好拉不起来），实际变成"静默跳过"。
 **修法**：`ToolInventory.requested` 记录本次请求的全集，求值器一律迭代 `all_servers()`。
 
+> ★ 契约 2 命中失败 server 时，已交付实现报 **`unknown / structural`**（"拿不到运行时工具清单，
+> **无法比对**"），**不是 `violated`** —— 那些名字并非"不存在"，而是"无从核对"，
+> 报 violated 只会制造新一批误报。该失败本身记在契约 8。
+>
+> ★ 连带：契约 8 的失败项 `reason` 改为 **`"structural" if failure.hint else "incident"`** ——
+> 「知道怎么修」与「出了事故」是两种不同信号，混在一起会让事故标记失去意义。
+
 - [ ] **Step 1: 写失败的测试**
 
 ```python
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -357,7 +372,10 @@ from powermcp_gateway.inventory import (
     ServerFailure,
     ToolInventory,
     ToolRecord,
-    describe_exception,
+    _describe_error,
+    _is_timeout,
+    _timeout_error,
+    build_inventory,
     install_hint_for,
 )
 
@@ -405,36 +423,105 @@ def test_inventory_is_hashable_and_serialisable():
     assert inv.failures[0].server == "genx"
 
 
-# —— ★ 缺陷 A：ExceptionGroup 必须被摊平，可执行信息不得丢失 ——
+@pytest.mark.integration
+async def test_fetch_real_server():
+    from powermcp_gateway.config import GatewayConfig
+    from powermcp_gateway.inventory import fetch_server_tools
 
-def test_describe_exception_flattens_nested_group():
-    """anyio 把子进程错误包成 ExceptionGroup；首版只取到外层摘要，真实原因丢失。"""
-    leaf = RuntimeError("ANDES: required package 'andes' is not installed. "
-                        "Install it with: pip install powermcp[andes]")
-    group = ExceptionGroup("unhandled errors in a TaskGroup", [
-        ExceptionGroup("inner", [leaf]),
-    ])
-    summary, causes = describe_exception(group)
-    joined = " ".join(causes)
-    assert "pip install powermcp[andes]" in joined
-    assert "unhandled errors in a TaskGroup" not in joined   # 外层套话不该是唯一内容
-    assert summary                                   # 必须非空
-    assert "RuntimeError" in joined
+    cfg = GatewayConfig.discover()
+    tools = await fetch_server_tools(cfg, "pandapower")
+    assert len(tools) == 8
+    assert "run_power_flow" in {t.name for t in tools}
 
 
-def test_describe_exception_on_plain_exception():
-    summary, causes = describe_exception(ValueError("boom"))
-    assert causes == ("ValueError: boom",)
-    assert summary == "ValueError: boom"
+# —— 失败原因的展开（契约 8 的 detail 必须可执行）——
+
+def test_describe_error_unwraps_exception_group():
+    """anyio 把子进程错误包在 ExceptionGroup 里，必须展开。
+
+    真实案例：opendss 的契约 8 detail 曾只剩
+    "ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)"，
+    而真正可执行的 "pip install powermcp[opendss]" 被吞掉 ——
+    这违反方案 §4.4「⚠️/❌ 必须给出可执行修复路径」。
+    """
+    inner = RuntimeError(
+        "ANDES: required package 'andes' is not installed.\n"
+        "  Install it with:  pip install powermcp[andes]"
+    )
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
+
+    text = _describe_error(group)
+
+    assert "pip install powermcp[andes]" in text   # 可执行信息必须保住
+    assert "RuntimeError" in text                  # 叶子异常类型必须保住
+    assert "\n" not in text                        # 折叠为单行，便于徽章渲染
 
 
-def test_describe_exception_dedupes_repeated_causes():
-    group = ExceptionGroup("g", [ValueError("x"), ValueError("x")])
-    _, causes = describe_exception(group)
-    assert causes == ("ValueError: x",)
+def test_describe_error_handles_plain_exception():
+    assert _describe_error(ValueError("boom")) == "ValueError: boom"
 
 
-# —— ★ 缺陷 A：安装提示从 registry 取，不靠解析错误文本 ——
+def test_describe_error_handles_nested_groups():
+    inner = ExceptionGroup("inner", [KeyError("k")])
+    outer = ExceptionGroup("outer", [inner, TimeoutError("t")])
+    text = _describe_error(outer)
+    assert "KeyError" in text
+    assert "TimeoutError" in text
+
+
+def test_describe_error_deduplicates_repeated_leaves():
+    dup = RuntimeError("same")
+    group = ExceptionGroup("g", [dup, RuntimeError("same")])
+    assert _describe_error(group).count("same") == 1
+
+
+async def test_build_inventory_surfaces_grouped_reason(monkeypatch):
+    """build_inventory 归集失败时，必须把 ExceptionGroup 展开后写入 failures。"""
+
+    async def boom(cfg, server, timeout_s=None):
+        raise ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [RuntimeError("Install it with:  pip install powermcp[opendss]")],
+        )
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    inv = await build_inventory(cfg=None, servers=["opendss"])  # type: ignore[arg-type]
+
+    assert len(inv.failures) == 1
+    assert inv.failures[0].server == "opendss"
+    assert "pip install powermcp[opendss]" in inv.failures[0].error
+
+
+# —— 超时路径也必须可执行（asyncio.timeout 原生抛出的 TimeoutError 消息为空）——
+
+def test_is_timeout_detects_plain_timeout():
+    assert _is_timeout(TimeoutError()) is True
+
+
+def test_is_timeout_detects_nested_timeout():
+    """anyio 的清理异常可能把 TimeoutError 包在 ExceptionGroup 里。"""
+    group = ExceptionGroup("g", [RuntimeError("x"), TimeoutError()])
+    assert _is_timeout(group) is True
+
+
+def test_is_timeout_rejects_other_errors():
+    assert _is_timeout(RuntimeError("x")) is False
+    assert _is_timeout(ExceptionGroup("g", [ValueError("v")])) is False
+
+
+def test_timeout_error_carries_server_and_stage():
+    """超时异常必须自带上文 —— 否则契约 8 的 detail 退化成 "TimeoutError:"。"""
+    err = _timeout_error("opendss", 90.0)
+    text = _describe_error(err)
+
+    assert "opendss" in text                      # 哪个 server
+    assert "90s" in text                          # 等了多久
+    assert "握手" in text                          # 卡在哪一阶段
+    assert text != "TimeoutError:"                # 不再是无信息的空消息
+
+
+# —— ★ 完成标准 #5：可执行修复路径从 registry 取，且只在"依赖缺失"时才给 ——
 
 def test_install_hint_for_known_server_with_extra():
     hint, probe = install_hint_for("andes")
@@ -454,27 +541,6 @@ def test_install_hint_for_unknown_server_is_none():
     assert probe is None
 
 
-def test_build_inventory_records_hint_on_failure(monkeypatch):
-    """拉起失败时，failure 必须带上可执行修复路径（方案 §4.4）。"""
-    import powermcp_gateway.inventory as inv_mod
-
-    async def boom(cfg, server, timeout_s=None):
-        raise ExceptionGroup("unhandled errors in a TaskGroup", [
-            RuntimeError("ANDES: required package 'andes' is not installed. "
-                         "Install it with: pip install powermcp[andes]"),
-        ])
-
-    monkeypatch.setattr(inv_mod, "fetch_server_tools", boom)
-
-    result = asyncio.run(inv_mod.build_inventory(cfg=None, servers=["andes"]))
-    assert result.requested == ("andes",)
-    assert result.all_servers() == ("andes",)
-    f = result.failures[0]
-    assert "pip install powermcp[andes]" in f.error
-    assert f.hint == "pip install powermcp[andes]"
-    assert f.causes and "RuntimeError" in f.causes[0]
-
-
 def test_all_servers_includes_failed_ones():
     """★ 缺陷 B：未拉起的 server 不得从求值器视野里消失。"""
     inv = ToolInventory(
@@ -486,15 +552,49 @@ def test_all_servers_includes_failed_ones():
     assert inv.all_servers() == ("opendss", "pandapower")
 
 
-@pytest.mark.integration
-async def test_fetch_real_server():
-    from powermcp_gateway.config import GatewayConfig
-    from powermcp_gateway.inventory import fetch_server_tools
+def test_all_servers_falls_back_without_requested():
+    """未显式传 requested 时，用 tools ∪ failures 兜底，失败 server 仍不丢。"""
+    inv = ToolInventory(
+        tools=(ToolRecord.from_sdk("surge", _fake_sdk_tool("compute_lodf")),),
+        failures=(ServerFailure("genx", "boom"),),
+    )
+    assert inv.all_servers() == ("genx", "surge")
 
-    cfg = GatewayConfig.discover()
-    tools = await fetch_server_tools(cfg, "pandapower")
-    assert len(tools) == 8
-    assert "run_power_flow" in {t.name for t in tools}
+
+async def test_build_inventory_records_hint_on_dependency_failure(monkeypatch):
+    """拉起失败且**看起来是依赖缺失**时，failure 必须带上可执行修复路径（方案 §4.4）。"""
+
+    async def boom(cfg, server, timeout_s=None):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [
+            RuntimeError("ANDES: required package 'andes' is not installed. "
+                         "Install it with: pip install powermcp[andes]"),
+        ])
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    result = await build_inventory(cfg=None, servers=["andes"])  # type: ignore[arg-type]
+
+    assert result.requested == ("andes",)
+    assert result.all_servers() == ("andes",)
+    f = result.failures[0]
+    assert "pip install powermcp[andes]" in f.error     # 摊平后的真实原因
+    assert f.hint == "pip install powermcp[andes]"      # 结构化修复路径
+
+
+async def test_timeout_failure_gets_no_install_hint(monkeypatch):
+    """超时不是依赖缺失 —— 给安装提示是误导。
+
+    方案 §4.4 要的是"**可执行**修复路径"，不是"随便给条命令"。
+    """
+
+    async def boom(cfg, server, timeout_s=None):
+        raise TimeoutError("opendss 在 90s 内未完成 MCP 握手")
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    result = await build_inventory(cfg=None, servers=["opendss"])  # type: ignore[arg-type]
+
+    assert result.failures[0].hint is None
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -526,7 +626,8 @@ from mcp.client.stdio import stdio_client
 
 from .config import GatewayConfig
 
-# 依赖缺失类错误的关键词 —— 命中才给安装提示，避免误导（超时/崩溃时提示装机没用）
+# 依赖缺失类错误的关键词 —— 命中才给安装提示。
+# 超时/崩溃时提示 `pip install` 是没有帮助的（方案 §4.4 要的是"可执行"路径）。
 _DEP_PATTERNS = (
     "not installed",
     "install it with",
@@ -542,11 +643,35 @@ def _looks_dependency_related(text: str) -> bool:
 
 
 def _probe_importable(probe: str) -> bool:
-    """该 linchpin 依赖在当前解释器里是否可导入。当前解释器与 server 共用同一个 venv。"""
+    """该 linchpin 依赖在当前解释器里是否可导入。网关与 server 共用同一个 venv。"""
     try:
         return importlib.util.find_spec(probe) is not None
     except (ImportError, ValueError, ModuleNotFoundError):
         return False
+
+
+def install_hint_for(server: str) -> tuple[str | None, str | None]:
+    """从 `powermcp.registry` 取该 server 的可执行安装提示与 linchpin 依赖。
+
+    返回 `(hint, probe)`；registry 不可用或不认识该 server 时返回 `(None, None)`。
+    **不解析错误文本** —— 提示来源是 registry 的 `Tool.extra` + `install_hint()`，
+    错误文本只用于**判断是否属于依赖缺失**（见 `_looks_dependency_related`）。
+    """
+    try:
+        from powermcp import registry
+    except Exception:  # noqa: BLE001 —— 网关可在没有 powermcp 的环境下被导入
+        return None, None
+
+    try:
+        tool = registry.get_tool(server)
+    except Exception:  # noqa: BLE001 —— 未知 server
+        return None, None
+
+    try:
+        hint = registry.install_hint(tool.extra)
+    except Exception:  # noqa: BLE001
+        hint = None
+    return hint, getattr(tool, "probe", None)
 
 
 @dataclass(frozen=True)
@@ -569,71 +694,19 @@ class ToolRecord:
         )
 
 
-def describe_exception(exc: BaseException) -> tuple[str, tuple[str, ...]]:
-    """把 anyio 的 ExceptionGroup 摊平成叶子异常，返回 (摘要, 各叶子)。
-
-    首版直接 `f"{type(exc).__name__}: {exc}"`，只能拿到外层的
-    "unhandled errors in a TaskGroup (1 sub-exception)"，
-    真实的 LaunchError 文本被吞掉 —— 违反方案 §4.4「必须给出可执行修复路径」。
-    """
-    leaves: list[str] = []
-
-    def walk(e: BaseException) -> None:
-        if isinstance(e, BaseExceptionGroup):
-            for sub in e.exceptions:
-                walk(sub)
-        else:
-            leaves.append(f"{type(e).__name__}: {e}")
-
-    walk(exc)
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for item in leaves:
-        if item not in seen:
-            seen.add(item)
-            unique.append(item)
-
-    summary = "; ".join(unique)[:600] or f"{type(exc).__name__}: {exc}"[:600]
-    return summary, tuple(unique)
-
-
-def install_hint_for(server: str) -> tuple[str | None, str | None]:
-    """从 powermcp.registry 取该 server 的可执行安装提示与 linchpin 依赖。
-
-    返回 (hint, probe_missing)。registry 不可用或不认识该 server 时返回 (None, None)。
-    """
-    try:
-        from powermcp import registry
-    except Exception:  # noqa: BLE001 —— 网关可在没有 powermcp 的环境下被导入
-        return None, None
-
-    try:
-        tool = registry.get_tool(server)
-    except Exception:  # noqa: BLE001 —— 未知 server
-        return None, None
-
-    try:
-        hint = registry.install_hint(tool.extra)
-    except Exception:  # noqa: BLE001
-        hint = None
-    return hint, getattr(tool, "probe", None)
-
-
 @dataclass(frozen=True)
 class ServerFailure:
     server: str
     error: str
-    causes: tuple[str, ...] = ()
-    hint: str | None = None
-    probe_missing: str | None = None
+    hint: str | None = None           # 可执行安装提示（来自 registry；仅依赖缺失类失败）
+    probe_missing: str | None = None  # 缺失的 linchpin 依赖名
 
 
 @dataclass(frozen=True)
 class ToolInventory:
     tools: tuple[ToolRecord, ...]
     failures: tuple[ServerFailure, ...]
-    requested: tuple[str, ...] = ()
+    requested: tuple[str, ...] = ()   # 本次请求的 server 全集（含拉起失败的）
 
     def names(self, server: str) -> tuple[str, ...]:
         return tuple(sorted(t.name for t in self.tools if t.server == server))
@@ -648,26 +721,12 @@ class ToolInventory:
     def all_servers(self) -> tuple[str, ...]:
         """本次请求的全部 server，**含拉起失败的**。
 
-        ★ 求值器一律迭代本方法，不要用 servers() ——
-        否则失败的 server 会从视野里消失（首版契约 2 因此完全没检查到 opendss），
-        变成静默跳过。
+        ★ 求值器一律迭代本方法，不要用 `servers()` ——
+        否则失败的 server 会从视野里消失，变成**静默跳过**。
         """
         if self.requested:
             return tuple(sorted(self.requested))
         return tuple(sorted({t.server for t in self.tools} | {f.server for f in self.failures}))
-
-    def schema_property_names(self, server: str) -> set[str]:
-        """该 server 全部工具的入参/出参属性名。
-
-        用于契约 2 剔除"参数名被误当成工具名"（实测残留误报几乎全是这一类）。
-        """
-        out: set[str] = set()
-        for t in self.tools:
-            if t.server != server:
-                continue
-            for sch in (t.input_schema, t.output_schema):
-                out |= set(((sch or {}).get("properties") or {}).keys())
-        return out
 
 
 async def fetch_server_tools(
@@ -681,12 +740,71 @@ async def fetch_server_tools(
     )
     timeout = timeout_s if timeout_s is not None else cfg.server_timeout_s
 
-    async with asyncio.timeout(timeout):
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                return [ToolRecord.from_sdk(server, t) for t in result.tools]
+    try:
+        async with asyncio.timeout(timeout):
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    return [ToolRecord.from_sdk(server, t) for t in result.tools]
+    except Exception as exc:  # noqa: BLE001 —— 见下：超时需补上下文后重抛，其余原样上抛
+        if _is_timeout(exc):
+            raise _timeout_error(server, timeout) from exc
+        raise
+
+
+def _describe_error(exc: BaseException) -> str:
+    """把异常展开为**可执行的叶子原因**。
+
+    anyio 会把子进程的 `LaunchError` 包在 `ExceptionGroup` 里。直接 `str(exc)`
+    只能得到 `"unhandled errors in a TaskGroup (1 sub-exception)"` ——
+    真正可执行的信息（如 `pip install powermcp[opendss]`）会被吞掉，
+    使契约 8 的 detail 变得不可读。
+
+    方案 §4.4 要求 ⚠️/❌ 必须给出**可执行修复路径**，故此处必须递归展开，
+    并把空白折叠为单行（detail 会渲染成徽章/卡片，多行不便展示）。
+    """
+    leaves: list[str] = []
+
+    def walk(e: BaseException) -> None:
+        subs = getattr(e, "exceptions", None)  # ExceptionGroup / BaseExceptionGroup
+        if subs:
+            for sub in subs:
+                walk(sub)
+            return
+        leaves.append(f"{type(e).__name__}: {e}")
+
+    walk(exc)
+
+    seen: list[str] = []
+    for leaf in leaves:
+        flat = " ".join(leaf.split())  # 折叠换行与连续空白
+        if flat not in seen:
+            seen.append(flat)
+    return " | ".join(seen)[:400]
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """判断异常（含 ExceptionGroup 嵌套）是否由超时引起。"""
+    if isinstance(exc, TimeoutError):
+        return True
+    for sub in getattr(exc, "exceptions", ()) or ():
+        if _is_timeout(sub):
+            return True
+    return False
+
+
+def _timeout_error(server: str, timeout: float) -> TimeoutError:
+    """构造**带上下文**的超时异常。
+
+    `asyncio.timeout` 原生抛出的 `TimeoutError` **消息为空** —— 契约 8 的 detail
+    会退化成 `"TimeoutError:"`，既不说明是哪个 server、等了多久，也不说明卡在哪一步，
+    同样违反方案 §4.4「⚠️/❌ 必须给出可执行修复路径」。
+    """
+    return TimeoutError(
+        f"{server} 在 {timeout:g}s 内未完成 MCP 握手（initialize / list_tools 无响应）"
+        f" —— 进程可能已启动但不响应，需单独排查该 server 的 stdio 管道"
+    )
 
 
 async def build_inventory(
@@ -696,8 +814,8 @@ async def build_inventory(
 ) -> ToolInventory:
     """并发拉起多个 server；单个失败不影响其余，缺口记入 failures。
 
-    失败时**必须保留可执行信息**：摊平 ExceptionGroup 取真实错误，
-    并从 registry 附上安装提示（方案 §4.4 硬要求）。
+    失败时**必须保留可执行信息**：摊平 ExceptionGroup 取真实原因，
+    并在**确属依赖缺失**时从 registry 附上安装提示（方案 §4.4 硬要求）。
     """
     names = list(servers)
 
@@ -705,20 +823,19 @@ async def build_inventory(
         try:
             return server, await fetch_server_tools(cfg, server, timeout_s), None
         except Exception as exc:  # noqa: BLE001 —— 单 server 失败不应拖垮整体
-            summary, causes = describe_exception(exc)
+            error = _describe_error(exc)
             hint, probe = install_hint_for(server)
 
             # 只在"看起来与依赖缺失有关"时才给安装提示，避免误导
-            # （例如超时、崩溃时提示 `pip install` 是没有帮助的）
-            dependency_related = _looks_dependency_related(summary) or (
-                probe is not None and not _probe_importable(probe)
-            )
+            # （超时、崩溃时提示 `pip install` 帮不上忙）
+            probe_missing = probe if (probe is not None and not _probe_importable(probe)) else None
+            dependency_related = _looks_dependency_related(error) or probe_missing is not None
+
             return server, None, ServerFailure(
                 server=server,
-                error=summary,
-                causes=causes,
+                error=error,
                 hint=hint if dependency_related else None,
-                probe_missing=probe if (probe is not None and not _probe_importable(probe)) else None,
+                probe_missing=probe_missing,
             )
 
     results = await asyncio.gather(*(one(s) for s in names))
@@ -744,7 +861,7 @@ async def build_inventory(
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_inventory.py -v -m "not integration"
 ```
-Expected: PASS（4 passed）
+Expected: PASS（20 passed）
 
 - [ ] **Step 5: 跑集成测试（真实拉起 pandapower，约 30 秒）**
 
@@ -990,7 +1107,7 @@ __all__ = [
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_model.py -v
 ```
-Expected: PASS（8 passed）
+Expected: PASS（9 passed）
 
 - [ ] **Step 6: 提交**
 
@@ -1024,7 +1141,8 @@ from powermcp_gateway.contracts.registry import EvaluatorRegistry
 
 
 class _Stub:
-    contract = 9
+    # 契约编号受 Global Constraints 约束为 1–8；此处用 8 作为"合法编号"的桩
+    contract = 8
     name = "stub"
     timeframe = "T0"
 
@@ -1035,7 +1153,7 @@ class _Stub:
 def test_register_and_get():
     reg = EvaluatorRegistry()
     reg.register(_Stub())
-    assert reg.get(9).name == "stub"
+    assert reg.get(8).name == "stub"
     assert len(reg.all()) == 1
 
 
@@ -1391,37 +1509,67 @@ git commit -m "feat(gateway): 契约 5 命名空间求值器"
 
 ### ★ 工具名识别规则的修正（首版误报率极高）
 
-首版规则是「反引号包裹 + 含下划线的 snake_case」，实测**误报 73 条**：
+首版规则是「反引号包裹 + 含下划线的 snake_case」，实测在 8 个引擎上**误报 73 条**
+（pypsa 36 · opendss 16 · andes 13 · hope 3 · genx 3 · surge 2），
+全部是 README 里的 **API 方法名 / 参数名 / 响应字段名**，而不是工具名。
+更糟的是**真证据漏检** —— opendss 因拉不起来而未进 inventory，契约 2 根本没检查到它。
+即首版是「**误报满屏 + 真证据漏检**」。
 
-| server | 首版误报 | 误报来源 |
-|---|---:|---|
-| pypsa | **36** | 几乎全部来自 `Future functionalities` 章节 —— 那列的是**尚未实现的功能** |
-| opendss | 16 | `element_name` / `control_mode` 等**参数名** |
-| andes | 13 | `dyr_path` / `frequency_hz` / `n_eigenvalues` 等**参数名** |
-| hope | 3 | `job_id` / `log_path` —— **参数名** |
-| surge | 2 | `max_iterations` / `max_mismatch` —— **参数名** |
-| genx | 3 | `case_dir` / `scenario_path` —— **路径参数** |
+#### 已交付口径（v2）：结构化提取
 
-**修正为两条规则，实测误报 73 → 32（规则②单独作用后残留几乎全是参数名，再由规则③清掉）**：
+只在**工具清单区块**内、只认**工具名位置**的标识符。实测自 8 个引擎 README，共 5 种写法：
 
-**② 章节作用域**：只在**「工具章节」**内提取候选。
-工具章节的定义是**数据驱动的，不硬编码标题名**：
+| 引擎 | 写法 |
+|---|---|
+| pandapower · ANDES · Egret | `- **name(params)**: 说明` |
+| surge | `` - `name(params)` — 说明 `` |
+| PyPSA · GenX | `` - [x] `name` - 说明 `` |
+| OpenDSS | 表格首列 `\| **name** \| 用途 \|` |
+| HOPE | `## Tool split` 下的 `` - `name` `` |
 
-```
-工具章节 = 正文中出现过至少一个 known_tools（该 server 的真实工具名）的章节
-```
+**规则（三者取并集）**：
+1. **列 0 列表项**的第一个粗体/反引号标识符（`- ` / `- [x] `）
+2. **表格行**的第一个粗体/反引号标识符
+3. **续行**：缩进且**直接以**粗体/反引号标识符开头的行（surge 的多工具枚举）
 
-- pypsa：真实工具名只出现在 `Available Tools`，`Future functionalities` 里一个都没有 → 整个排除（36 → 0）
-- hope：真实工具名出现在 `Tool split` → 保留（该章节确实列的是工具）
-- surge：`max_iterations` 在 `Troubleshooting`，真实工具名在 `Case I/O` / `Power flow` → 排除
+**两道排除**：
+- **必须含下划线** —— 排除 `summary` / `sparse` / `full` 这类参数取值
+- **缩进子项（以 `- ` 开头）不算** —— 排除 ANDES 式的参数/字段说明
 
-**③ 排除 schema 属性名**：候选若出现在该 server 任一工具的 `input_schema` / `output_schema`
-的 `properties` 中，则它是**参数名或输出字段**，不是工具名 → 排除。
-数据直接取自 `ToolInventory`，**无需额外请求**。
+标题别名 `Available Tools` / `Tools` / `Tool split`（大小写不敏感，1–2 级标题）；遇同级标题终止。
 
-> ⚠️ 已知残余局限：规则②③ 仍是启发式。若 README 在**工具章节内**用反引号标注了参数名，
-> 仍会漏过。**不声称完全消除误报** —— 但 `violated` 的每条 finding 都带 `evidence`，
-> 可下钻核对（P4）。
+#### 与「数据驱动章节作用域 + schema 属性名排除」方案的实测对比
+
+曾评估过另一套规则（② 工具章节 = 正文含至少一个真实工具名的章节；③ 排除 schema properties 中的名字）。
+按该口径**原样**实测，结果明显更差：
+
+| 引擎 | 实际 | v2 声明 / 误报 | 另一方案 声明 / 误报 / 漏报 |
+|---|---|---|---|
+| pandapower | 8 | 8 / 0 | **0 / 0 / 8** |
+| pypsa | 17 | 17 / 0 | 17 / 0 / 0 |
+| surge | 44 | 38 / 0 | 14 / 1 / **31** |
+| andes | 6 | 6 / 0 | 14 / **11** / 3 |
+| egret | 5 | 5 / 0 | **0 / 0 / 5** |
+| hope | 20 | 20 / 0 | 21 / 1 / 0 |
+| genx | 7 | 4 / 0 | 7 / 0 / 0 |
+| **合计** | | **0** | **13 / 47** |
+
+**两条已证据化的原因**：
+1. **只认反引号、不认粗体** —— pandapower / ANDES / Egret 用粗体写工具名，候选为空 →
+   声明 0 → 全部误报为"未声明"。
+2. **schema 属性名排除覆盖不到"文档描述的返回字段名"** —— 实测 andes 的
+   `damping_ratio_pct` / `dynamic_models_loaded` / `frequency_hz` **不在** schema properties
+   （andes 全部 properties 仅 16 个，`dyr_path` / `file_path` 在、上述不在）→ 清不掉。
+   v2 靠「缩进子项不算」这条结构判据把它们全挡住。
+
+> ⚠️ **v2 仍是启发式，不是解析器**。已知残余局限：
+> - **行内提及的 helper 提取不到** —— GenX 的 `` `plot_capacity` `` 后跟
+>   "(with helpers `check_capacity_setting` and `summarize_capacity`)"，后两个被判"未声明"
+>   （表现为 `degraded` 而非 `violated`，危害有限）
+> - README 若新增第 6 种写法，需同步扩展
+>
+> **不声称完全消除误报** —— 但每条 finding 都带 `evidence`，可下钻核对（P4）。
+
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1433,176 +1581,238 @@ import pytest
 from powermcp_gateway.contracts.doc_impl import (
     DocImplEvaluator,
     extract_declared_tool_names,
-    split_sections,
 )
-from powermcp_gateway.inventory import ServerFailure, ToolInventory, ToolRecord
+from powermcp_gateway.inventory import ToolInventory, ToolRecord
 
 
-def _rec(server: str, name: str, schema: dict | None = None) -> ToolRecord:
+def _rec(server: str, name: str) -> ToolRecord:
     return ToolRecord.from_sdk(
-        server,
-        SimpleNamespace(name=name, description=None,
-                        input_schema=schema or {}, output_schema=None),
+        server, SimpleNamespace(name=name, description=None, input_schema={}, output_schema=None)
     )
 
 
-def test_split_sections_keeps_headings_with_bodies():
-    md = "# A\nline1\n## B\nline2\nline3\n"
-    secs = split_sections(md)
-    assert [t for t, _ in secs] == ["（文首）", "A", "B"]
-    assert "line2" in dict(secs)["B"]
+# —— 提取口径：实测自 8 个引擎 README 的 5 种写法（见 doc_impl 模块 docstring）——
 
-
-def test_extract_picks_backticked_snake_case():
-    md = """
-    ## Tools
-    - `run_power_flow` — runs a power flow
-    - `load_network` — loads a network
-    Use `pip install pandapower` to get started.
-    """
-    got = extract_declared_tool_names(md, known_tools={"run_power_flow", "load_network"})
-    assert "run_power_flow" in got
-    assert "load_network" in got
-    assert "pip" not in got          # 太短
-    assert "pandapower" not in got   # 无下划线且非工具名形态
-
-
-# —— ★ 回归：pypsa 的真实误报形态（36 条来自 Future functionalities 章节） ——
-
-def test_future_functionalities_section_is_excluded():
-    """真实 README 形态：未实现的功能列在另一个章节，不得被当作"声明却不存在"。"""
+def test_extract_from_bullet_list_with_bold():
+    """pandapower / ANDES / Egret 的写法。"""
     md = """
 ## Available Tools
-- `add_bus` — add a bus
-- `add_generator` — add a generator
 
-## Future functionalities
-- `add_constraint` — not implemented yet
-- `add_emission_limit` — not implemented yet
-- `add_link` — not implemented yet
+- **run_power_flow(algorithm, tolerance_mva)**: Run power flow analysis.
+- **load_network(file_path: str)**: Load a network from a `.json` file.
 """
-    got = extract_declared_tool_names(md, known_tools={"add_bus", "add_generator"})
-    assert got == {"add_bus", "add_generator"}
-    assert "add_constraint" not in got
-    assert "add_link" not in got
+    assert extract_declared_tool_names(md) == {"run_power_flow", "load_network"}
 
 
-# —— ★ 回归：参数名不得被当作工具名 ——
+def test_extract_from_backtick_bullets_and_checkboxes():
+    """surge 用反引号；PyPSA / GenX 用 `- [x]` 复选框。"""
+    md = """
+## Tools
 
-def test_schema_property_names_are_excluded():
-    md = "## Tools\n- `run_power_flow` — runs\n- `max_iterations` — a parameter\n"
-    got = extract_declared_tool_names(
-        md, known_tools={"run_power_flow"}, exclude={"max_iterations"}
-    )
-    assert got == {"run_power_flow"}
-
-
-def test_no_known_tools_means_no_sections_no_candidates():
-    """一个真实工具名都没在文档里出现 → 无法判定工具章节 → 不提取任何候选。"""
-    md = "## Anything\n`some_name` `other_name`\n"
-    assert extract_declared_tool_names(md, known_tools={"real_tool"}) == set()
+- `create_empty_network(name?, base_mva?)`.
+- [x] `get_network_info` - Get basic network statistics.
+"""
+    assert extract_declared_tool_names(md) == {"create_empty_network", "get_network_info"}
 
 
-class _Cfg:
-    """把 tmp_path 伪装成 PowerMCP 仓库根。"""
+def test_extract_from_table_first_column():
+    """OpenDSS 的写法：工具名在表格首列的粗体中。"""
+    md = """
+## Available Tools
 
-    def __init__(self, root):
-        self.powermcp_root = root
+| Tool | Purpose |
+|------|---------|
+| **compile_opendss_file** | compile a master DSS file |
+| **clear_all_opendss_memory** | `ClearAll`; resets state |
+"""
+    assert extract_declared_tool_names(md) == {
+        "compile_opendss_file", "clear_all_opendss_memory"}
 
 
-def _server(tmp_path, name: str, readme: str):
-    d = tmp_path / name
-    d.mkdir(exist_ok=True)
-    (d / "README.md").write_text(readme, encoding="utf-8")
-    return d
+def test_extract_accepts_indented_continuation_lines():
+    """surge 的写法：一个列表项内换行枚举多个工具名（续行直接以反引号开头）。"""
+    md = """
+## Tools
 
+- `create_empty_network(name?, base_mva?)`.
+- `add_bus(number, bus_type)`,
+  `add_generator(bus, p_mw)`,
+  `add_line(from_bus, to_bus)`.
+"""
+    assert extract_declared_tool_names(md) == {
+        "create_empty_network", "add_bus", "add_generator", "add_line"}
+
+
+def test_extract_ignores_nested_sub_bullets():
+    """ANDES 的写法：缩进子项是参数/字段说明，不是工具。"""
+    md = """
+## Available Tools
+
+- **run_power_flow(file_path: str)**: Run power flow analysis.
+  - `dyr_path`: optional dynamic-model file.
+    - `n_dynamic_generators`: how many the loaded system carries.
+"""
+    assert extract_declared_tool_names(md) == {"run_power_flow"}
+
+
+def test_extract_ignores_parameter_enumeration_values():
+    """surge 的写法：`format` 的取值 `summary`/`sparse`/`full` 是参数取值，不是工具。
+
+    这是旧口径（全文反引号 snake_case）误报的主因之一。
+    """
+    md = """
+## Tools
+
+- `compute_ptdf(monitored_branches?, format)`.
+
+`format` controls serialization:
+
+- `summary` (default): shape, sparsity.
+- `sparse`: CSR for 2-D.
+- `full`: dense nested list.
+"""
+    assert extract_declared_tool_names(md) == {"compute_ptdf"}
+
+
+def test_extract_requires_underscore():
+    """工具名一律含下划线；无下划线的标识符（包名、取值）不算。"""
+    md = """
+## Tools
+
+- `pandapower` — the package.
+- `run_power_flow(...)`.
+"""
+    assert extract_declared_tool_names(md) == {"run_power_flow"}
+
+
+def test_extract_ignores_text_outside_tool_sections():
+    md = """
+# Server
+
+## Requirements
+
+- `some_python_package` must be installed.
+
+## Available Tools
+
+- `the_tool(...)`.
+"""
+    assert extract_declared_tool_names(md) == {"the_tool"}
+
+
+def test_extract_stops_at_next_same_level_heading():
+    md = """
+## Available Tools
+
+- `the_tool(...)`.
+
+## Resources
+
+- `not_a_tool(...)`.
+"""
+    assert extract_declared_tool_names(md) == {"the_tool"}
+
+
+def test_extract_accepts_tool_split_section():
+    """HOPE 用 `## Tool split` 作为工具清单标题。"""
+    md = """
+## Tool split
+
+Claude/local full-access server:
+
+- `hope_warmup`
+- `hope_job_status`
+"""
+    assert extract_declared_tool_names(md) == {"hope_warmup", "hope_job_status"}
+
+
+# —— DocImplEvaluator 的判定规则（不受口径改动影响）——
 
 def test_declared_but_missing_is_violated(tmp_path):
-    _server(tmp_path, "FakeServer", """
-## Available Tools
-- `real_tool` — the one that exists
-- `does_not_exist` — promised but absent
-- `also_missing` — promised but absent
-""")
+    server_dir = tmp_path / "FakeServer"
+    server_dir.mkdir()
+    (server_dir / "README.md").write_text(
+        "## Available Tools\n\n- `does_not_exist(...)`.\n- `also_missing(...)`.\n",
+        encoding="utf-8",
+    )
+
+    class Cfg:
+        powermcp_root = tmp_path
+
     ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
     findings = ev.evaluate(
-        ToolInventory(tools=(_rec("fake", "real_tool"),), failures=()),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
+        ToolInventory(tools=(_rec("fake", "real_tool"),), failures=()), cfg=Cfg()  # type: ignore[arg-type]
     )
-    viol = [f for f in findings if f.state == "violated"]
-    assert viol, f"期望 violated，实际 {[f.state for f in findings]}"
-    assert set(viol[0].evidence["declared_missing"]) == {"does_not_exist", "also_missing"}
+    states = {f.state for f in findings}
+    assert "violated" in states
+    viol = [f for f in findings if f.state == "violated"][0]
+    assert set(viol.evidence["declared_missing"]) == {"does_not_exist", "also_missing"}
 
 
 def test_undocumented_is_degraded(tmp_path):
-    _server(tmp_path, "FakeServer", "## Available Tools\n- `documented_tool` — documented\n")
+    server_dir = tmp_path / "FakeServer"
+    server_dir.mkdir()
+    (server_dir / "README.md").write_text(
+        "## Available Tools\n\n- `documented_tool(...)`.\n", encoding="utf-8"
+    )
+
+    class Cfg:
+        powermcp_root = tmp_path
+
     ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
     findings = ev.evaluate(
-        ToolInventory(
-            tools=(_rec("fake", "documented_tool"), _rec("fake", "secret_tool")), failures=()
-        ),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
+        ToolInventory(tools=(_rec("fake", "documented_tool"), _rec("fake", "secret_tool")), failures=()),
+        cfg=Cfg(),  # type: ignore[arg-type]
     )
     deg = [f for f in findings if f.state == "degraded"]
     assert deg and deg[0].evidence["undocumented"] == ["secret_tool"]
 
 
-def test_param_names_in_schema_are_not_reported_as_missing(tmp_path):
-    """★ 回归：max_iterations 这类参数名不得被当成"声明却不存在"的工具。"""
-    _server(tmp_path, "FakeServer", """
-## Available Tools
-- `run_power_flow` — runs
-- `max_iterations` — a *parameter*, mistakenly backticked in the tool section
-""")
-    ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
-    findings = ev.evaluate(
-        ToolInventory(
-            tools=(_rec("fake", "run_power_flow",
-                        schema={"properties": {"max_iterations": {"type": "integer"}}}),),
-            failures=(),
-        ),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
-    )
-    assert not [f for f in findings if f.state == "violated"]
-
-
 def test_missing_readme_is_structural_unknown(tmp_path):
+    class Cfg:
+        powermcp_root = tmp_path
+
     ev = DocImplEvaluator(doc_dirs={"fake": "NoSuchDir"})
     findings = ev.evaluate(
-        ToolInventory(tools=(_rec("fake", "x_tool"),), failures=(), requested=("fake",)),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
+        ToolInventory(tools=(_rec("fake", "x_tool"),), failures=()), cfg=Cfg()  # type: ignore[arg-type]
     )
     assert len(findings) == 1
     assert findings[0].state == "unknown"
     assert findings[0].reason == "structural"
 
 
-def test_unmounted_server_is_checked_not_skipped(tmp_path):
-    """★ 缺陷 B：拉起失败的 server 必须进入求值器视野，并显式报未知。"""
-    ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
-    findings = ev.evaluate(
-        ToolInventory(
-            tools=(_rec("fake", "real_tool"),),
-            failures=(ServerFailure("opendss", "LaunchError: ..."),),
-            requested=("fake", "opendss"),
-        ),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
-    )
-    opendss = [f for f in findings if f.subject == "opendss"]
-    assert opendss, "未拉起的 server 被静默跳过了"
-    assert opendss[0].state == "unknown"
-    assert opendss[0].reason == "structural"
-    assert "契约 8" in opendss[0].detail
-
-
 def test_all_consistent_is_satisfied(tmp_path):
-    _server(tmp_path, "FakeServer", "## Available Tools\n- `the_tool` — only this one\n")
+    server_dir = tmp_path / "FakeServer"
+    server_dir.mkdir()
+    (server_dir / "README.md").write_text(
+        "## Available Tools\n\n- `the_tool(...)`.\n", encoding="utf-8"
+    )
+
+    class Cfg:
+        powermcp_root = tmp_path
+
     ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
     findings = ev.evaluate(
-        ToolInventory(tools=(_rec("fake", "the_tool"),), failures=(), requested=("fake",)),
-        cfg=_Cfg(tmp_path),  # type: ignore[arg-type]
+        ToolInventory(tools=(_rec("fake", "the_tool"),), failures=()), cfg=Cfg()  # type: ignore[arg-type]
     )
     assert findings[0].state == "satisfied"
+
+
+def test_section_without_tool_names_is_not_satisfied(tmp_path):
+    """README 有工具清单标题但一个工具都没列 → 全部未声明，判 degraded（不是 satisfied）。"""
+    server_dir = tmp_path / "FakeServer"
+    server_dir.mkdir()
+    (server_dir / "README.md").write_text("## Available Tools\n\n(待补)\n", encoding="utf-8")
+
+    class Cfg:
+        powermcp_root = tmp_path
+
+    ev = DocImplEvaluator(doc_dirs={"fake": "FakeServer"})
+    findings = ev.evaluate(
+        ToolInventory(tools=(_rec("fake", "a_tool"),), failures=()), cfg=Cfg()  # type: ignore[arg-type]
+    )
+    assert findings[0].state == "degraded"
+    assert findings[0].evidence["undocumented"] == ["a_tool"]
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -1616,10 +1826,47 @@ Expected: FAIL —— `ModuleNotFoundError`
 - [ ] **Step 3: 写 `gateway/src/powermcp_gateway/contracts/doc_impl.py`**
 
 ```python
-"""契约 2：文档-实现一致性。
+r"""契约 2：文档-实现一致性。
 
-比对 server 的 README.md 所声明的工具名 vs list_tools 实际返回。
-已知证据：opendss 的 README / SKILL.md 引用的 6 个工具名全部不存在。
+比对 server 的 README.md 所声明的工具面 vs `list_tools` 实际返回。
+
+## 提取口径 v2（2026-09-24 重写）
+
+v1 的口径是"全文任意被反引号包裹的 snake_case 标识符"。实测在 8 个引擎上
+产生**大量误报** —— pypsa 36 条、andes 13 条、genx 3 条、hope 3 条、surge 2 条，
+全部是 README 里的 **API 方法名 / 参数名 / 响应字段名**，而不是工具名。
+（例：pypsa 的 `add_constraint`、andes 的 `dyr_path`、surge 的 `summary`。）
+更糟的是：真正的已知证据 opendss 因拉不起来而未进入 inventory，
+契约 2 根本没检查到它 —— 即 v1 是"误报满屏、真证据漏检"。
+
+v2 改为**结构化提取**：只在"工具清单区块"内、只认"工具名位置"的标识符。
+实测自 8 个引擎的 README，共 5 种写法，全部覆盖：
+
+| 引擎 | 写法 |
+|---|---|
+| pandapower · ANDES · Egret | ``- **name(params)**: 说明`` |
+| surge | ``- `name(params)` — 说明`` |
+| PyPSA · GenX | ``- [x] `name` - 说明`` |
+| OpenDSS | ``\| **name** \| 用途 \|``（表格首列） |
+| HOPE | `## Tool split` 下的 ``- `name` `` |
+
+提取规则（三者取并集）：
+1. **列 0 列表项**的第一个粗体/反引号标识符（`- ` 或 `- [x] `）
+2. **表格行**的第一个粗体/反引号标识符
+3. **续行**：缩进且**直接以**粗体/反引号标识符开头的行（surge 的多工具枚举）
+
+并施加两道排除：
+- **必须含下划线** —— 工具名一律带 `_`；`summary` / `sparse` / `full` 这类参数取值被排除
+- **缩进子项（以 `- ` 开头）不算** —— 那是 ANDES 式的参数/字段说明
+
+## 已知局限（如实记录，不掩盖）
+
+- **行内提及的 helper 提取不到**：GenX 的 `` `plot_capacity` `` 后跟
+  "(with helpers `check_capacity_setting` and `summarize_capacity`)"，
+  后两个会被判为"未声明"。当前仅 genx 命中，表现为 `degraded` 而非 `violated`。
+- **判定为 `violated` 需要"声明的工具名在运行时不存在"**。v2 在 8 个引擎上
+  **未产生任何 `violated`**（v1 曾产生 5 条，经逐条核实全部为误报）。
+- 本口径是**启发式**，不是解析器。README 写法若再新增第 6 种，需同步扩展。
 """
 
 from __future__ import annotations
@@ -1643,57 +1890,46 @@ SERVER_DOC_DIRS: dict[str, str] = {
     "genx": "GenX",
 }
 
-_BACKTICKED = re.compile(r"`([a-z][a-z0-9_]{2,})`")
+# 实测自 8 个引擎 README 的工具清单标题（大小写不敏感）
+TOOL_SECTIONS: tuple[str, ...] = ("Available Tools", "Tools", "Tool split")
+
+_SECTION = re.compile(
+    r"^#{1,2}\s+(?:" + "|".join(re.escape(s) for s in TOOL_SECTIONS) + r")\s*$",
+    re.IGNORECASE,
+)
+_ANY_H12 = re.compile(r"^#{1,2}\s+")
+_LIST_ITEM = re.compile(r"^-\s+(?:\[[ xX]\]\s+)?(?:\*\*|`)([A-Za-z_][A-Za-z0-9_]*)")
+_TABLE_ROW = re.compile(r"^\|\s*(?:\*\*|`)([A-Za-z_][A-Za-z0-9_]*)")
+_CONTINUATION = re.compile(r"^\s+(?:\*\*|`)([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def split_sections(markdown: str) -> list[tuple[str, str]]:
-    """按 Markdown 标题切段，返回 [(标题, 正文)]。首个标题前的内容归入「（文首）」。"""
-    out: list[tuple[str, str]] = []
-    current, buf = "（文首）", []
-    for line in markdown.splitlines():
-        if line.startswith("#"):
-            out.append((current, "\n".join(buf)))
-            current, buf = line.strip("# ").strip(), []
-        else:
-            buf.append(line)
-    out.append((current, "\n".join(buf)))
-    return out
+def extract_declared_tool_names(markdown: str) -> set[str]:
+    """从 README 的工具清单区块提取「声明的工具名」。
 
-
-def extract_declared_tool_names(
-    markdown: str,
-    *,
-    known_tools: set[str],
-    exclude: set[str] = frozenset(),
-) -> set[str]:
-    """提取 README 中被当作"工具"声明的名字。
-
-    只收反引号包裹、含下划线的 snake_case 标识符 —— 工具名一律带下划线
-    （`run_power_flow`），而 `pandapower` / `pip` 是包名或命令。
-
-    ★ 两条作用域规则（首版没有，实测误报 73 条）：
-
-    ① **章节作用域**：只在"正文中出现过至少一个 `known_tools`"的章节内提取。
-       实证：pypsa 的真实工具名只出现在 `Available Tools`，而 36 条误报全部来自
-       `Future functionalities`（未实现的功能）—— 按章节过滤后该 server 误报 36 → 0。
-       标题名**不硬编码**，靠共现学习，因为各 server 的标题命名并不统一。
-
-    ② **排除 schema 属性名**：`exclude` 传入该 server 全部工具的入参/出参属性名，
-       命中者视为参数名或输出字段，不是工具名。实测残留误报几乎全是这一类
-       （`max_iterations` / `job_id` / `case_dir` / `element_name` …）。
+    只在清单区块内、只认工具名位置（列 0 列表项 / 表格首列 / 续行），
+    并要求含下划线 —— 见模块 docstring 的口径说明与已知局限。
     """
-    tool_sections = [
-        body for _, body in split_sections(markdown)
-        if any(known in body for known in known_tools)
-    ]
-    if not tool_sections:
-        return set()
+    names: set[str] = set()
+    inside = False
 
-    found: set[str] = set()
-    for body in tool_sections:
-        found |= {m for m in _BACKTICKED.findall(body) if "_" in m}
+    for line in markdown.splitlines():
+        if _SECTION.match(line):
+            inside = True
+            continue
+        if inside and _ANY_H12.match(line):
+            break  # 下一个同级或更高级标题 → 清单区块结束
+        if not inside:
+            continue
 
-    return found - exclude
+        m = _LIST_ITEM.match(line) or _TABLE_ROW.match(line) or _CONTINUATION.match(line)
+        if m is None:
+            continue
+
+        name = m.group(1)
+        if "_" in name:  # 工具名一律含下划线；参数取值/包名被排除
+            names.add(name)
+
+    return names
 
 
 class DocImplEvaluator:
@@ -1708,62 +1944,75 @@ class DocImplEvaluator:
         findings: list[ContractFinding] = []
         mounted = set(inv.servers())
 
-        # ★ 迭代 all_servers() 而非 servers()：拉起失败的 server 也要被检查到，
-        #   否则会静默跳过（首版契约 2 因此完全没检查到 opendss）。
+        # ★ 迭代 all_servers() 而非 servers()：拉起失败的 server 也要被检查到。
+        #   首版用 servers() 时，失败的 server 从视野里消失 —— 契约 2 变成"静默跳过"，
+        #   看起来"没问题"，实际是"没检查"。
         for server in inv.all_servers():
             dirname = self._doc_dirs.get(server)
             readme = (cfg.powermcp_root / dirname / "README.md") if dirname else None
 
             if readme is None or not readme.is_file():
-                findings.append(ContractFinding(
-                    contract=2, state="unknown", reason="structural", subject=server,
-                    detail=f"未找到 {server} 的 README.md，无法比对文档与实现。",
-                    evidence={"server": server, "readme": str(readme) if readme else None},
-                ))
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="unknown", reason="structural", subject=server,
+                        detail=f"未找到 {server} 的 README.md，无法比对文档与实现。",
+                        evidence={"server": server, "readme": str(readme) if readme else None},
+                    )
+                )
                 continue
 
             if server not in mounted:
-                findings.append(ContractFinding(
-                    contract=2, state="unknown", reason="structural", subject=server,
-                    detail=(
-                        f"`{server}` 未能拉起，拿不到运行时工具清单，**无法比对**文档与实现。"
-                        f"（该失败本身记在**契约 8**）"
-                    ),
-                    evidence={"server": server, "readme": str(readme), "mounted": False},
-                ))
+                # 拿不到运行时工具清单 → **无法比对**。
+                # 报 violated 会是误报（README 里的名字并非"不存在"，而是"无从核对"）。
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="unknown", reason="structural", subject=server,
+                        detail=(
+                            f"`{server}` 未能拉起，拿不到运行时工具清单，**无法比对**文档与实现。"
+                            f"（该失败本身记在**契约 8**）"
+                        ),
+                        evidence={"server": server, "readme": str(readme), "mounted": False},
+                    )
+                )
                 continue
 
             actual = set(inv.names(server))
-            declared = extract_declared_tool_names(
-                readme.read_text(encoding="utf-8"),
-                known_tools=actual,
-                exclude=inv.schema_property_names(server),
-            )
+
+            declared = extract_declared_tool_names(readme.read_text(encoding="utf-8"))
             declared_missing = sorted(declared - actual)
             undocumented = sorted(actual - declared)
 
             if declared_missing:
-                findings.append(ContractFinding(
-                    contract=2, state="violated", reason=None, subject=server,
-                    detail=(
-                        f"README 声明的 {len(declared_missing)} 个名字在运行时不存在："
-                        f"{'、'.join(declared_missing)}。"
-                    ),
-                    evidence={"server": server, "declared_missing": declared_missing,
-                              "readme": str(readme), "method": "section-scoped"},
-                ))
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="violated", reason=None, subject=server,
+                        detail=(
+                            f"README 声明的 {len(declared_missing)} 个工具在运行时不存在："
+                            f"{'、'.join(declared_missing)}。"
+                        ),
+                        evidence={"server": server, "declared_missing": declared_missing,
+                                  "readme": str(readme), "method": "structured-v2"},
+                    )
+                )
             if undocumented:
-                findings.append(ContractFinding(
-                    contract=2, state="degraded", reason=None, subject=server,
-                    detail=f"{len(undocumented)} 个工具未在 README 中声明：{'、'.join(undocumented)}。",
-                    evidence={"server": server, "undocumented": undocumented},
-                ))
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="degraded", reason=None, subject=server,
+                        detail=(
+                            f"{len(undocumented)} 个工具未在 README 中声明："
+                            f"{'、'.join(undocumented)}。"
+                        ),
+                        evidence={"server": server, "undocumented": undocumented},
+                    )
+                )
             if not declared_missing and not undocumented:
-                findings.append(ContractFinding(
-                    contract=2, state="satisfied", reason=None, subject=server,
-                    detail=f"{server} 的 README 与运行时工具面一致（{len(actual)} 个）。",
-                    evidence={"server": server, "tool_count": len(actual)},
-                ))
+                findings.append(
+                    ContractFinding(
+                        contract=2, state="satisfied", reason=None, subject=server,
+                        detail=f"{server} 的 README 与运行时工具面一致（{len(actual)} 个）。",
+                        evidence={"server": server, "tool_count": len(actual)},
+                    )
+                )
 
         return findings
 ```
@@ -1774,7 +2023,7 @@ class DocImplEvaluator:
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_doc_impl.py -v
 ```
-Expected: PASS（5 passed）
+Expected: PASS（15 passed）
 
 - [ ] **Step 5: 注册并在真实数据上跑一次**
 
@@ -2398,6 +2647,59 @@ async def test_report_summarises_overall():
 def test_cache_put_get_roundtrip():
     c = T0Cache()
     assert c.get("nope") is None
+
+
+# —— ★ 完成标准 #5：失败路径的验收（注入构造，不依赖真实环境哪个 server 会失败）——
+
+async def test_failed_server_yields_actionable_hint(monkeypatch):
+    """未拉起的 server 必须：a) 给出可执行修复路径；b) 记为 structural（有路径 → 不是事故）；
+    c) 在契约 2 里**不被静默跳过**。"""
+    import powermcp_gateway.inventory as inv_mod
+    from powermcp_gateway.config import GatewayConfig
+
+    # ⚠️ 必须传真实 config：契约 2 要用 cfg.powermcp_root 定位 README。
+    #    传 None 会让它抛异常并被 evaluate_t0 降级成 subject="*" 的 incident，
+    #    下面 c2 的断言就落空了。
+    cfg = GatewayConfig.discover()
+
+    async def boom(cfg_, server, timeout_s=None):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [
+            RuntimeError("ANDES: required package 'andes' is not installed. "
+                         "Install it with: pip install powermcp[andes]"),
+        ])
+
+    monkeypatch.setattr(inv_mod, "fetch_server_tools", boom)
+    inv = await inv_mod.build_inventory(cfg, ["andes"])
+    report = await evaluate_t0(inv, cfg)
+
+    c8 = [f for f in report.findings if f.contract == 8 and f.subject == "andes"]
+    assert c8, "未拉起的 server 没有产生契约 8 finding"
+    assert "pip install powermcp[andes]" in c8[0].detail     # a) 可执行修复路径
+    assert c8[0].state == "unknown"
+    assert c8[0].reason == "structural"                      # b) 有修复路径 → 不是事故
+
+    c2 = [f for f in report.findings if f.contract == 2 and f.subject == "andes"]
+    assert c2, "该 server 在契约 2 里被静默跳过了"            # c)
+    assert c2[0].state == "unknown" and c2[0].reason == "structural"
+    assert c2[0].evidence["mounted"] is False
+
+
+async def test_failed_server_without_hint_is_incident(monkeypatch):
+    """超时类失败没有可执行修复路径 → 仍记为 incident（与 a/b 的区分不能混）。"""
+    import powermcp_gateway.inventory as inv_mod
+    from powermcp_gateway.config import GatewayConfig
+
+    cfg = GatewayConfig.discover()
+
+    async def boom(cfg_, server, timeout_s=None):
+        raise TimeoutError(f"{server} 在 90s 内未完成 MCP 握手（initialize / list_tools 无响应）")
+
+    monkeypatch.setattr(inv_mod, "fetch_server_tools", boom)
+    inv = await inv_mod.build_inventory(cfg, ["surge"])
+    report = await evaluate_t0(inv, cfg)
+
+    c8 = [f for f in report.findings if f.contract == 8 and f.subject == "surge"]
+    assert c8 and c8[0].reason == "incident"
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -2429,8 +2731,7 @@ from .registry import REGISTRY, EvaluatorRegistry
 def cache_key(inv: ToolInventory) -> str:
     """由"工具面"派生 —— 工具名或 schema 变了，缓存即失效。"""
     payload = {
-        # all_servers()：请求全集（含未拉起的），否则 requested 变了 key 可能不变
-        "servers": list(inv.all_servers()),
+        "servers": list(inv.servers()),
         "tools": sorted(
             (t.server, t.name, json.dumps(t.input_schema, sort_keys=True, ensure_ascii=False))
             for t in inv.tools
@@ -2502,25 +2803,23 @@ async def evaluate_t0(
                 )
             )
 
-    # 未拉起的 server —— 契约 8（运行时依赖）
-    #
-    # ★ 状态分类按 UI 规范 §3.8.2：
-    #   有可执行修复路径（缺依赖）→ structural：长期、已知、可修复，不该喊成事故
-    #   拿不到任何可执行路径（崩溃/超时）→ incident：本应能判定却拿不到
-    # ★ detail 必须含可执行修复路径 —— 方案 §4.4 硬要求。
+    # 挂了但拿不到清单的 server 本身也是一条 finding。
+    # ★ 失败原因若**自带可执行修复路径**（依赖缺失类），记为 structural 而非 incident ——
+    #   "知道怎么修" 与 "出了事故" 是两种不同的信号，混在一起会让事故标记失去意义。
     for failure in inv.failures:
-        fix = f" 修复：`{failure.hint}`" if failure.hint else ""
         findings.append(
             ContractFinding(
                 contract=8,
                 state="unknown",
                 reason="structural" if failure.hint else "incident",
                 subject=failure.server,
-                detail=f"server `{failure.server}` 未能拉起：{failure.error}{fix}",
+                detail=(
+                    f"server `{failure.server}` 未能拉起：{failure.error}"
+                    + (f" 修复：{failure.hint}" if failure.hint else "")
+                ),
                 evidence={
                     "server": failure.server,
                     "error": failure.error,
-                    "causes": list(failure.causes),
                     "hint": failure.hint,
                     "probe_missing": failure.probe_missing,
                 },
@@ -2544,7 +2843,7 @@ async def evaluate_t0(
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_engine.py -v
 ```
-Expected: PASS（5 passed）
+Expected: PASS（7 passed）
 
 - [ ] **Step 5: 提交**
 
@@ -2818,3 +3117,64 @@ async def test_failed_server_yields_actionable_hint(monkeypatch):
 - **子项目 4**：进程监管（心跳 / 退避重启 / 熔断 / 引擎状态端点）
 - **子项目 1**：设计系统落地（tokens → CSS 变量 / Tailwind / 5 个签名组件 / Zod 边界）
 - **子项目 5**：前端视图（聊天面板 + 契约面板），消费本计划的 `/contracts/t0` 与后续的 SSE
+
+---
+
+## 执行记录（2026-09-24 回填）
+
+### 状态
+
+| 项 | 结果 |
+|---|---|
+| Task 完成度 | **10 / 10**；Step **64 / 64** |
+| 交付文件 | 25 个（`gateway/` 24 + `.gitignore`），全部已纳入 git |
+| 单元测试 | **76 passed**（`pytest -m "not integration"`） |
+| 集成测试 | **1 passed**（真实拉起 pandapower，8 工具） |
+| 提交 | 17 个（`1baa8a7` … 见 `git log`） |
+| `PowerMCP/` 改动 | **0 行**（*zero source mutation* 保持） |
+
+### 完成标准 5/5（含全部 9 个 server 的实测）
+
+| # | 标准 | 实测 |
+|---|---|---|
+| ① | `summary.primary` ∈ 五值集合 | ✅ `incident` |
+| ② | 契约 5 有 degraded，evidence 列出 `load_network` 多 server | ✅ `['pandapower','pypsa','surge']` |
+| ③ | 契约 1 全为 `unknown/structural` 且写明原因 | ✅ 8 条 |
+| ④ | 契约 2 的 `violated` 为 0 或极少 | ✅ **0** |
+| ⑤ | 失败路径按注入方式验收（不依赖环境） | ✅ 见 `test_engine.py::test_failed_server_yields_actionable_hint` |
+
+真实快照：已挂载 **8/9**、工具 **117**、`summary = incident / structural 11 / incident 1`；
+契约 2 → 5 satisfied + 2 degraded + 2 structural；契约 5 → 11 条重名（全部 schema 不同）。
+
+### 与「原计划预测」的偏差（环境相关，非实现缺陷）
+
+原计划预测 `hope` / `genx` 因缺 Julia 拉不起来。**实测相反**：二者均可正常拉起（20 / 7 工具）。
+真正拉不起来的是 **`andes` / `egret` / `opendss`**（缺 pip extra）。按最小依赖安装后
+（`andes` · `gridx-egret` + `pyomo` · `py_dss_toolkit`，34 个包纯新增、零版本升降），
+`andes` / `egret` 挂载成功，**仅 `opendss` 仍失败** —— 依赖已满足、协议层正常
+（裸探针 1.86s 正确响应），但经 mcp SDK 握手超时，属**独立缺陷**，
+已另立 [opendss 缺陷立项](2026-09-24-opendss-sdk-mount-defect.md)。
+
+### 与「本计划规格」的偏差（已回改为已交付实现）
+
+| 位置 | 原规格 | 已交付实现 |
+|---|---|---|
+| Task 1 | `describe_exception(exc) -> (summary, causes)` | `_describe_error(exc) -> str`（+ `_is_timeout` / `_timeout_error`） |
+| Task 1 | `ServerFailure.causes` | 未采纳（`error` 已含摊平后的文本） |
+| Task 5 | 数据驱动章节作用域 + schema 属性名排除 | **结构化提取 v2**（实测误报 0 vs 另一方案 13/47，对比见 Task 5 ★ 节） |
+| Task 2/5 | 契约 2 迭代 `servers()` | 迭代 **`all_servers()`**（缺陷 B） |
+
+已交付的 `inventory.py` / `doc_impl.py` / `engine.py` 及其测试的**完整代码已同步进本计划对应 Step**，
+可直接对照。契约 2 的 v2 口径**已在真实数据上验证误报为 0**。
+
+### 回填时同步的文档缺陷（4 处）
+
+1. Task 0 测试断言写死 POSIX 分隔符 `powermcp/registry.py` → 改 `r"powermcp[\\/]registry\.py"`（Windows 必然失败）
+2. Task 2 预期「8 passed」→「9 passed」（测试函数实为 9 个）
+3. Task 3 桩 `_Stub.contract = 9` 越出 1–8，与同文件 `test_invalid_contract_number_rejected` 冲突 → 改用 **8**
+4. File Structure 漏登记 `gateway/tests/test_contract_registry.py`
+
+### 遗留
+
+- **opendss 无法经 mcp SDK 挂载**（唯一真阻塞，影响计划 Goal 的"拉起 9 个"）—— 见立项文档
+- `docs/` 与 `design/`、`tools/` 已纳入 git；`docs/_pdfwork/`（7.3MB 可再生中间产物）按约定排除
