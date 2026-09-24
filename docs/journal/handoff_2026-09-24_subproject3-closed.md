@@ -82,9 +82,13 @@ note: 本 handoff 记录**子项目 3 的收尾审查与全部修复**，子项�
 ## 当前状态
 
 - ✅ **子项目 3 的收尾审查与全部修复完成**：4 条 Important 闭合 + 3 条残留收口 + 9 条当期修 Minor
-- ✅ **测试 138 → 180 passed, 1 deselected**（deselected = `tests/test_inventory.py:60` 的 integration 标记）
+- ✅ **测试 138 → 181 passed, 1 deselected**（deselected = `tests/test_inventory.py:60` 的 integration 标记）
 - ✅ `PowerMCP/` 仍 **0 行改动**
-- ✅ 独立验证：4/4 Important 闭合、4/4 变异变红、交付声明与代码逐条吻合（`final-verification.md`）；F5 增量的独立验证见 `f5-verification.md`
+- ✅ 独立验证（三轮，全部由**非交付者**执行）：
+  - `final-verification.md`（对批次 1+2）—— **4 条 Important 全部真实闭合**、**4/4 变异变红（无假护栏）**、交付声明与代码**逐条吻合**；另找出残留 C-1/C-2/C-3
+  - `f5-verification.md`（对收口补丁）—— C-2 闭合、C-3 闭合、**C-1 部分闭合并发现 N1**、变异 4/4 全红
+  - `f5-n1-verification.md`（对 N1 修复）—— **5/5 项成立、2/2 变异变红、77 组穷举无反例**，结论"这一行守卫现在可以接受"
+- ✅ **变异探针累计 5/5 全部变红**（M1–M5；脚本 `.superpowers/sdd/f5-mutation-check.py`）
 - ✅ 文档已回填：计划 4 处勘误 + 文末「最终审查与修复」章节、`README.md` 补齐 3 个端点与契约 3 事件形状、台账收尾
 - ⚠️ **opendss 无法经 mcp SDK 挂载**（唯一真阻塞，根因未定）
 - ❌ **选题新颖性专查仍未做** —— 是"这些工程能否构成论文"的 gate
@@ -111,7 +115,7 @@ cat .superpowers/sdd/final-branch-review.md    # 最终全分支审查（4 Impor
 cat .superpowers/sdd/final-verification.md     # 独立验证（4/4 闭合 + 4/4 变异变红）
 cat .superpowers/sdd/f5-verification.md        # 收口补丁的独立验证
 
-# 4. 验证测试仍全绿（期望 180 passed, 1 deselected）
+# 4. 验证测试仍全绿（期望 181 passed, 1 deselected）
 #    ⚠️ --basetemp 必须指向「尚不存在」的新目录：指向已存在且含 >50 条目的目录时，
 #    pytest 启动的 rm_rf 会被沙箱批量删除护栏拦截 → tmp_path 测试 setup 阶段 ERROR，
 #    表现为「76 passed / 23 errors」，极易误读为代码回归。

@@ -2818,7 +2818,7 @@ cd d:/coding/powerMcp_Pskills/gateway
    ⚠️ **前提是进程优雅退出** —— lifespan 的 shutdown 会 flush；被强杀时批量缓冲会丢
    （这是本任务修复的缺口，见 Task 7 Step 3 与 `test_shutdown_flushes_audit`）
 5. **无回归**：既有 134 个测试仍全过（子项目 2 的 76 个 + 子项目 3 的 Task 0–6）
-   —— 收尾审查的修复完成后为 **173 passed, 1 deselected**（见文末「最终审查与修复」）
+   —— 收尾审查的修复完成后为 **181 passed, 1 deselected**（见文末「最终审查与修复」）
 
 ---
 
@@ -2937,7 +2937,7 @@ cd d:/coding/powerMcp_Pskills/gateway
 | `68fbe22` | **批次 1**：I-1 / I-2 / I-3 / I-4 + 审计三修（读侧不变量复核、`close()` 释放 fd、严格 LF）+ 全部护栏 + 死代码清理（`events.sse_stream`、3 处死 import、`Last-Event-ID` 过度承诺） |
 | `4732694` | **批次 2**：HTTP 层错误映射（请求体缺字段 500→**400**；配置失败→**503**，与 `/contracts/t0` 同语义）+ 路由端到端覆盖 + `is_error` 的错误消息带上工具的**真实输出** |
 
-测试：**138 → 173 passed, 1 deselected**。`PowerMCP/` 仍 **0 行改动**。
+测试：**138 → 181 passed, 1 deselected**。`PowerMCP/` 仍 **0 行改动**。
 
 ### 五、台账 Minor 的分诊结论
 

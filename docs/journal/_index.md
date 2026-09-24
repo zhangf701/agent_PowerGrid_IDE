@@ -16,7 +16,7 @@
 - **补做了两项欠下的审查**：Task 7 独立补审（上轮因 429 缺失）· 最终全分支审查（base `5111d47`，40 commits，4 Important + 台账 35 条 Minor 分诊）
 - **4 条 Important（均经用户裁决）**：契约 3 事件改为 `ContractFinding` 同形 · **`EventBus` 解耦「记录」与「投递」**（慢客户端不再让证据丢失）· `validate_args` 异常不再逃出成 HTTP 500 · 契约 4 判据大小写修正（重测基线仍 6 条）
 - **独立验证另找出 3 条残留并收口**：审计写失败是**静默降级**（→ 计数 + `GET /health` 暴露）· 同类畸形"一个报告一个沉默"（→ 统一上报 `structural` unknown）· `api.py` 陈旧注释
-- **测试 138 → 180 passed, 1 deselected**；**4/4 变异探针变红**（无假护栏）；`PowerMCP/` 仍 **0 行改动**
+- **测试 138 → 181 passed, 1 deselected**；**变异探针累计 5/5 全部变红**（无假护栏）；`PowerMCP/` 仍 **0 行改动**
 - ⚠️ **最重要的方法教训**：本周期的**高价值修复集中在错误路径，而恰恰错误路径的测试最差** ——
   探针 A/C 证实：把 `_dispatch` 的 `is_error` 回传、`gen()` 的 seq 去重与 `finally: unsubscribe`
   改回 bug 态，测试**仍全绿**。
