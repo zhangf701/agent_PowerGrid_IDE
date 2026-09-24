@@ -2325,7 +2325,7 @@ async def test_unknown_session_events_404(app):
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r6c
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r7 -p no:cacheprovider --basetemp=./.pytest_tmp/r6c
 ```
 Expected: FAIL —— 404 / 405（端点尚未存在）
 
@@ -2652,7 +2652,7 @@ async def test_audit_file_records_the_violation(tmp_path, monkeypatch):
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r7
 ```
 Expected: FAIL —— `AttributeError: module 'powermcp_gateway.api' has no attribute 'call_with_contracts'`
 
@@ -2669,17 +2669,17 @@ Expected: FAIL —— `AttributeError: module 'powermcp_gateway.api' has no attr
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r7
 ```
-Expected: PASS（6 passed）
+Expected: PASS（7 passed —— 既有 4 + 本任务 3）
 
 - [ ] **Step 5: 全量回归**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration"
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r7b
 ```
-Expected: 全部 PASS（既有 76 + 本计划新增约 40）
+Expected: 全部 PASS（既有 134 + 本任务 3 = 137）
 
 - [ ] **Step 6: 真实端到端手工验收**
 
@@ -2718,17 +2718,20 @@ git commit -m "feat(gateway): T2 契约接入代理层 + 端到端验收"
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest -v -m "not integration"
+../PowerMCP/.venv/Scripts/python.exe -m pytest -v -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/final
 ```
 
 全部通过，且满足：
 
-1. **契约 4** 在真实仓库上产出 7 条 `degraded`（`pypsa`×2 / `andes`×2 / `egret`×3 所在的 server），
-   而 `pandapower` / `surge` 为 `satisfied` —— **对照组不得误报**
+1. **契约 4** 在真实仓库上检出 **6 个** 求解型工具「报成功却不读引擎状态」
+   （`pypsa`×2 / `andes`×1 / `egret`×3），对应 `pypsa` / `andes` / `egret` 三个 server 报 `degraded`；
+   `pandapower` / `surge` / `hope` / `opendss` 为 `satisfied`，`genx` 为 `unknown`（`checked==0`）
+   —— **对照组不得误报**。（数字为 Task 3 的实测结果；原计划此处写「7 条 / andes×2」，
+   是判据修正前的旧数 —— `andes.run_time_domain_simulation` 实际**读了**状态故不报。）
 2. **契约 3**：传 `linearized` 这类未声明参数时**被拒绝且未转发**（`ok=false`，事件流有 `contract_violation`）
 3. **SSE 双通道**：`event: evidence` 与 `event: telemetry` 分别出现；`id:` 单调递增
 4. **审计**：`~/.powermcp/audit/audit-<sid>.ndjson` 只含 `evidence` 行；`replay()` 能还原
-5. **无回归**：子项目 2 的 76 个测试仍全过
+5. **无回归**：既有 134 个测试仍全过（子项目 2 的 76 个 + 子项目 3 的 Task 0–6）
 
 ---
 
