@@ -75,11 +75,13 @@ note: 前序 handoff 的 `git_head` 为 `N/A`（当时根目录**还不是 git �
 **预检发现并已处理**：计划原会引入**第三份** server→目录映射表（`doc_impl`/`api_version` 已有两份，
 且初稿给 `hope` 写的 `HOPE/src` 与既有的 `HOPE` 不一致 —— **"同源"其实早破了**）→ 新增 Task 2 抽成单一真源。
 
-### 五、子项目 3 执行：Task 0 / Task 1 完成（**user 决定停在此处**）
+### 五、子项目 3 执行：Task 0–2 完成
 
 - **Task 0 会话与事件总线**：`bc555b8..a9a6aa6`，**3 轮审查 3 轮修复**后 Approved
 - **Task 1 NDJSON 审计**：`e3f6150..6b2bc08`，**3 轮审查 3 轮修复**后 Approved
-- 测试 **76 → 99 passed**（+1 integration deselected）
+- **Task 2 抽取共享映射表**：`eae678d..b40fb93`，**1 轮审查 0 修复**后 Approved
+  —— 派发前修正了计划 3 处缺陷（陈旧验收数字 / 错误的事实陈述 / 冗余 noqa），详见台账
+- 测试 **76 → 103 passed**（+1 integration deselected）
 
 ---
 
@@ -118,8 +120,8 @@ note: 前序 handoff 的 `git_head` 为 `N/A`（当时根目录**还不是 git �
 - ✅ **根目录有版本控制**（38 提交，master）
 - ✅ **子项目 2 已交付**（8/9 server 可挂载）
 - ✅ **子项目 3 计划完成**（8 任务，含两处判据的实测重新界定）
-- ✅ **子项目 3 的 Task 0 / Task 1 完成并通过审查**（99 tests）
-- ⏳ **子项目 3 剩 6 个任务**（Task 2–7）
+- ✅ **子项目 3 的 Task 0–2 完成并通过审查**（103 tests）
+- ⏳ **子项目 3 剩 5 个任务**（Task 3–7）
 - ❌ **opendss 无法经 mcp SDK 挂载** —— 根因未定，影响契约 2/8、能力矩阵 OpenDSS 行
 - ❌ **选题新颖性专查仍未做** —— 是"这些工程能否构成论文"的 gate
 - ❌ Gurobi 许可过期（2026-03-31）；Ipopt 不可用
@@ -158,8 +160,11 @@ cat .superpowers/sdd/progress.md
 # 3. 计划本体
 cat docs/superpowers/plans/2026-09-24-gateway-t2-audit-sse.md
 
-# 4. 验证测试仍全绿（期望 99 passed, 1 deselected）
-cd gateway && ../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration"
+# 4. 验证测试仍全绿（期望 103 passed, 1 deselected）
+#    ⚠️ --basetemp 必须指向「尚不存在」的新目录。指向已存在且含 >50 条目的目录时，
+#    pytest 启动的 rm_rf 会被沙箱批量删除护栏拦截 → tmp_path 测试在 setup 阶段 ERROR，
+#    表现为「76 passed / 23 errors」，极易误读为代码回归。（2026-09-24 实测）
+cd gateway && ../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r1
 
 # 5. 两个子仓库状态（应分别停在 fix/ 分支，工作区干净）
 cd d:/coding/powerMcp_Pskills
@@ -186,7 +191,9 @@ print('failures:', [(f.server, f.error[:80]) for f in inv.failures])
 
 ## 下一步（按优先级）
 
-1. **【最高】继续子项目 3 的 Task 2–7**（SDD 流程）。台账在 `.superpowers/sdd/progress.md`，从 **Task 2（抽取共享映射表）** 起。
+1. **【最高】继续子项目 3 的 Task 3–7**（SDD 流程）。台账在 `.superpowers/sdd/progress.md`，从 **Task 3（契约 4 状态映射可信度）** 起。
+   ⚠️ 派发前先做 **Pre-Flight 计划审查**：核实计划里的验收数字与事实陈述（Task 2 派发前查出 3 处缺陷，其中「既有 76」这个陈旧数字若照抄会误判回归）。
+   ⚠️ 派发时**必须**带上 basetemp 环境事实（见下方"快速上手指令"第 4 条），否则测试会以「76 passed / 23 errors」的假回归形式失败。
    ⚠️ 派发前建议**先按上面四类缺陷模式审一遍 Task 5（代理，有错误路径）与 Task 6（SSE，有取消/断开路径）的计划代码** —— 它们最可能重复 Task 0 的失败模式。
    ⚠️ Task 6 已记录一条来自 Task 0 审查的设计后果：**`publish()` 对 EVIDENCE 是全有或全无，一个卡住的 SSE 客户端会阻塞整个会话的审计发布**。
 2. **决定 `examples/` 是否纳入 git**（它是 09-21 的交付物，目前未跟踪）
