@@ -22,3 +22,6 @@ gateway/.cache/
 
 # 例外：docs/logs/ 下的实测演示日志是证据链，需入库（须置于 *.log 之后）
 !docs/logs/*.log
+
+# SDD 进度台账（临时脚手架，不入库）
+.superpowers/
