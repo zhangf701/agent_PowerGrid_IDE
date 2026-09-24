@@ -8,6 +8,24 @@
 
 ## 文档列表（倒序）
 
+### 🚩 2026-09-24 — HANDOFF（**子项目 3 收尾审查完成，可关闭**）★ 最新
+📄 [handoff_2026-09-24_subproject3-closed.md](handoff_2026-09-24_subproject3-closed.md)
+
+**新对话接手请先读这份**（比下一份更新）。记录 Task 0–7 交付**之后的**两轮审查与全部修复。
+
+- **补做了两项欠下的审查**：Task 7 独立补审（上轮因 429 缺失）· 最终全分支审查（base `5111d47`，40 commits，4 Important + 台账 35 条 Minor 分诊）
+- **4 条 Important（均经用户裁决）**：契约 3 事件改为 `ContractFinding` 同形 · **`EventBus` 解耦「记录」与「投递」**（慢客户端不再让证据丢失）· `validate_args` 异常不再逃出成 HTTP 500 · 契约 4 判据大小写修正（重测基线仍 6 条）
+- **独立验证另找出 3 条残留并收口**：审计写失败是**静默降级**（→ 计数 + `GET /health` 暴露）· 同类畸形"一个报告一个沉默"（→ 统一上报 `structural` unknown）· `api.py` 陈旧注释
+- **测试 138 → 180 passed, 1 deselected**；**4/4 变异探针变红**（无假护栏）；`PowerMCP/` 仍 **0 行改动**
+- ⚠️ **最重要的方法教训**：本周期的**高价值修复集中在错误路径，而恰恰错误路径的测试最差** ——
+  探针 A/C 证实：把 `_dispatch` 的 `is_error` 回传、`gen()` 的 seq 去重与 `finally: unsubscribe`
+  改回 bug 态，测试**仍全绿**。
+  → **约定：修复错误路径必须与「钉住该错误路径的测试」成对交付，并以变异探针自证（改回旧行为必须变红）。**
+- 提交序列：`68fbe22` → `4732694` → `ef23f64` → `c981f9f`
+- ❌ 仍未解决：opendss 无法经 mcp SDK 挂载 · 选题新颖性专查**至今未做**
+
+---
+
 ### 🚩 2026-09-24 — HANDOFF（**子项目 3 全部交付完成**）
 📄 [handoff_2026-09-24_gateway-t2-complete.md](handoff_2026-09-24_gateway-t2-complete.md)
 
@@ -368,6 +386,9 @@ pdftoppm -png -r 300 -f 7 -l 7 "D:/coding/powerMcp_Pskills/docs/PowerMCP实践�
 
 - [ ] **明确 Skill 目标**（自仓库扫描起持续挂起，当前首要待决）：目标 server 子集、Skill 粒度（每工具一技能 / 每业务流程一技能）、是否以 PowerIO IR 作数据契约
 - [ ] **【选题线·最高】MCP 接口方向的新颖性专查** —— 动手前必做（见 [方向总结报告](2026-09-23-research-direction-summary.md) §5.3）
+- [ ] **【工程线·网关】子项目 4（进程监管）/ 1（设计系统落地）/ 5（前端视图）** —— 子项目 3 已于 2026-09-24 收尾关闭，见 [最新 handoff](handoff_2026-09-24_subproject3-closed.md)
+  - ⚠️ 子项目 5 开工前须知：契约 3 事件流有**两个 kind**（`contract_violation` / `contract_unknown`），payload 同为 `ContractFinding` 同形
+  - 子项目 4 同时承接 `T6-M5`（每次 `/tools/call` 都重新拉起 MCP server）与 `T6-M6`（`_STORE` 无淘汰）
 - [ ] **【2026-09-24 复核遗留】** 用 **abstract 级**复核尾部三类论文（标题匹配会漏措辞不同的前作）
 - [ ] **【2026-09-24 复核遗留】** 统一 `anchors.json` 与 `traversal.json` 的采集时间戳（两文件对 2 个锚点的被引数不一致：59 vs 58、38 vs 40）
 - [ ] **【2026-09-24 复核遗留】** 「72 篇」与「10–12 个去重工作」两个计数仍无原始数据支撑，需单独处理
