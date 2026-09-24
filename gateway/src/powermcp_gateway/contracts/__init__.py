@@ -40,3 +40,8 @@ from .api_version import ApiVersionEvaluator
 
 REGISTRY.register(ApiVersionEvaluator())
 __all__ += ["ApiVersionEvaluator"]
+
+from .status_mapping import StatusMappingEvaluator
+
+REGISTRY.register(StatusMappingEvaluator())
+__all__ += ["StatusMappingEvaluator"]
