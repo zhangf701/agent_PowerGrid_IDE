@@ -1,0 +1,324 @@
+# Journal 索引
+
+本目录收敛本项目的技术文档：研究日志、扫描报告、设计 spec、handoff。
+
+**新对话开始时请先读本文件回溯历史。**
+
+---
+
+## 文档列表（倒序）
+
+### 2026-09-24 — UI 设计规范（**前端设计方案的实现级展开**）
+📄 [../PowerMCP_UI设计规范.md](../PowerMCP_UI设计规范.md) · 令牌真源 [design/tokens.json](../../design/tokens.json) · 校验 [tools/check_design_tokens.py](../../tools/check_design_tokens.py)
+
+**把《前端设计方案》§五 的提案级视觉规范，展开为可直接开发的规格。** 范围＝方案 §八 的 **P1**。
+
+- **技术栈**：Vite + React + TS · shadcn/ui + Radix · Tailwind · ECharts（**非 Next.js** —— 方案 §六 形态 A 是本地单机，SSR 收益为零）
+- **主题**：**双主题全做**（浅色默认 + 深色），颜色全部成对定义
+- **技术栈**：Vite + React + TS · shadcn/ui + Radix · Tailwind · ECharts（**非 Next.js** —— 方案 §六 形态 A 是本地单机，SSR 收益为零）
+- **主题**：**双主题全做**（浅色默认 + 深色），颜色全部成对定义
+- **6 个组件**：契约徽章 · 契约卡片 · Tool Call 审计行 · Quantity · Identifier · 基础件（含 P1 必做的引擎状态指示器）
+- ⚠️ **发现方案一处内部不一致并显式处理**：§2.2 称「状态**三态**」，但 §11.1/§11.3 均要求 `unknown` 对外可见
+  → 本规范采用**四态**，并建议方案 §2.2 同步修订（附录 B.3）
+- **交付**：`docs/PowerMCP_UI设计规范.md` + `design/tokens.json`（单一真源）+ 校验脚本；备份于 `work/frontend-design/`
+- 🚫 **不含 WCAG 无障碍章节**（用户指定删除）；但**保留**方案 §五.1 的「颜色不得单独承载信息」
+
+#### ★ v1.1 修订（经三份独立审查）
+
+**审查方法**：派三个独立子代理（实现可行性 / 一致性 / **对抗性**），各带全新上下文。对抗审查**实际编译 TSX** 验证。
+
+**🔴 最严重发现 —— 规范在实现层重现了它自己要防的缺陷**
+- `tokens.json` 的 `identifierConvention` 用 server id（`pypsa`），而规范表格用显示名（`PyPSA`）
+  → 运行时**查表未命中 → 兜底 `0-based`** → PyPSA 的 `13` 渲染成 `13 (0-based)`，**一条语气确定的假声明**
+- 且绑定表**只覆盖 3/9 引擎**，其余 6 个静默兜底
+- 缓解措施（悬浮提示）在截图/导出里不可见 —— **规范用"截图会丢信息"论证过颜色不能单独承载信息，却用 tooltip 承载唯一的免责声明**
+
+**🔴 第二严重 —— 判别联合挡得住"忘写判据"，挡不住"判据写错"**
+- `<Quantity value={98.16} unit="%" criterion="MW" />` **编译通过**，渲染 `98.16% (MW 判据)` —— **比裸值更可信**
+- 写下这行的人正是当初用 MW 算负载率的那个人；把正确值与错误值并列成同一枚举 = 给错误值发合法性证书
+
+**「类型约束」卖点的实测兑现率 ≈ 30%**（非首版宣称的"不可表达"）
+- 真的挡住 13 类写法（实测报错）· 挡不住：`JSON.parse` 的 `any`（**项目唯一真实数据入口**）、
+  ECharts/SVG/**LLM 流式 Markdown 正文**、`var(--c-contract-*)` 两行 JSX
+
+**已完成的 4 条高杠杆修订**
+1. **§4.5 引擎键统一** —— 改 server id；9 引擎全覆盖；**未命中 → `unknown` 不再兜底**；`engine` 收为字面量联合（编译期挡 `engine="PyPSA"`）
+2. **§4.4 `criterion` 不再由 JSX 手写** —— `Measured` + `measure()` 唯一构造入口，判据从 N 个渲染点收敛到 1 个数据适配点
+3. **§4.3 删除 `state` 属性** —— 改由 `worstState(contracts)` 内部派生；**空集汇总定义为 `unknown`**（自然实现 `reduce(...,'satisfied')` 会把"没检查"渲染成"检查过且正常"）
+4. **§4.4 补 P4 的 `source`** —— §2 P4 曾声称"数值的 `source` 为必填"但组件里并无此属性
+
+**诚实性修订**：P3 原则**改名**为「让违规写法在关键调用点上不易顺手写出」并标注实际兑现程度 ·
+§3.1 三层架构规则**限定为颜色**（原文写成通用语，字面上禁止组件使用全部 `--p-*`） · §7.4 补 `?0`（原示例三态，契约引擎崩溃会渲染成 `✔0 ▲0 ✖0` = 静默 fail-open）
+
+**7 处引文修正**：含一条**冒引** —— §4.2 曾写「确认必须写入审计（方案 §11.4）」，而方案 §11.4 只规定存储介质，该要求实为**本规范新增**
+**结构补充**：附录 A.4 补录 **16 个缺失令牌**（原「令牌**全表**」名不副实）· 新建附录 B.4「本规范新增」登记表
+
+**校验**：85 令牌逐值比对通过；**三组反向测试**（篡改颜色 / 尺寸 / 新补录的 z-index → 均报错 → 还原 → 通过）
+
+#### ★ v1.2 修订（两条工程改进，用户提出）
+
+**① §8.4（新增）SSE 数据边界运行时校验 —— 强制**
+- **问题**：`JSON.parse` 返回 `any`，**编译期守卫在运行时全部穿透**。SSE 是长连接流式推送，
+  网关字段漂移（`server_id` vs `server`、`contracts` 为 `null`）直达 React 状态树 → **白屏**，且整个会话反复触发
+- **规则**：入站事件必须经适配层 `safeParse`（Zod / Valibot）后才允许进入状态树与 `measure()`；
+  `measure()` 入参类型改为 `z.infer` 的输出 —— **把运行时契约与编译期类型绑到同一处**
+- **失败一律降级为 `incident` 并入审计**（通道 A 不可丢）；禁止 `throw`（炸掉整个流）与静默丢弃（等于 fail-open）
+- ✅ 效果：P3 逃逸表中「`JSON.parse` 的 `any`」一条**标记为已闭合**
+
+**② 未知态两分 + 双轨汇总 —— 解决"Alert Fatigue by Design"**
+- **问题**：方案 §11.1 已接受契约 4 长期 `unknown`。原**单一标量**汇总使几乎所有审计行常年挂问号
+  → 工程师免疫、不再下钻 → **真正偶发的契约 3 参数降级被"钝刀子"淹没**
+- **根因**：单标量试图同时表达**"多严重"与"多可信"两个正交维度**，硬塞进一个全序必然牺牲一边
+- **解法**：`unknown` 按成因分 `structural`（引擎级、常态、**不升级**）/ `incident`（本可判定却拿不到、**必须升级**）；
+  汇总改为**双轨** —— 主徽章（已知告警最差值）+ 次级标记 `+?N`（结构性未知计数）
+- **新增第 5 个签名** `incident` / `!` / 事故 + 双主题色（violet 族，与 violated 的红区分）
+
+**连带修正**
+- **§4.6.6** `crashed` / `circuit-open` 原均映射 `violated` → 渲染成同一个「✖ 违反」，区分消失。
+  现改 `incident` + **引擎专用标签**（引擎态是独立枚举，只借签名取色）；**并补上该组件缺失的属性表**
+  （原为唯一带 ★ 却无属性表的组件）
+- §4.2 `ContractCard` 增 `reason`（`state==='unknown'` 时必填）
+- §1.5 术语表新增结构性/事故性未知、主徽章/次级标记；§7.4 摘要新增 `!n` 计数
+
+**校验**：88 令牌（+3 incident 色）通过；**新增两组反向测试**（篡改 incident 色 / 删除 signature 标签 → 均报错 → 还原 → 通过）
+
+---
+
+### ⚠️ 2026-09-24 — 引用图遍历复核（**更正既有结论**）
+📄 [2026-09-24-citation-graph-recheck.md](2026-09-24-citation-graph-recheck.md)
+
+**通读 journal 时发现 `traversal.json` 的 `n` 与 `citing` 长度不一致 → 定位到技能脚本的静默截断。**
+
+- **根因**：`finding-research-gaps/scripts/openalex.py` 的 `cites` 单次请求 + `--top` 默认 50、**无翻页**
+  → 被引 79 / 58 的两个锚点只取到 50 条，**共漏 37 篇**，且无任何缺失标记
+- ✅ **已修复**：改 cursor 分页（`per_page=200`）、`--top` 缺省改为**取全量**、
+  新增 `traverse` 子命令（此前这一步**没有脚本**，故结果无法重跑）、`_get` 增加代理回落；原文件已备份
+- ✅ **重跑**：144 → **181 篇唯一引用者**（193 抓全，重叠 12，**旧有新无 0 篇** ⇒ 旧版是新版真子集）
+- ⚠️ **截断是系统性的**：排序 `publication_date:desc` → 丢掉的是**最老的那段**；
+  新增 37 篇中 **34 篇是 2024/2025**；旧集合高估新近度（2026 占比 73.6% vs 真实 60.2%）
+- ❌ **「人机协同仅 2 篇」证伪** —— 181 集中至少 4 篇命中，含 *Integration of LLM and Human-AI
+  Coordination for Power Dispatching*（IEEE TVT 2024）；找回的还有 RePower（工具/平台层）等
+- ❌ **「工具/技能 14 · 可解释 3 · 人机协同 2」不可复现** —— 原分类产物从未归档；
+  同规则下机械计数为 12/3/4，人工甄别后 genuine 仅 **4/1/2**
+- ✅ **方向性结论稳健**：前四类 108→134 篇（+26），尾部三类仅 15→19 篇（+4），**差距反而拉大**；
+  与 `work/fw/aggregate.json`（97 篇 future work）构成两套独立数据的一致指向
+- **新增产物**：`work/cite/rerun-20260924/`（`traversal_full.json` · `themes_full.json` ·
+  `themes_curated_tail.json` · `classify_themes.py`）
+- **技能已同步**：`SKILL.md` 新增两条「Common mistakes」（短列表不可信为完整 · 计数必须连标注一起归档）
+
+---
+
+### 🚩 2026-09-23 — HANDOFF（基线交接文档）
+📄 [handoff_2026-09-23_powermcp-baseline.md](handoff_2026-09-23_powermcp-baseline.md)
+
+**新对话接手请先读这份**，再按需深入下面的具体文档。
+
+- 它是**首次交接**（`previous_handoff: null`），记录全量历史
+- 含：项目定位、七块已完成工作、关键决策、文件变更表、当前状态（✅⏳❌📋）、
+  **可直接运行的快速上手指令**、下一步优先级、给接手 agent 的提醒
+- 关键悬置：**MCP 接口方向的下一步未定**（七轮筛选后唯一存活的候选）
+
+---
+
+### 2026-09-23 — 科研选题方向总结报告（选题决策文档）
+📄 [2026-09-23-research-direction-summary.md](2026-09-23-research-direction-summary.md)
+
+**把七轮文献空白调研收敛成一份可直接用于决策的文档。** ⚠️ 是**汇总**而非新调研，不引入新检索结果。
+
+- **§1 选题的约束条件**：本项目能给什么（IR 往返保真、case30 全流程、250 工具）/ 不能给什么（8 项实测缺陷）
+- **§2 方法三轮演进**：关键词检索（**七轮错六轮**）→ 引文链 + future work → **引用图差集**（差异化最大）；含三条方法红线
+- **§3 六条被推翻候选** + 唯一存活（**MCP 接口标准化**）
+- ⚠️ **本条的引用图数字已被 2026-09-24 复核推翻，勿再引用**：144 → **181 篇**（脚本静默截断）；
+  「工具/技能 14 · 可解释 3 · 人机协同 2」**不可复现**（同规则机械计数 12/3/4，人工甄别 genuine 仅 4/1/2），
+  **「人机协同仅 2 篇」证伪**。详见上一条 [引用图遍历复核](2026-09-24-citation-graph-recheck.md)。
+  ✅ 仅**方向性结论稳健**（尾部三类占比仍显著低于前四类）
+- ~~**§4 引用图验证**：5 种子锚点 → 144 篇唯一引用者；矩阵/调度类已 118/144，**工具/技能层仅 14、可解释/审计 3、人机协同 2**~~
+- ⚠️ **§4.3 三条局限原样保留**：0 引用部分是**时间滞后**非空白 · 空间仅 10–12 篇 · **建筑能源 MCP 更成熟**（EnergyPlus-MCP 被引 24 > 电力最高 11）
+- **§5.2 最可操作的产出**：把「MCP 标准化」拆成 **8 条有实测支撑、可逐条形式化的契约类型**
+- **一句话结论**：下一步**不是动手做**，而是先用 `finding-research-gaps` 做**新颖性专查**
+
+---
+
+### 2026-09-23 — case30 全流程验证 + 文献空白调研 + 技能交付
+📄 [2026-09-23-case30-and-gap-research.md](2026-09-23-case30-and-gap-research.md)
+
+**合并三块此前只存在于对话中的工作**（09-22 ~ 09-23）。
+
+**① case30 全流程**：IR 解析（`pio-ir` v2 / `BalancedNetwork` / 零诊断）→ slack 推荐（母线 1，qmax 150 是次高者 2.4 倍）→ 跨引擎潮对比（**Δ 8.84e-11 pu**）→ PTDF/LODF → N-1（41 场景 / 32 越限 / 56 条）→ 缓解手册应用
+- ⚠️ **编号陷阱**：pandapower 0-based vs PyPSA 1-based，**字面比对把偏差放大 3.1 亿倍**
+- ⚠️ **判据陷阱**：过载用 **MVA**，用 MW 会把 142% 看成 98%
+- ✅ **三条独立证据链重合**：图论桥 ≡ LODF 对角 None 列 ≡ N-1 Islanding 断号（均为 12/15/33）
+- ❌ **N-1 缓解**：再调度需 72.7 MW（占负荷 38.4%）不可行；母线 8 仅 2 条支路**无可切方案**；**只有加固 8–28 有效**
+
+**② CSEE-FS 解析失败**：PowerIO 不支持 BPA **且** 文件是 GBK —— **两个正交阻塞，只解决一个都不够**
+
+**③ 文献空白调研（七轮）**：六条候选全被推翻（不确定性量化 / 静默失效 / 技能形式化 / 可扩展性 / 人机协同 / 安全实证），**唯一存活：MCP 接口标准化**（有 Frontiers 2026 综述明确背书 + 引用图验证）
+
+**④ 技能交付**：`finding-research-gaps`（全局，**未提交仓库**），走完 RED-GREEN-REFACTOR
+
+---
+
+### 2026-09-21 — 两份实践指南更新为第二版（并入实测结果）
+📄 [2026-09-21-guides-v2.md](2026-09-21-guides-v2.md) · 状态：✅ 已完成
+
+把本轮全部实测结论并入 `docs/` 的两份实践指南，并新增「哪些 server / 技能可用 + 科研使用步骤 + 科研场景」。
+
+- **交付**：`PowerMCP实践指南_v2.pdf`（23 页）· `PowerSkills实践指南_v2.pdf`（24 页）+ 对应 `.md` 源；**第一版 PDF 原样保留**
+- **新增四章**：PowerMCP 第四章「当前可用性全景」（五级状态 + 服务器级总表 + 运行时核验）· PowerSkills 第六章「技能健康度审计」（3 阻断 / 4 事实不符 / 1 引用错误 / 5 规范 / 3 通过）· 两份各一章「科研使用步骤」与「科研场景」
+- ⚠️ **更正第一版数字**：服务器 15→16；case39 由「34 线路 / 12 变压器」更正为 **35 / 11**；示例 1 的 L17/母线 7 数字改为实测值；OpenDSS 工具名更正；**「PyPSA DC OPF 亦 infeasible」结论作废**（`linearized` 参数不存在，被静默忽略）
+- 🚫 **pandoc 已禁用**：本轮 PDF 系用 pandoc + xelatex 产出，用户随后明确禁止用 pandoc 生成 PDF；命令与 `pandoc-header.tex` 均已作废。今后需 PDF 时先向用户确认方式（详见「实践指南 PDF 的生成方式」一节）
+
+---
+
+### 2026-09-21 — surge 求解器配置记录（HiGHS / Ipopt）
+📄 [2026-09-21-surge-solver-setup.md](2026-09-21-surge-solver-setup.md)
+
+新建 conda 专用环境 `powersolvers`（未动 `base`），解锁 surge 的 OPF 能力。
+
+- ✅ **HiGHS 完全可用** —— 设 `HIGHS_LIB_DIR` 后 `solve_dc_opf` **3/3 稳定通过**（cost=125948.01），`solve_scopf` 亦然
+- ❌ **Ipopt 未能可靠解决** —— 试遍别名 / `IPOPT_LIB_DIR` / `PATH` / 预加载共 7 种组合均失败；有**一次不可复现的成功**，且另一次尝试中**进程静默崩溃**。**不声称已解决**
+- ⚠️ **更正一处我先前的错误结论**：曾判断 API_REFERENCE 缺 5 个工具 —— **该结论是错的**，文档把同类工具合并写在同一标题下，我的正则只取了第一个。实测 **44/44 完整覆盖，无需修复**（该错误未进入任何文档）
+- ⚠️ 配置**未持久化**（仅在 shell 会话内），符合"禁止未经确认修改系统环境变量"约束
+
+---
+
+### 2026-09-21 — PowerSkills 审计报告（层次 1 动态 + 层次 3 交叉一致性）
+📄 [2026-09-21-powerskills-audit.md](2026-09-21-powerskills-audit.md)
+
+对上游 https://github.com/Power-Agent/PowerSkills 的审计。**结论：21 个 skill 中，4 个在役 skill 里有 3 个存在阻断级问题；surge 是唯一质量完好的。**
+
+| 严重度 | 数 | 代表问题 |
+|---|---:|---|
+| 🔴 阻断 | 3 | `optimization_analysis.py` **语法错误**；pandapower 的 `net.deepcopy()`；pypsa 的 `Network.status`（**求解成功却误报"未收敛"**） |
+| 🟠 事实不符 | 4 | pypsa 自带算例**潮流失效**（无法复现 SKILL.md 声称的 87%）；线路/变压器数量写反；loads 数不符 |
+| 🟡 引用错误 | 1 | `opendss/SKILL.md` + README 引用的 **6 个工具名全部不存在** |
+| 🔵 规范 | 5 | ltspice 缺 escalation 表；**仓库无 CI**；版本约束前后不一致 |
+| ✅ 通过 | 3 | 3a escalation 引用完整（10/10）· 3b 工具名有效 · 3c 触发条件对齐 |
+
+**根因共性**：代码写于旧版 API + 依赖无版本上界 + **仓库无 CI** → 缺陷长期存活。
+
+**未做**：层次 2（其余 17 个 skill 的静态审计，按用户指定跳过）；potpourri/surge-OPF/OpenDSS 因环境依赖缺失未做动态验证（报告中已区分"skill 缺陷"与"环境限制"）。
+
+**✅ 已提 PR #8**：https://github.com/Power-Agent/PowerSkills/pull/8 —— 修复 4 处同源的 API 漂移缺陷（3 文件 +39/−12），经 fork `zhangf701/PowerSkills` 提交。详见报告 §8.5。
+
+---
+
+### 2026-09-21 — PowerMCP 核心 Server 示例脚本验证报告
+📄 [2026-09-21-mcp-examples-verification.md](2026-09-21-mcp-examples-verification.md) · 状态：✅ 三脚本全部跑通（EXIT=0）
+
+在 IEEE 39 算例上验证了 pandapower / PyPSA / surge / powerio 四个开源 server + 商业组件探查。
+
+- **交付**：`examples/` 下 **4** 个自包含脚本 + `docs/logs/` 完整日志
+- **正向验证**：PowerIO IR 往返保真达机器精度 —— 同 IR 经 pandapower 与 PyPSA，母线电压 **Δ=6.98e−11 pu**、支路有功 **Δ=2.25e−07 MW**
+- ⚠️ **上游缺陷**：`run_contingency_analysis` 在 pandapower 3.5.4 下必然失败（`panda_mcp.py:180,191` 的 `net.deepcopy()` 已被移除）；`requirements.txt` 未钉版本故只在较新版暴露；上游 `tests/` **无该工具的功能测试**故 CI 未拦截
+- ✅ **已决策**：**不改上游源码，N-1 统一走 surge**。4 条候选路径实测对比见报告第七节——「客户端 monkey patch」经实测**无效**（`powermcp run` 是独立子进程，补丁不跨进程）
+- ⚠️ **使用陷阱**：两侧元件编号约定不同（pandapower 0-based 索引 vs pypsa 1-based `"1"`/`"line_1"`），**字面键对比会拿错物理元件**（首次误报 0.068 pu）
+- ⚠️ **待查**：PyPSA OPF 在 IR 导入算例上 infeasible，已排除求解器/电压上限/DC/容量/必需列等假设，**成因未定位**（不编造解释）
+- ⚠️ **环境**：PowerWorld 仅装了 Education 版，**不含 SimAuto COM**，故不可自动化；HOPE/GenX 缺 Julia
+
+**关键数值**：基态最低 母线30 `0.9820` / 最高 母线35 `1.0636` / 最重载 线路21 `73.37%`；N-1 Top-1 断号 `branch_26`（Line 21→22）负载率 `161.84%`、`flow = 958.49 MW`；低电压故障 2 个，最低 `min_vm_pu = 0.9361`；AC OPF 目标 `41,872.30`（网损 44.18 MW）、DC OPF 目标 `41,263.94`。
+
+### 2026-09-21 — OPF 能力交付（示例 04）
+📄 见上条报告 §3.7 与 §7.1 · 状态：✅ 已跑通
+
+**决策 C1**：两条 MCP 路径均不可用（pandapower server 无 OPF 工具；PyPSA `optimize_network` 对 IR 导入算例 infeasible），遂改用 **pandapower 自带 `runopp`（AC）/ `rundcopp`（DC）**——与已验证的 `runpp` 同引擎，无新数据契约。
+
+⚠️ **破例**：这是 **Skill 侧 Python 调用，不是 MCP 工具调用**。为弥补此弱点，脚本设 🔒 一致性闸门：从同一 JSON 本地重建网络并与 MCP 基态潮流逐母线比对，实测 **Δ = 0.000e+00 pu**，不过闸门则 `assert` 中止。
+
+**实测数值**：AC OPF 目标 `41,872.30`、网损 `44.18 MW`、电压 `0.9820~1.0600`、线路最大负载率 `87.64%`；DC OPF 目标 `41,263.94`、发电精确等于负荷 `6254.23 MW`。三项守恒校验残差均为 `0.0000 MW`。
+
+**附带对照**：pandapower 对算例中「机组 5 电压设定值 1.0636 > 母线上限 1.06」自动放宽并求解成功，而 PyPSA 在同一数据上直接判 infeasible。（该异常经实测**不是** PyPSA 阻塞的充分原因）
+
+---
+
+### 2026-09-21 — PowerMCP 运行环境搭建记录
+📄 [2026-09-21-env-setup.md](2026-09-21-env-setup.md) · 状态：✅ 已完成并验证
+
+在 `PowerMCP/.venv`（Python 3.12.6，uv 建）装好 **核心 + `[hope,surge]`**，未触碰任何 conda 环境或系统配置。
+
+- **已决策**：安装范围＝核心（pandapower / PyPSA / PowerIO / mcp）+ `surge` + `hope`；不装 `andes`/`egret`/`opendss`/`ltspice` 及全部闭源 extra
+- **已发现**：`genx` extra 不增加任何新包（`matplotlib`/`pandas` 由核心传递带入）——已实测证实
+- **已验证**：`powermcp doctor` 通过；**运行时 `list_tools` 核验 5 个 server 全部 MATCH**（pandapower 8 / pypsa 17 / surge 44 / hope 20 / powerio 10）
+- ⚠️ `MCP paths` 报黄：路径围笼仍是隐式默认值，未设 `POWERIO_MCP_ALLOWED_ROOTS`
+- ⚠️ HOPE / GenX 包已装但**跑不动**（缺 Julia 运行时与仓库本体）
+
+---
+
+### 2026-09-21 — PowerMCP 仓库扫描报告
+📄 [2026-09-21-powerMcp-repo-scan.md](2026-09-21-powerMcp-repo-scan.md)
+
+对 https://github.com/Power-Agent/PowerMCP 的完整结构扫描（提交 `a21ea6b`，v0.4.0）。
+
+**核心结论**：
+- Monorepo 结构：`powermcp/` 核心胶水包 + 15 个厂商 server 目录；经 hatchling `force-include` 零源码改动打包
+- 16 个 server / **约 250 个 MCP 工具**；**两种注册风格并存**（装饰器 vs 函数式），只扫 `@mcp.tool` 会漏掉 OpenDSS(55) 与 PSCAD(26)
+- 跨 server 交换格式为 **PowerIO IR gen 2**（`pio-ir` v2），由外部 `powerio` 包提供
+- 安全控制面成熟：路径围笼 + **AST 静态强制检查** + PSSE 22 条命令黑名单（防 prompt-injection → RCE）+ HOPE 只读模式
+- ⚠️ **工具名跨 server 冲突严重**（`load_network`/`add_bus`/`run_contingency_analysis` 等多处重名，语义可能不同）—— **对后续 Skill 设计影响最大**
+- ⚠️ CI 矩阵漏 Python 3.11（classifier 声明了但未验证）
+
+**地位**：后续所有任务的前置依据。任何"基于 PowerMCP 建 Skill"的工作都应先读本文档第三、七节。
+
+---
+
+## 项目工具
+
+| 路径 | 用途 |
+|---|---|
+| [docs/PowerMCP实践指南_v2.pdf](PowerMCP实践指南_v2.pdf) · [.md](PowerMCP实践指南_v2.md) | 对外交付文档（第二版，A4 23 页）。含可用性全景、科研步骤与场景 |
+| [docs/PowerSkills实践指南_v2.pdf](PowerSkills实践指南_v2.pdf) · [.md](PowerSkills实践指南_v2.md) | 对外交付文档（第二版，A4 24 页）。含技能健康度审计 |
+| [docs/PowerMCP实践指南.pdf](PowerMCP实践指南.pdf) · [PowerSkills实践指南.pdf](PowerSkills实践指南.pdf) | 第一版（2026-09-19），**保留存档，未改动** |
+| [PowerMCP/](PowerMCP/) | 仓库克隆。**当前在 `fix/pandapower-deepcopy` 分支**（含本地修复 `563297a`，未提 PR）；`main` 未被触碰 |
+| [PowerSkills/](PowerSkills/) | PowerSkills 仓库克隆（21 个 skill）。**当前在 `fix/pypsa-pandapower-api-drift` 分支**（PR #8，🔒 冻结勿切回 main） |
+| [PowerMCP/.venv/](PowerMCP/.venv/) | 隔离运行环境（Python 3.12.6，已 gitignore） |
+| [examples/](examples/) | 3 个可独立运行的验证示例脚本 + `data/` 算例 |
+| [docs/logs/](docs/logs/) | 示例脚本的完整运行日志 |
+| [tools/runtime_tool_census.py](tools/runtime_tool_census.py) | 运行时工具清单核验：拉起 server 调 `list_tools`，与静态统计对照 |
+| [tools/dump_tool_schemas.py](tools/dump_tool_schemas.py) | 导出 server 的真实工具 schema（参数名/类型/必填/默认值/返回结构） |
+| [tools/test_patch_propagation.py](tools/test_patch_propagation.py) | N-1 修复路径的对照实验：证明客户端 monkey patch 不跨进程（决策依据） |
+| [work/cite/rerun-20260924/](work/cite/rerun-20260924/) | **引用图遍历重跑产物**（181 篇引用者 + 主题分类 + 人工甄别）；含可重跑脚本 `classify_themes.py` |
+| `C:\Users\Z\.claude\skills\finding-research-gaps\scripts\openalex.py` | OpenAlex 引用图客户端（**2026-09-24 修复分页截断**，备份 `openalex.py.bak-20260924`） |
+
+### 运行示例
+
+```bash
+cd d:/coding/powerMcp_Pskills
+./PowerMCP/.venv/Scripts/python.exe examples/01_pandapower_surge_demo.py
+./PowerMCP/.venv/Scripts/python.exe examples/02_powerio_translation_demo.py
+./PowerMCP/.venv/Scripts/python.exe examples/03_commercial_runtime_check.py
+./PowerMCP/.venv/Scripts/python.exe examples/04_pandapower_opf_demo.py
+```
+
+### 实践指南 PDF 的生成方式（已禁用 pandoc）
+
+> 🚫 **本项目禁止使用 pandoc 生成 PDF**（2026-09-21 用户明确指令）。
+> `PowerMCP实践指南_v2.pdf` / `PowerSkills实践指南_v2.pdf` 系禁令下达前用 pandoc + xelatex 产出；
+> **对应命令保留在此仅作历史记录，不得再执行**。`pandoc-header.tex` 随之作废。
+>
+> 后续若需重新排版或生成 PDF：**先向用户确认使用哪种方式**，不要自行选择引擎。
+
+若只是要**阅读/核对**已有 PDF（只读操作，不受禁令约束）：
+
+```bash
+cd d:/coding/powerMcp_Pskills/docs
+pdfinfo "D:/coding/powerMcp_Pskills/docs/PowerMCP实践指南_v2.pdf"          # 页数 / 纸张
+pdftotext -enc UTF-8 "D:/coding/powerMcp_Pskills/docs/PowerMCP实践指南_v2.pdf" out.txt   # 回读校对
+pdftoppm -png -r 300 -f 7 -l 7 "D:/coding/powerMcp_Pskills/docs/PowerMCP实践指南_v2.pdf" pg   # 转图目视
+```
+
+> ⚠️ 原生 Windows 工具（pdftotext / pdftoppm / pdfinfo）**不认 Git Bash 的 `/d/...` 路径**，必须传 `D:/...`；
+> 输出路径带中文会报 I/O Error，中间产物请用 ASCII 名。
+
+---
+
+## 待办（未启动）
+
+- [ ] **明确 Skill 目标**（自仓库扫描起持续挂起，当前首要待决）：目标 server 子集、Skill 粒度（每工具一技能 / 每业务流程一技能）、是否以 PowerIO IR 作数据契约
+- [ ] **【选题线·最高】MCP 接口方向的新颖性专查** —— 动手前必做（见 [方向总结报告](2026-09-23-research-direction-summary.md) §5.3）
+- [ ] **【2026-09-24 复核遗留】** 用 **abstract 级**复核尾部三类论文（标题匹配会漏措辞不同的前作）
+- [ ] **【2026-09-24 复核遗留】** 统一 `anchors.json` 与 `traversal.json` 的采集时间戳（两文件对 2 个锚点的被引数不一致：59 vs 58、38 vs 40）
+- [ ] **【2026-09-24 复核遗留】** 「72 篇」与「10–12 个去重工作」两个计数仍无原始数据支撑，需单独处理
+- [ ] 排查 PyPSA OPF 在 IR 导入算例上不可行的成因（详见验证报告发现 #5）
+- [ ] 决定是否补装 `[andes]` / `[opendss]` / `[ltspice]` extra 以扩大验证覆盖
+- [ ] 若需验证 HOPE / GenX，先安装 Julia 运行时
+- [ ] 若日后需要 pandapower 引擎自身的 N-1 结果，需重新评估是否改源码（当前决策是不改）

@@ -5,6 +5,9 @@
 # 大体积数据与中间产物
 /GridData/
 /work/
+# PDF 生成流程的可再生中间产物（逐页校验 PNG / 中间稿 / 合并中间 PDF，
+# 其中约 5.3MB 与 docs/ 下的正式 PDF 重复）—— 2026-09-24 经确认排除
+/docs/_pdfwork/
 
 # Python
 __pycache__/
@@ -16,3 +19,6 @@ __pycache__/
 # 运行产物
 *.log
 gateway/.cache/
+
+# 例外：docs/logs/ 下的实测演示日志是证据链，需入库（须置于 *.log 之后）
+!docs/logs/*.log

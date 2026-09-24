@@ -1,0 +1,303 @@
+INFO:__main__:Initializing Pandapower Analysis Server
+INFO:__main__:Loading network from file: D:\coding\powerMcp_Pskills\examples\data\case39.json
+INFO:__main__:Running power flow analysis
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+INFO:__main__:Initializing Pandapower Analysis Server
+INFO:__main__:Loading network from file: D:\coding\powerMcp_Pskills\examples\data\case39.json
+INFO:__main__:Running contingency analysis
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+WARNING:pandapower.auxiliary:numba cannot be imported and numba functions are disabled.
+Probably the execution is slow.
+Please install numba to gain a massive speedup.
+(or if you prefer slow execution, set the flag numba=False to avoid this warning!)
+INFO:__main__:Initializing Surge Analysis Server
+INFO:__main__:Initializing Surge Analysis Server
+==========================================================================
+示例 01：pandapower + surge（IEEE 39 节点算例）
+==========================================================================
+  powermcp     0.4.0
+  powerio      0.11.3
+  mcp          2.2.0
+  pandapower   3.5.4
+  surge-py     0.1.9
+[算例] 已存在：case39.json, case39.m
+
+==========================================================================
+步骤 1.1  基态潮流（pandapower · IEEE 39）
+==========================================================================
+[加载] 39 母线 / 35 线路 / 11 变压器
+[收敛] converged=True
+[电压] 最低 母线  30  vm_pu = 0.9820
+       最高 母线  35  vm_pu = 1.0636
+       低于 0.95 pu 的母线: 0 个
+       高于 1.05 pu 的母线: 7 个 -> 35:1.0636, 24:1.0577, 25:1.0526, 27:1.0504, 21:1.0501, 28:1.0501, 18:1.0501
+[负载] 最重载 线路  21  loading_percent = 73.37%
+       过载(>100%) 线路数 = 0 / 35
+[说明] 最高的母线 35 = 1.0636 pu 恰为 PV 母线，其值由机组电压设定值决定；
+       故上述 >1.05 计数反映的是算例数据的设定值，而非求解越限。
+[断言] 基态收敛 · 无母线低于 0.95 pu · 无线路过载 —— PASS
+
+==========================================================================
+步骤 1.2  N-1 故障筛选（IEEE 39）
+==========================================================================
+
+[4a] pandapower · run_contingency_analysis（按要求调用）
+     扫描故障 46 个，存在越限 45 个
+       line_0           母线越限 [24, 25, 35]  线路过载 []
+       line_1           母线越限 [18, 21, 24, 25, 27, 35]  线路过载 []
+       line_2           母线越限 [1, 24, 35]  线路过载 []
+       line_3           母线越限 [1, 35]  线路过载 []
+       line_4           母线越限 [1, 18, 21, 24, 25, 27, 28, 35]  线路过载 []
+     [附注] 即便该工具可用，它也只返回元件索引、不含 vm_pu/loading_percent；
+            且分析后不保留故障态，无法事后回查。
+
+[4b] surge · run_n1_branch_contingency（同一 IEEE 39 算例）
+     N-1 branch analysis: 46 scenarios, 23 with violations
+     开断场景 46 / 有越限 23 / 越限条目 52 / 电压严重 0
+
+     线路负载率 >100% 的故障: 19 个
+       断号 branch_26    Line 21->22(ckt 1)     max_loading_pct =  161.84%   越限 3 条   converged=True
+       断号 branch_17    Line 13->14(ckt 1)     max_loading_pct =  133.50%   越限 2 条   converged=True
+       断号 branch_37    Line 10->32(ckt 1)     max_loading_pct =  127.59%   越限 4 条   converged=True
+     母线电压 <0.95 pu 的故障: 2 个
+       断号 branch_42    Line 20->34(ckt 1)     min_vm_pu =  0.9361   max_loading =  112.19%   converged=True
+       断号 branch_19    Line 15->16(ckt 1)     min_vm_pu =  0.9368   max_loading =    0.00%   converged=True
+
+     [Top-3 关键故障] 按最大负载率排序（附逐条数值）
+       #1 断号 branch_26    Line 21->22(ckt 1)
+           最大负载率 161.84%   最低电压 nan pu   越限 3 条
+           ThermalOverload  支路 23->24      loading_pct =  161.84%   flow = 958.49 MW
+           ThermalOverload  支路 22->23      loading_pct =  112.14%   flow = 650.00 MW
+           ThermalOverload  支路 16->24      loading_pct =  105.14%   flow = 630.12 MW
+       #2 断号 branch_17    Line 13->14(ckt 1)
+           最大负载率 133.50%   最低电压 nan pu   越限 2 条
+           ThermalOverload  支路 6->11       loading_pct =  133.50%   flow = 639.85 MW
+           ThermalOverload  支路 10->11      loading_pct =  103.88%   flow = 617.44 MW
+       #3 断号 branch_37    Line 10->32(ckt 1)
+           最大负载率 127.59%   最低电压 nan pu   越限 4 条
+           ThermalOverload  支路 2->3        loading_pct =  127.59%   flow = 622.99 MW
+           ThermalOverload  支路 15->16      loading_pct =  111.81%   flow = 646.07 MW
+           ThermalOverload  支路 16->19      loading_pct =  105.74%   flow = 625.51 MW
+           Islanding        支路 (未标注)       loading_pct =    2.00%   flow = -
+
+     越限明细（前 6 条，共 52 条）:
+       branch_4     VoltageHigh      母线 25              loading_pct=         -   flow=-
+       branch_11    ThermalOverload  支路 4->14           loading_pct=   106.52%   flow=530.41 MW
+       branch_11    ThermalOverload  支路 10->13          loading_pct=   103.53%   flow=617.40 MW
+       branch_11    ThermalOverload  支路 13->14          loading_pct=   106.69%   flow=639.88 MW
+       branch_13    VoltageHigh      母线 9               loading_pct=         -   flow=-
+       branch_15    ThermalOverload  支路 10->13          loading_pct=   109.50%   flow=650.00 MW
+
+     [断言] 扫描 46 场景 · 收敛 45 · 越限 52 条 · 过载故障 19 个 —— PASS
+
+==========================================================================
+步骤 1.3  灵敏度矩阵 PTDF / LODF（surge · IEEE 39）
+==========================================================================
+
+[PTDF] PTDF computed (46 × 39)
+     维度 46 x 39   非零元 1090   稀疏度 0.3924   max|·| = 1.000000
+     NaN 0   Inf/None 0
+     前 5x5（行=monitored_branch_keys；列=母线号）:
+        ↓row \ col                1            2            3            4            5
+        1->2->1             0.54621     -0.21065     -0.13911     -0.05239     -0.00165
+        1->39->1            0.45379      0.21065      0.13911      0.05239      0.00165
+        2->3->1             0.43676      0.63149     -0.16673     -0.04997     -0.00256
+        2->25->1            0.10945      0.15786      0.02762     -0.00242      0.00092
+        3->4->1             0.37241      0.53975      0.62252     -0.07686     -0.00747
+
+[LODF] LODF computed (46 × 46)
+     维度 46 x 46   非零元 763   稀疏度 0.5261   max|·| = 1.000000
+     NaN 0   Inf/None 506
+     前 5x5（行=monitored_keys；列=开断支路）:
+        ↓row \ col          1->2->1     1->39->1      2->3->1     2->25->1      3->4->1
+        1->2->1            -1.00000      1.00000     -0.35456     -0.12016     -0.28848
+        1->39->1            1.00000     -1.00000      0.35456      0.12016      0.28848
+        2->3->1            -0.80088      0.80088     -1.00000      0.87984     -0.38841
+        2->25->1           -0.19912      0.19912      0.64544     -1.00000      0.09992
+        3->4->1            -0.68822      0.68822     -0.41021      0.14386     -1.00000
+
+==========================================================================
+[SUCCESS] 示例 01 全部步骤通过
+==========================================================================

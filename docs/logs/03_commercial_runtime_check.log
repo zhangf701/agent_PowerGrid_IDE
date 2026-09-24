@@ -1,0 +1,103 @@
+==========================================================================
+示例 03：商业与高依赖 Server 预检与优雅探查
+==========================================================================
+  Python       3.12.6   (D:\coding\powerMcp_Pskills\PowerMCP\.venv\Scripts\python.exe)
+  平台         win32
+  powermcp     0.4.0
+  powerio      0.11.3
+  mcp          2.2.0
+  pandapower   3.5.4
+  pypsa        1.2.4
+  surge-py     0.1.9
+
+==========================================================================
+步骤 3.1  PowerWorld —— 三级条件探查
+==========================================================================
+
+[一级] PowerWorld Simulator 软件
+       [ OK ] 找到: C:\Program Files\PowerWorld\Simulator GOS Education 23\pwrworld.exe
+       [INFO] 许可类型推断: Education
+
+[二级] SimAuto COM 组件注册
+       [FAIL] PowerWorld.SimulatorAuto 未注册
+       [INFO] 仅存在文件关联 ProgID: ['PowerWorld.pwbfile', 'PowerWorld.pwpfile']
+       [INFO] 说明: SimAuto（自动化接口）是 esa 驱动的对象；
+              Education/GOS 版通常不注册该类，故无法自动化。
+
+[三级] esa (Easy SimAuto) 桥接包
+       [FAIL] esa 未安装
+       [INFO] 安装: pip install powermcp[powerworld]
+
+[案例] 仓库内 PWB 算例
+       [ OK ] IEEE 39 bus.pwb  (44,974 bytes)
+
+[实操] open_case + run_powerflow
+       [SKIP] PowerWorld COM/License unavailable
+              缺失项: SimAuto COM 注册, esa 包
+       [INFO] 该跳过不阻断脚本；其余检查继续。
+
+==========================================================================
+步骤 3.2  HOPE —— Julia 运行时与仓库探查
+==========================================================================
+     Julia 可执行文件（PATH）: 未找到
+     配置 hope.julia_bin      : 未设置
+     配置 hope.repo_root      : 未设置
+     包 PyYAML                : 6.0.3
+     包配置目录               : C:\Users\Z\.powermcp
+
+     [SKIP] Julia runtime missing for HOPE
+            修复: 安装 Julia 并加入 PATH，或
+                  powermcp config set hope.julia_bin <julia.exe 路径>
+            另需: powermcp config set hope.repo_root <HOPE 仓库路径>
+     [INFO] 注意: HOPE 的 Python 包（PyYAML）在本 venv 中已装，
+            但 HOPE 真正求解需调用 Julia 侧求解器，故仍不可用。
+
+==========================================================================
+步骤 3.3  GenX —— Julia 与 GenX.jl checkout 探查
+==========================================================================
+     配置 genx.repo_root : 未设置
+     环境变量 GENX_DIR   : 未设置
+     Julia（PATH）       : 未找到
+     包 matplotlib/pandas: 3.11.2 / 2.3.3  (核心传递带入)
+
+     [SKIP] GenX.jl checkout 未配置
+            修复: powermcp config set genx.repo_root <GenX.jl 路径>
+
+==========================================================================
+步骤 3.4  其余商业 / 高依赖 Server 状态汇总
+==========================================================================
+
+     tool           pip                   software   status
+     --------------------------------------------------------------------
+     psse           (未装)                  -          不可用
+     pslf           (未装)                  -          不可用
+     powerfactory   (未装)                  -          不可用
+     pscad          (未装)                  -          不可用
+     ltspice        (未装)                  -          不可用
+     plexosdb       (未装)                  -          不可用
+     powerworld     (未装)                  有          不可用
+
+     不可用原因与修复:
+       psse           厂商引擎，未配置: psse.python_lib, psse.bin
+       pslf           厂商引擎，未配置: pslf.python_lib
+       powerfactory   厂商引擎，未配置: powerfactory.python_path
+       pscad          缺少包 'mhi'；安装: pip install powermcp[pscad-windows]
+       ltspice        缺少包 'PyLTSpice'；安装: pip install powermcp[ltspice]
+       plexosdb       缺少包 'plexosdb_mcp'；安装: pip install powermcp[plexosdb]
+       powerworld     缺少包 'esa'；安装: pip install powermcp[powerworld]
+
+==========================================================================
+总结
+==========================================================================
+  PowerWorld    不可用（已优雅跳过）
+  HOPE          不可用 — julia missing
+  GenX          不可用 — repo_root missing
+  其余商业工具   可用: （无）
+                 不可用: ['psse', 'pslf', 'powerfactory', 'pscad', 'ltspice', 'plexosdb', 'powerworld']
+
+  本节所有不可用项均以 [SKIP] 报告，未中断脚本。
+  开源部分（示例 01 / 02）不受影响。
+
+==========================================================================
+[SUCCESS] 示例 03 完成（商业组件缺失为预期结果，非失败）
+==========================================================================
