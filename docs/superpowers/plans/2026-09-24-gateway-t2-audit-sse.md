@@ -501,7 +501,7 @@ class SessionStore:
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_session.py -v
 ```
-Expected: PASS（6 passed）
+Expected: PASS（**13 passed** —— 含审查新增的 6 条回归测试）
 
 - [ ] **Step 5: 提交**
 
@@ -610,7 +610,7 @@ def test_replay_sees_events_appended_without_explicit_flush(tmp_path):
     """★ 回归：append 有缓冲，replay 必须先 flush。
 
     初版 replay 直接 read_text，而 append 写的是带缓冲的文件对象 ——
-    `_FSYNC_EVERY` 以内的事件**完全不可见**，且**静默返回**而非报错。
+    `_FLUSH_EVERY` 以内的事件**完全不可见**，且**静默返回**而非报错。
     原 6 条测试都在 replay 前调了 flush()，因此这个缺口毫无覆盖。
     """
     log = AuditLog(tmp_path)
@@ -634,6 +634,26 @@ def test_replay_skips_valid_json_that_is_not_an_object(tmp_path):
         fh.write('"just a string"\n')
 
     assert [e.seq for e in log.replay("s1")] == [1]
+
+
+def test_replay_survives_a_torn_multibyte_tail(tmp_path):
+    """★ 回归：撕裂写入切断一个**多字节字符**时，回放不得整体崩掉。
+
+    写入用 `ensure_ascii=False`，payload 常含中文；一次撕裂写入会留下
+    半个 UTF-8 字符。`read_text` 不带 `errors=` 会抛 UnicodeDecodeError ——
+    而读取是整文件的，于是**整个会话的审计全部读不出来**，远不止坏的那一行。
+    （审查者已实测复现。）
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.flush()
+
+    # 手工追加一条被切断的多字节尾部（"中" 的 UTF-8 是 e4 b8 ad）
+    with log.path_for("s1").open("ab") as fh:
+        fh.write(b'{"seq": 2, "kind": "\xe4\xb8')
+
+    events = log.replay("s1")          # 初版会在此抛 UnicodeDecodeError
+    assert [e.seq for e in events] == [1]
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -658,12 +678,17 @@ Expected: FAIL —— `ModuleNotFoundError`
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .session import Channel, Event
 
-#: 批量 fsync 的阈值 —— 每次 append 都 fsync 会拖慢调用路径
-_FSYNC_EVERY = 32
+logger = logging.getLogger(__name__)
+
+#: 批量 flush 的阈值 —— 每次 append 都 flush 会拖慢调用路径。
+#: ⚠️ 这是 **flush（进 OS 页缓存）不是 fsync（落盘）** —— 名字如实反映行为，
+#:    不得读作"断电可持久化"。（改名前叫 `_FSYNC_EVERY`，是个误导性命名。）
+_FLUSH_EVERY = 32
 
 
 class AuditLog:
@@ -696,7 +721,7 @@ class AuditLog:
         }, ensure_ascii=False) + "\n")
 
         n = self._pending.get(session_id, 0) + 1
-        if n >= _FSYNC_EVERY:
+        if n >= _FLUSH_EVERY:
             fh.flush()
             self._pending[session_id] = 0
         else:
@@ -711,7 +736,7 @@ class AuditLog:
         """回放某会话的审计流。
 
         ★ 必须先 `flush()`：`append` 写的是**带缓冲的文件对象**，只有 flush 才落到
-          OS 层；否则 `read_text` 读不到最近 `_FSYNC_EVERY` 条以内的事件，
+          OS 层；否则 `read_text` 读不到最近 `_FLUSH_EVERY` 条以内的事件，
           而且**静默返回不完整的结果**而非报错 —— 这是最难发现的一类错
           （已由实现者实测：append 2 条后 replay 返回空）。
         """
@@ -721,21 +746,33 @@ class AuditLog:
         if not path.is_file():
             return ()
 
+        # ⚠️ `errors="replace"` 不可省：写入用 `ensure_ascii=False`，payload 常含中文，
+        #    一次撕裂写入会切断一个多字节字符 → 不带它则 read_text 抛 UnicodeDecodeError。
+        #    而读取是**整文件**的，于是**整个会话的审计全部读不出来**，不只是坏的那一行。
+        #    用了 replace 后，坏字节变成 U+FFFD → 该行 JSON 解析失败 → 按损坏行跳过。
+        text = path.read_text(encoding="utf-8", errors="replace")
+
         out: list[Event] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        skipped = 0
+        for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
                 d = json.loads(line)
                 if not isinstance(d, dict):
-                    continue        # 合法 JSON 但不是对象（如截断成 `12345`）
+                    raise ValueError("合法 JSON 但不是对象")
                 out.append(Event(
                     seq=d["seq"], channel=Channel(d["channel"]), kind=d["kind"],
                     payload=d.get("payload") or {}, at=d["at"],
                 ))
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                continue        # 截断/损坏的行跳过，不让回放崩掉
+            except (json.JSONDecodeError, KeyError, ValueError) as exc:
+                # ⚠️ 跳过但**不静默** —— 否则"审计文件部分损坏"与"审计本来就少"
+                #    回放结果一模一样，无法区分。
+                skipped += 1
+                logger.warning("审计行无法解析，已跳过：%s (%s)", exc, line[:80])
+        if skipped:
+            logger.warning("会话 %s 的审计回放跳过了 %d 行", session_id, skipped)
         return tuple(out)
 ```
 
@@ -745,7 +782,7 @@ class AuditLog:
 cd d:/coding/powerMcp_Pskills/gateway
 ../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_audit.py -v
 ```
-Expected: PASS（6 passed）
+Expected: PASS（**9 passed** —— 含 3 条回归测试）
 
 - [ ] **Step 5: 提交**
 
