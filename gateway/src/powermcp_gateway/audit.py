@@ -85,7 +85,13 @@ class AuditLog:
 
         out: list[Event] = []
         skipped = 0
-        for line in text.splitlines():
+        # ⚠️ 必须用 `split("\n")` 而**不是 `splitlines()`**：
+        #    `str.splitlines()` 把 U+2028 / U+2029 / U+0085 也当行边界，
+        #    而这三个码点 ≥ 0x20，`json.dumps(ensure_ascii=False)` **不转义它们**。
+        #    于是 payload 含其中任一字符的**完整合法事件**会被从中间切开、
+        #    两段都解析失败 → 整条证据在回放中消失，还被误报成"损坏行"。
+        #    （审查者实测：U+2028/U+2029/U+0085 各切成 2 段；U+000B/U+001C 被转义故无害。）
+        for line in text.split("\n"):
             line = line.strip()
             if not line:
                 continue

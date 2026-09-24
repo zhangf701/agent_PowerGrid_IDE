@@ -119,3 +119,22 @@ def test_replay_survives_a_torn_multibyte_tail(tmp_path):
 
     events = log.replay("s1")          # 初版会在此抛 UnicodeDecodeError
     assert [e.seq for e in events] == [1]
+
+
+def test_replay_preserves_events_containing_unicode_line_separators(tmp_path):
+    """★ 回归：payload 含 U+2028 / U+2029 / U+0085 时，**完整合法**的事件不得丢。
+
+    这三个码点 ≥ 0x20，`json.dumps(ensure_ascii=False)` **不转义**它们；
+    而 `str.splitlines()` 把它们当行边界 → 一条完好的事件被切成两段、
+    两段都解析失败 → 整条 EVIDENCE 在回放中消失，且被误报为"损坏行"。
+    命中「证据不可丢」这条核心不变量。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1, payload={"text": "a\u2028b"}))   # LINE SEPARATOR
+    log.append("s1", _ev(2, payload={"text": "c\u2029d"}))   # PARAGRAPH SEPARATOR
+    log.append("s1", _ev(3, payload={"text": "e\u0085f"}))   # NEXT LINE
+    log.flush()
+
+    events = log.replay("s1")
+    assert [e.seq for e in events] == [1, 2, 3], "含 U+2028/2029/0085 的完整事件被丢弃"
+    assert events[0].payload["text"] == "a\u2028b"
