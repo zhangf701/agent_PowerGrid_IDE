@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from powermcp_gateway.audit import AuditLog
+from powermcp_gateway.audit import _FLUSH_EVERY, AuditLog
 from powermcp_gateway.session import Channel, Event
 
 
@@ -248,3 +248,58 @@ def test_append_writes_strict_lf(tmp_path):
     raw = log.path_for("s1").read_bytes()
     assert b"\r\n" not in raw, "写侧输出了 CRLF，非严格 NDJSON"
     assert raw.endswith(b"\n")
+
+
+# ── C-2：审计写失败必须可观测（I-2 之后唯一残留的静默降级路径）─────────────
+
+
+def test_append_returns_true_on_success(tmp_path):
+    """成功路径返回 True —— 调用方（`proxy._emit`）靠它区分"已持久化"与"只在内存里"。"""
+    log = AuditLog(tmp_path)
+    assert log.append("s1", _ev(1)) is True
+    # 通道 B 不入审计是**设计行为**，不是失败
+    assert log.append("s1", _ev(2, channel=Channel.TELEMETRY)) is True
+    st = log.stats()
+    assert st["append_failures"] == 0
+    assert st["last_error"] is None
+
+
+def test_append_failure_is_counted_once_and_does_not_raise(tmp_path):
+    """★ 磁盘/权限失败时：**不抛**（事件已进总线历史，不能反过来打断一个已执行完的
+    调用结果），但必须**可观测** —— 累计计数 + `last_error` + error 级日志。
+
+    且**一次 append 只计 1 次失败**：打开句柄 / write / 阈值触发的 flush 必须包在
+    **同一处** try 内，否则磁盘满时 write 与 flush 各记一次，会虚增丢失量级。
+    """
+    log = AuditLog(tmp_path)
+
+    class _Boom:
+        def write(self, _s):
+            raise OSError("No space left on device")
+
+        def flush(self):
+            raise OSError("No space left on device")
+
+        def close(self):
+            pass
+
+    log._handles["s1"] = _Boom()
+    log._pending["s1"] = _FLUSH_EVERY - 1     # 下一次 append 会同时触发 write 与 flush
+
+    assert log.append("s1", _ev(1)) is False
+    assert log.stats()["append_failures"] == 1, "一次故障被重复计数（write+flush 各记一次）"
+
+    assert log.append("s1", _ev(2)) is False
+    assert log.stats()["append_failures"] == 2
+    assert "No space left" in (log.stats()["last_error"] or "")
+
+
+def test_stats_reports_handles_as_current_state(tmp_path):
+    """`handles` 是**现状量**，与 `append_failures` 的累计量互补。"""
+    log = AuditLog(tmp_path)
+    assert log.stats()["handles"] == 0
+    log.append("s1", _ev(1))
+    log.append("s2", _ev(1))
+    assert log.stats()["handles"] == 2
+    log.close()
+    assert log.stats()["handles"] == 0

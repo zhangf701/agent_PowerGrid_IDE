@@ -121,6 +121,61 @@ def validate_args(schema: dict, args: dict) -> tuple[ArgViolation, ...]:
     return tuple(out)
 
 
+def schema_is_unusable(schema: dict) -> bool:
+    """该 schema 是否含**无法判定**的字段 —— 让"校验不可用"可见，而不是静默放行。
+
+    ## 为什么需要它
+
+    `_accepted_types` 对畸形 `type` / `anyOf` **安全返回 `()`**（fail-open、不抛），
+    于是 `validate_args` 对它**既不报违规、也不报"放弃"** —— 静默通过。
+
+    而**同类**畸形若发生在 `properties` 本身（`{"properties": 5}`），会让
+    `validate_args` 抛异常，由 `proxy.call_tool` 转成一条 `contract_unknown`。
+    结果就是：**两种同类畸形，一个被报告、一个被沉默** —— 与契约 3「绝不静默」的
+    口径有张力（独立验证者 C-1）。
+
+    ## 边界（刻意与 `validate_args` 解耦）
+
+    - **不改变** `validate_args` 的签名与行为 —— 它是纯函数校验，其返回语义已被
+      测试钉住；本函数只是一个**附加**判定，供 `call_tool` 决定是否补发
+      `state="unknown" / reason="structural"`。
+    - 良构**或缺省**一律返回 `False`（缺省 = 无从判定 → 不制造假警报，与
+      `validate_args` 的"无 properties 返回空"同立场）。
+    - 对任何畸形输入**不抛异常**。
+
+    判定为 unusable 的形态：
+      - `schema` 不是 dict；`properties` 存在但不是 dict；某个 prop 的值不是 dict；
+      - 某个 prop 的 `type` 存在但既非 `str`、也非"元素全为 str 的 list/tuple"；
+      - 某个 prop 的 `anyOf` 存在但不是 list/tuple，或含"非 dict / 无 str `type`"的元素。
+    """
+    if not isinstance(schema, dict):
+        return True
+    props = schema.get("properties")
+    if props is None:
+        return False                    # 无 properties → 无从判定，不制造假警报
+    if not isinstance(props, dict):
+        return True
+
+    for prop in props.values():
+        if not isinstance(prop, dict):
+            return True
+        if "type" in prop:
+            t = prop["type"]
+            ok = isinstance(t, str) or (
+                isinstance(t, (list, tuple)) and all(isinstance(x, str) for x in t)
+            )
+            if not ok:
+                return True
+        if "anyOf" in prop:
+            anyof = prop["anyOf"]
+            if not isinstance(anyof, (list, tuple)):
+                return True
+            for item in anyof:
+                if not (isinstance(item, dict) and isinstance(item.get("type"), str)):
+                    return True
+    return False
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # 契约 3 没有"周期性求值器"。
 #

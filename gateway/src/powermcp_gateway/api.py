@@ -31,8 +31,10 @@ OPEN_SOURCE_SERVERS: tuple[str, ...] = (
 )
 
 #: SSE 空闲时的断开轮询间隔（秒）。**空闲连接也必须能检测到断开** ——
-#: 否则一个已挂掉的浏览器标签页会**永久占住订阅者名额**，最终让整个会话的
-#: EVIDENCE 发布失败（见 Task 0 审查的队头阻塞后果）。
+#: 否则一个已挂掉的浏览器标签页会**永久占住订阅者名额**，其队列被填满后成为
+#: **滞后订阅者**（见 `EventBus.stats()` 的 `lagged_queues` / `lagged_deliveries`）。
+#: ⚠️ 自 I-2 起，满队列**不再**让整个会话的 EVIDENCE 发布失败 —— 持久记录永远先于
+#:    扇出、不依赖任何订阅者；此处轮询只是为了让订阅者名额被**及时回收**。
 _DISCONNECT_POLL_S = 1.0
 
 logger = logging.getLogger(__name__)
@@ -142,7 +144,8 @@ def register_session_routes(app: FastAPI) -> None:
                         )
                     except asyncio.TimeoutError:
                         # ★ 空闲时也必须轮询断开 —— 否则一个已挂掉的标签页会
-                        #   永久占住订阅者名额，最终让整个会话的 EVIDENCE 发布失败。
+                        #   永久占住订阅者名额（它只会让**自己**滞后，不再影响持久
+                        #   记录；见 EventBus 的背压不变式）。
                         if await request.is_disconnected():
                             return
                         continue
@@ -218,8 +221,15 @@ def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
         _CONFIG = cfg
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict:
+        """存活检查 + **审计持久化降级**的观测面（C-2）。
+
+        ★ 为什么把审计计数放在健康面上：审计写失败（磁盘满/权限）时，事件**已在内存
+          历史中、但未持久化到 NDJSON** —— 这是 I-2 之后**唯一残留的静默降级路径**。
+          让它在这里可读，就不必翻日志才发现"证据流已在悄悄掉数据"。
+          `audit.append_failures` 是**累计量**（丢失量级），`audit.handles` 是现状量。
+        """
+        return {"status": "ok", "audit": _AUDIT.stats()}
 
     @app.get("/servers")
     async def servers() -> dict[str, list[str]]:

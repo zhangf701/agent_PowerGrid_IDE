@@ -13,7 +13,12 @@ async def test_health(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    body = r.json()
+    assert body["status"] == "ok"
+    # ★ 审计持久化降级的观测面（C-2）：不是全等断言 —— /health 允许附加诊断字段，
+    #   否则每加一个观测面都要改一次测试（那会把"响应体形状"变成事实上的契约）。
+    assert "audit" in body
+    assert "append_failures" in body["audit"]
 
 
 async def test_servers_lists_open_source_nine(app):

@@ -19,7 +19,7 @@ from mcp.client.stdio import stdio_client
 from .audit import AuditLog
 from .config import GatewayConfig
 from .contracts.model import ContractFinding
-from .contracts.params import ArgViolation, validate_args
+from .contracts.params import ArgViolation, schema_is_unusable, validate_args
 from .session import Channel, EventBus
 
 logger = logging.getLogger(__name__)
@@ -91,25 +91,39 @@ async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> d
 
 def _emit(bus: EventBus | None, audit: AuditLog | None, session_id: str | None,
           kind: str, payload: dict) -> None:
-    """把事件发到会话总线并落审计 —— **尽力而为，失败不得吞掉调用结果**。
+    """把事件发到会话总线**并**落审计 —— **尽力而为，失败不得吞掉调用结果**。
 
-    ⚠️ `EventBus.publish` 在总线已关闭时会 raise RuntimeError；`audit.append` 也可能因
-      磁盘/权限失败。这两者**都不允许**让 `call_tool` 抛异常：
-        - 成功路径上调用**已经执行**，结果必须交回调用者；
-        - 违规路径上必须交出 fail-closed 的违规明细。
-      否则契约 3「校验不通过 → 返回 ok=False 与违规明细」的承诺会被一次发布失败击穿。
-      失败本身记 warning（**不静默**，可诊断）。
+    ⚠️ 两步的失败语义**不同**，不得混为一谈：
+
+    1. `bus.publish` 失败（总线已关闭）→ 事件**根本没进历史**，记 warning 后返回。
+    2. `audit.append` 失败（磁盘/权限）→ 事件**已进内存历史**，但**没进 NDJSON
+       持久审计**。这是 I-2 之后**唯一残留的静默降级路径**，因此 `AuditLog` 会
+       计数并 `logger.error`，这里再点明"内存有、持久层没有"（便于按 session/kind
+       定位），并可由 `GET /health` 的 `audit.append_failures` 观测。
+
+    两者**都不允许**让 `call_tool` 抛异常：
+      - 成功路径上调用**已经执行**，结果必须交回调用者；
+      - 违规路径上必须交出 fail-closed 的违规明细。
+    否则契约 3「校验不通过 → 返回 ok=False 与违规明细」的承诺会被一次发布失败击穿。
     """
     if bus is None or session_id is None:
         return
     try:
         event = bus.publish(Channel.EVIDENCE, kind, payload)
-        if audit is not None:
-            audit.append(session_id, event)
     except Exception:
         logger.warning(
-            "事件发布/审计失败（kind=%s, session=%s）—— 调用结果仍会返回",
+            "事件发布失败（kind=%s, session=%s）—— 调用结果仍会返回",
             kind, session_id, exc_info=True,
+        )
+        return
+
+    if audit is not None and not audit.append(session_id, event):
+        # 事件在内存历史中，但**未持久化** —— 与 EventBus 的滞后计数同一口径：
+        # 降级可发生，但不许静默。AuditLog 已 logger.error + 计数，此处补充定位信息。
+        logger.warning(
+            "审计未持久化（kind=%s, session=%s）—— 该事件仅在内存历史中；"
+            "详见 AuditLog.stats() / GET /health 的 audit.append_failures",
+            kind, session_id,
         )
 
 
@@ -177,6 +191,14 @@ async def call_tool(
       `state="unknown" / reason="structural"` 的 finding，把"看不到"如实报出来，
       与契约 4 的 `checked == 0 → unknown/structural` 同一口径（UI 规范 P5 禁止
       静默 fail-open）。校验层是唯一能阻止坏调用的地方，不该对坏输入裸奔。
+
+    ★ **两条"无法判定"的路径必须待遇一致**（C-1）：
+        - `validate_args` **抛异常**（如 `{"properties": 5}`）→ `except` 分支发 unknown；
+        - `validate_args` **正常返回但 schema 含无法判定的字段**（如
+          `{"properties": {"x": {"type": 5}}}`，`_accepted_types` 对它安全返回 `()`
+          → 既不报违规也不报放弃）→ `else` 分支用 `schema_is_unusable()` 检出后
+          **同样**发 unknown。
+      两者只能触发其一（`else` 仅在未抛异常时执行），因此一次调用**不会**出现两条 unknown。
     """
     try:
         violations = validate_args(schema, args)
@@ -192,6 +214,23 @@ async def call_tool(
             evidence={"server": server, "tool": tool, "method": "proxy-validate"},
         ))
         violations = ()
+    else:
+        # ★ 校验器**正常返回**了，但它对"无法判定的 schema"是**静默 fail-open**：
+        #   `_accepted_types` 对畸形 `type`/`anyOf` 返回 `()` → 既不报违规、也不报放弃。
+        #   而同类畸形若落在 `properties` 本身，走的是上面的异常路径 → **会**报
+        #   `contract_unknown`。两种同类畸形、两种待遇，与「绝不静默」的口径有张力
+        #   （独立验证者 C-1）。这里补一条 structural unknown，让它们**待遇一致**。
+        #   ⚠️ 只在异常路径**未**触发时补发，避免同一次调用出现两条 unknown。
+        if schema_is_unusable(schema):
+            _emit_finding(bus, audit, session_id, "contract_unknown", ContractFinding(
+                contract=3, state="unknown", reason="structural", subject=server,
+                detail=(
+                    "该工具声明的 input_schema 含无法判定的字段"
+                    "（`type`/`anyOf` 形态不合法，或 `properties` 结构异常）—— "
+                    "参数校验对它不可用，本次调用**未被校验**。"
+                ),
+                evidence={"server": server, "tool": tool, "method": "proxy-validate"},
+            ))
 
     if violations:
         _emit_finding(bus, audit, session_id, "contract_violation", ContractFinding(

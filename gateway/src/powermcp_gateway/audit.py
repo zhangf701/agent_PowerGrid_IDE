@@ -28,6 +28,10 @@ class AuditLog:
         self._root.mkdir(parents=True, exist_ok=True)
         self._pending: dict[str, int] = {}
         self._handles: dict[str, object] = {}
+        #: 累计写入失败的事件条数（**丢失量级**）—— 见 `append()` 与 `stats()`
+        self.append_failures = 0
+        #: 最近一次写入失败的可读原因（无失败时为 None）
+        self.last_error: str | None = None
 
     def path_for(self, session_id: str) -> Path:
         return self._root / f"audit-{session_id}.ndjson"
@@ -42,29 +46,69 @@ class AuditLog:
             self._handles[session_id] = fh
         return fh
 
-    def append(self, session_id: str, event: Event) -> None:
-        if event.channel is not Channel.EVIDENCE:
-            return                      # 通道 B 不入审计
-        fh = self._handle(session_id)
-        fh.write(json.dumps({
-            "seq": event.seq,
-            "channel": event.channel.value,
-            "kind": event.kind,
-            "payload": event.payload,
-            "at": event.at,
-        }, ensure_ascii=False) + "\n")
+    def append(self, session_id: str, event: Event) -> bool:
+        """把一个 EVIDENCE 事件追加到该会话的 NDJSON。**返回是否已写入**。
 
-        n = self._pending.get(session_id, 0) + 1
-        if n >= _FLUSH_EVERY:
-            fh.flush()
-            self._pending[session_id] = 0
-        else:
-            self._pending[session_id] = n
+        ★ 返回 `bool` 而不是 `None`：调用方（`proxy._emit`）需要区分"已持久化"与
+          "只在内存历史里"。若磁盘满/权限失败，事件**已经进了总线历史**，因此
+          **不抛异常**（不能因持久化失败反过来打断一个已经执行完的调用结果）；
+          但**必须可观测** —— 计数 `append_failures`、记下 `last_error`、
+          `logger.error`。这与 `EventBus` 的背压计数（`lagged_deliveries`）
+          是同一口径：**降级可以发生，但不许静默**。
+
+        ⚠️ 一次调用最多计 1 次失败（打开句柄、write、阈值触发的 flush 包在同一处
+          try 内），否则一次磁盘故障会被重复计数、夸大丢失量级。
+        ⚠️ 通道 B（TELEMETRY）不入审计，返回 `True` —— 那是**设计行为，不是失败**。
+        """
+        if event.channel is not Channel.EVIDENCE:
+            return True                 # 通道 B 不入审计（正常路径）
+        try:
+            fh = self._handle(session_id)
+            fh.write(json.dumps({
+                "seq": event.seq,
+                "channel": event.channel.value,
+                "kind": event.kind,
+                "payload": event.payload,
+                "at": event.at,
+            }, ensure_ascii=False) + "\n")
+
+            n = self._pending.get(session_id, 0) + 1
+            if n >= _FLUSH_EVERY:
+                fh.flush()
+                self._pending[session_id] = 0
+            else:
+                self._pending[session_id] = n
+            return True
+        except Exception as exc:
+            self.append_failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"[:200]
+            logger.error(
+                "审计写入失败（session=%s, kind=%s, 累计失败 %d 条）—— "
+                "该事件**在内存历史中但未持久化**到 NDJSON。原因：%s",
+                session_id, event.kind, self.append_failures, self.last_error,
+            )
+            return False
 
     def flush(self) -> None:
         for fh in self._handles.values():
             fh.flush()
         self._pending.clear()
+
+    def stats(self) -> dict:
+        """审计层的只读观测面（与 `EventBus.stats()` 对称）。
+
+        ★ 审计写失败是 I-2 之后**唯一残留的静默降级路径**：事件在内存历史里有、
+          在 NDJSON 里没有。这里把它变成可读的数字，并由 `GET /health` 暴露。
+
+        - `handles`：当前打开的句柄数（**现状量**）
+        - `append_failures`：累计未被持久化的事件条数（**累计量 = 丢失量级**）
+        - `last_error`：最近一次失败的可读原因（无失败为 None）
+        """
+        return {
+            "handles": len(self._handles),
+            "append_failures": self.append_failures,
+            "last_error": self.last_error,
+        }
 
     def close(self) -> None:
         """先尝试 flush，再关闭**所有**句柄并清空台账/待 flush 计数（T1-M7）。

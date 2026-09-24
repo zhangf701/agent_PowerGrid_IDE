@@ -456,3 +456,99 @@ def test_dispatch_timeout_error_carries_context(monkeypatch):
     assert msg, "超时异常消息为空 —— 未补上下文"
     assert "opendss" in msg, "超时消息缺少 server 名"
     assert "solve_snapshot" in msg, "超时消息缺少工具名"
+
+
+# ── C-1：两条"无法判定"路径待遇一致 ────────────────────────────────────────
+
+#: `type` 值非法 → `_accepted_types` **安全返回 ()**（不抛），于是 `validate_args`
+#: 对这个 prop 既不报违规、也不报放弃 —— 若不额外检出，整次调用就是**静默放行**。
+UNUSABLE_SCHEMA = {"properties": {"x": {"type": 5}}}
+
+
+def test_unusable_schema_is_reported_not_silently_accepted(monkeypatch):
+    """★ C-1：schema 含无法判定的字段时**必须**发 `contract_unknown`。
+
+    此前它走"安全返回 ()"路径 → 静默；而同类的 `{"properties": 5}`（走异常路径）
+    **会**报 unknown。同类畸形两种待遇，与契约 3「绝不静默」的口径冲突。
+    ★ 同时断言：**仍然放行转发**（畸形 schema 不是"这次调用有问题"的证据），
+      且**不得**被误报成违规。
+    """
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        return {"is_error": False, "content": []}
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+
+    outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="run_power_flow", args={"x": "v"},
+        schema=UNUSABLE_SCHEMA, bus=bus, session_id="s1",
+    ))
+
+    assert outcome.ok is True, "畸形 schema 不是『调用有问题』的证据 —— 不应拒发"
+    kinds = [e.kind for e in bus.events()]
+    unknowns = [e for e in bus.events() if e.kind == "contract_unknown"]
+    assert len(unknowns) == 1, f"应恰好 1 条 structural unknown，实际 kinds={kinds}"
+    assert unknowns[0].payload["state"] == "unknown"
+    assert unknowns[0].payload["reason"] == "structural"
+    assert unknowns[0].payload["contract"] == 3
+    assert "contract_violation" not in kinds, "『无法判定』不得被误报成违规"
+
+
+def test_healthy_schema_emits_no_unknown(monkeypatch):
+    """对照组：良构 schema 不得产生任何 unknown。"""
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        return {"is_error": False, "content": []}
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+
+    outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="run_power_flow",
+        args={"network_name": "n"}, schema=SCHEMA, bus=bus, session_id="s1",
+    ))
+
+    assert outcome.ok is True
+    assert [e.kind for e in bus.events()] == ["tool_call"]
+
+
+def test_audit_persistence_failure_does_not_break_the_call(monkeypatch, caplog):
+    """★ C-2 的端到端侧：审计写失败**不得**让调用结果丢失。
+
+    事件已在总线历史中；`AuditLog` 负责计数与 error 日志（见 test_audit.py），
+    `_emit` 负责再点明"内存有、持久层没有"，但**绝不**把异常抛给调用方。
+
+    ★ 日志断言不可省：`_emit` 里"检查 `append` 返回值并告警"这一步**没有别的可观测
+      出口** —— 少了它，调用结果与内存历史都一样，测试会假绿（本项目反复栽在
+      "把修复改回旧行为、测试仍全绿"，故此处用 caplog 把接线钉住）。
+    """
+    import logging
+
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        return {"is_error": False, "content": []}
+
+    class _FailingAudit:
+        def append(self, session_id, event):
+            return False                    # 模拟磁盘满：已由 AuditLog 内部计数/告警
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+
+    with caplog.at_level(logging.WARNING, logger="powermcp_gateway.proxy"):
+        outcome = asyncio.run(call_tool(
+            cfg=None, server="pypsa", tool="run_power_flow",
+            args={"network_name": "n"}, schema=SCHEMA,
+            bus=bus, audit=_FailingAudit(), session_id="s1",
+        ))
+
+    assert outcome.ok is True, "审计持久化失败不该影响调用结果"
+    assert [e.kind for e in bus.events()] == ["tool_call"], "事件仍应在内存历史中"
+    assert "未持久化" in caplog.text, "审计未持久化必须留下可诊断的告警"

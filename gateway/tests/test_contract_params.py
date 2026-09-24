@@ -1,4 +1,4 @@
-from powermcp_gateway.contracts.params import validate_args
+from powermcp_gateway.contracts.params import schema_is_unusable, validate_args
 
 SCHEMA = {
     "type": "object",
@@ -80,3 +80,35 @@ def test_violations_are_sorted():
     """
     v = validate_args(SCHEMA, {"network_name": "n", "zzz": 1, "aaa": 2})
     assert [x.arg for x in v] == ["aaa", "zzz"]
+
+
+# ── C-1：把"无法判定的 schema"标出来（否则它被静默 fail-open）──────────────
+
+
+def test_schema_is_unusable_flags_malformed_shapes():
+    """良构/缺省 → False；畸形 → True。**本函数不改变 `validate_args` 的行为**，
+    只是为 `call_tool` 提供一个附加判定，让它能对"无法判定"补发 structural unknown
+    —— 否则同类畸形会出现"一个报告（走异常路径）、一个沉默（走安全返回路径）"。
+    """
+    # 良构
+    assert schema_is_unusable(SCHEMA) is False
+    assert schema_is_unusable({}) is False                                  # 无 properties → 无从判定
+    assert schema_is_unusable({"properties": {}}) is False
+    assert schema_is_unusable({"properties": {"x": {"type": ["string", "null"]}}}) is False
+    assert schema_is_unusable({"properties": {"x": {"anyOf": [{"type": "string"}]}}}) is False
+
+    # 畸形
+    for bad in (
+        {"properties": 5},
+        {"properties": {"x": 5}},
+        {"properties": {"x": {"type": 5}}},
+        {"properties": {"x": {"type": ["string", 5]}}},
+        {"properties": {"x": {"anyOf": 5}}},
+        {"properties": {"x": {"anyOf": [{"type": 5}]}}},
+        {"properties": {"x": {"anyOf": ["nope"]}}},
+    ):
+        assert schema_is_unusable(bad) is True, f"未检出畸形 schema：{bad}"
+
+    # 对任何畸形**不抛异常**（它是"隔离坏输入"的那一层）
+    for weird in (None, 5, "x", []):
+        assert schema_is_unusable(weird) is True
