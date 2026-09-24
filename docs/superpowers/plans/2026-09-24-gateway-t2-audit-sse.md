@@ -1484,8 +1484,6 @@ git commit -m "feat(gateway): 契约 4 状态映射可信度（判据经实测�
 - [ ] **Step 1: 写失败的测试**
 
 ```python
-import pytest
-
 from powermcp_gateway.contracts.params import validate_args
 
 SCHEMA = {
@@ -1542,7 +1540,7 @@ def test_anyof_with_null_accepts_none():
 
 
 def test_violations_are_sorted_and_deduped():
-    v = validate_args(SCHEMA, {"zzz": 1, "aaa": 2})
+    v = validate_args(SCHEMA, {"network_name": "n", "zzz": 1, "aaa": 2})
     assert [x.arg for x in v] == ["aaa", "zzz"]
 ```
 
@@ -1550,7 +1548,7 @@ def test_violations_are_sorted_and_deduped():
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_params.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_params.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r4
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
@@ -1577,10 +1575,7 @@ Expected: FAIL —— `ModuleNotFoundError`
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
-
-from ..inventory import ToolInventory
-from .model import ContractFinding
+from typing import Any
 
 _JSON_TO_PY: dict[str, tuple[type, ...]] = {
     "string": (str,),
@@ -1674,11 +1669,19 @@ def validate_args(schema: dict, args: dict) -> tuple[ArgViolation, ...]:
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_params.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_params.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r4
 ```
 Expected: PASS（8 passed）
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: 跑全量单元测试，确认无回归**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r4
+```
+Expected: 全部 PASS（既有 111 + 本任务 8 = 119）
+
+- [ ] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
