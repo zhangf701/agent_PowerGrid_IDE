@@ -1711,8 +1711,6 @@ git commit -m "feat(gateway): 契约 3 参数校验纯函数（判据改为代�
 ```python
 import asyncio
 
-import pytest
-
 from powermcp_gateway.proxy import call_tool
 
 SCHEMA = {
@@ -1814,13 +1812,45 @@ def test_successful_call_publishes_tool_call_event(monkeypatch):
     ))
     kinds = [e.kind for e in bus.events()]
     assert "tool_call" in kinds
+
+
+def test_closed_bus_does_not_lose_the_outcome(monkeypatch):
+    """★ 回归：总线已关闭时，结果 / 违规明细**仍必须**交回调用者。
+
+    `EventBus.publish` 在 closed 时 raise RuntimeError。若 `_emit` 不处理，
+    `call_tool` 会抛异常 —— 契约 3「返回 ok=False 与违规明细」的承诺被击穿，
+    成功路径上更会**丢失一个已经执行完的调用结果**。
+    """
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        return {"status": "success"}
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+    bus.close()
+
+    ok_outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="t", args={"network_name": "n"},
+        schema=SCHEMA, bus=bus, session_id="s1",
+    ))
+    assert ok_outcome.ok is True
+    assert ok_outcome.result == {"status": "success"}
+
+    bad_outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="t", args={"network_name": "n", "nope": 1},
+        schema=SCHEMA, bus=bus, session_id="s1",
+    ))
+    assert bad_outcome.ok is False
+    assert [v.kind for v in bad_outcome.violations] == ["unknown_arg"]
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_proxy.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_proxy.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r5
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
@@ -1837,7 +1867,9 @@ Expected: FAIL —— `ModuleNotFoundError`
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+import logging
+from dataclasses import dataclass
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
@@ -1847,6 +1879,8 @@ from .audit import AuditLog
 from .config import GatewayConfig
 from .contracts.params import ArgViolation, validate_args
 from .session import Channel, EventBus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -1860,26 +1894,47 @@ class CallOutcome:
 
 
 async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> dict:
-    """真正转发给 MCP server。单测里会被 monkeypatch 掉。"""
+    """真正转发给 MCP server。单测里会被 monkeypatch 掉。
+
+    ⚠️ **必须有超时**（与 `inventory.fetch_server_tools` 一致，复用同一个 `cfg.server_timeout_s`）：
+      已知 opendss 的失效形态正是「裸 stdio 探针正常、经 SDK 握手挂起」——
+      没有超时会让整个网关请求**永久挂住**，且调用方无从判断是慢还是死。
+    """
     params = StdioServerParameters(
         command=str(cfg.python),
         args=["-m", "powermcp.cli", "run", server],
         cwd=str(cfg.powermcp_root),
     )
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool, arguments=args)
-            return {"content": [c.model_dump() for c in result.content]}
+    async with asyncio.timeout(cfg.server_timeout_s):
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool, arguments=args)
+                return {"content": [c.model_dump() for c in result.content]}
 
 
 def _emit(bus: EventBus | None, audit: AuditLog | None, session_id: str | None,
           kind: str, payload: dict) -> None:
+    """把事件发到会话总线并落审计 —— **尽力而为，失败不得吞掉调用结果**。
+
+    ⚠️ `EventBus.publish` 在总线已关闭时会 raise RuntimeError；`audit.append` 也可能因
+      磁盘/权限失败。这两者**都不允许**让 `call_tool` 抛异常：
+        - 成功路径上调用**已经执行**，结果必须交回调用者；
+        - 违规路径上必须交出 fail-closed 的违规明细。
+      否则契约 3「校验不通过 → 返回 ok=False 与违规明细」的承诺会被一次发布失败击穿。
+      失败本身记 warning（**不静默**，可诊断）。
+    """
     if bus is None or session_id is None:
         return
-    event = bus.publish(Channel.EVIDENCE, kind, payload)
-    if audit is not None:
-        audit.append(session_id, event)
+    try:
+        event = bus.publish(Channel.EVIDENCE, kind, payload)
+        if audit is not None:
+            audit.append(session_id, event)
+    except Exception:
+        logger.warning(
+            "事件发布/审计失败（kind=%s, session=%s）—— 调用结果仍会返回",
+            kind, session_id, exc_info=True,
+        )
 
 
 async def call_tool(
@@ -1907,7 +1962,7 @@ async def call_tool(
 
     try:
         result = await _dispatch(cfg, server, tool, args)
-    except Exception as exc:  # noqa: BLE001 —— 引擎失败要如实暴露，不吞
+    except Exception as exc:  # 引擎失败要如实暴露，不吞
         _emit(bus, audit, session_id, "tool_error", {
             "server": server, "tool": tool, "error": f"{type(exc).__name__}: {exc}"[:300],
         })
@@ -1924,11 +1979,19 @@ async def call_tool(
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_proxy.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_proxy.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r5
 ```
-Expected: PASS（5 passed）
+Expected: PASS（6 passed）
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: 跑全量单元测试，确认无回归**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r5
+```
+Expected: 全部 PASS（既有 119 + 本任务 6 = 125）
+
+- [ ] **Step 6: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
