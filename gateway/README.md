@@ -12,7 +12,7 @@
 
 | 端点 | 说明 |
 |---|---|
-| `GET /health` | 存活检查 |
+| `GET /health` | 存活检查 + **审计持久化降级**的观测面：`audit.append_failures`（**累计**未被持久化的事件条数）/ `audit.handles`（当前句柄数）/ `audit.last_error`。审计写失败时事件仍在内存历史中，但不会进 NDJSON —— 在这里可读，不必翻日志才发现"证据流已在悄悄掉数据" |
 | `GET /servers` | 已挂载的 9 个开源 server |
 | `GET /contracts/t0` | T0 契约报告（`summary` + `findings`），`findings` 为 `ContractFinding` 形状 |
 | `POST /sessions` | 建会话。体 `{"servers": [...]}`（可省，缺省＝全部开源 server）；返回 `{id, servers, created_at}`。未知 server → 400 |

@@ -47,7 +47,7 @@ note: 本 handoff 记录**子项目 3 的收尾审查与全部修复**，子项�
 | # | 问题 | 处置 |
 |---|---|---|
 | **C-2**（最重要） | 审计写失败是**静默降级**：`bus.publish` 成功而 `audit.append` 失败时，事件只在**内存历史**、NDJSON 里没有，**且无任何计数** —— I-2 之后唯一残留的静默路径（审计无轮转 + 长生命周期 → "磁盘满"只是时间问题） | ✅ `AuditLog.append()` 返回 `bool`；失败计数 `append_failures` + `last_error` + `logger.error`，**不抛**；新增 `stats()`；`GET /health` 暴露 `audit`；`proxy._emit` 检查返回值并补充定位告警 |
-| **C-1** | 同类畸形"一个报告、一个沉默"：`{"properties":{"x":{"type":5}}}` 走"安全返回 `()`"路径 → 静默放行；而同类的 `{"properties":5}` 走异常路径**会**报 unknown | ✅ 新增 `params.schema_is_unusable()`（**不改** `validate_args` 的签名与行为），让 `call_tool` 对前者补发 `structural` unknown；两路径互斥、不重复 |
+| **C-1** | 同类畸形"一个报告、一个沉默"：`{"properties":{"x":{"type":5}}}` 走"安全返回 `()`"路径 → 静默放行；而同类的 `{"properties":5}` 走异常路径**会**报 unknown | ✅ 新增 `params.schema_is_unusable()`（**不改** `validate_args` 的签名与行为），让 `call_tool` 对前者补发 `structural` unknown；两路径互斥、不重复。**独立验证又发现其误报（N1）**：schema 既畸形**又**确实缺必填参数时会同时报 unknown 与 violation，且 unknown 的 detail 断言"本次调用未被拦截"是**与事实相反**的声明（该调用已被校验并拒发）→ 已收紧为「**仅在无 violation 时**补发 unknown」，并补回归测试 |
 | **C-3** | `api.py` 两处注释仍写 I-2 **之前**的后果（"最终让整个会话的 EVIDENCE 发布失败"） | ✅ 修正为"只会让该订阅者自己滞后；轮询只是为及时回收名额" |
 
 ### 四、护栏补强（本周期最重要的方法教训）
