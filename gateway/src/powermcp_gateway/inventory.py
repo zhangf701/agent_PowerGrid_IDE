@@ -68,12 +68,71 @@ async def fetch_server_tools(
     )
     timeout = timeout_s if timeout_s is not None else cfg.server_timeout_s
 
-    async with asyncio.timeout(timeout):
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                return [ToolRecord.from_sdk(server, t) for t in result.tools]
+    try:
+        async with asyncio.timeout(timeout):
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    return [ToolRecord.from_sdk(server, t) for t in result.tools]
+    except Exception as exc:  # noqa: BLE001 —— 见下：超时需补上下文后重抛，其余原样上抛
+        if _is_timeout(exc):
+            raise _timeout_error(server, timeout) from exc
+        raise
+
+
+def _describe_error(exc: BaseException) -> str:
+    """把异常展开为**可执行的叶子原因**。
+
+    anyio 会把子进程的 `LaunchError` 包在 `ExceptionGroup` 里。直接 `str(exc)`
+    只能得到 `"unhandled errors in a TaskGroup (1 sub-exception)"` ——
+    真正可执行的信息（如 `pip install powermcp[opendss]`）会被吞掉，
+    使契约 8 的 detail 变得不可读。
+
+    方案 §4.4 要求 ⚠️/❌ 必须给出**可执行修复路径**，故此处必须递归展开，
+    并把空白折叠为单行（detail 会渲染成徽章/卡片，多行不便展示）。
+    """
+    leaves: list[str] = []
+
+    def walk(e: BaseException) -> None:
+        subs = getattr(e, "exceptions", None)  # ExceptionGroup / BaseExceptionGroup
+        if subs:
+            for sub in subs:
+                walk(sub)
+            return
+        leaves.append(f"{type(e).__name__}: {e}")
+
+    walk(exc)
+
+    seen: list[str] = []
+    for leaf in leaves:
+        flat = " ".join(leaf.split())  # 折叠换行与连续空白
+        if flat not in seen:
+            seen.append(flat)
+    return " | ".join(seen)[:400]
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """判断异常（含 ExceptionGroup 嵌套）是否由超时引起。"""
+    if isinstance(exc, TimeoutError):
+        return True
+    for sub in getattr(exc, "exceptions", ()) or ():
+        if _is_timeout(sub):
+            return True
+    return False
+
+
+def _timeout_error(server: str, timeout: float) -> TimeoutError:
+    """构造**带上下文**的超时异常。
+
+    `asyncio.timeout` 原生抛出的 `TimeoutError` **消息为空** —— 契约 8 的 detail
+    会退化成 `"TimeoutError:"`，既不说明是哪个 server、等了多久，也不说明卡在哪一步，
+    同样违反方案 §4.4「⚠️/❌ 必须给出可执行修复路径」。
+    """
+    return TimeoutError(
+        f"{server} 在 {timeout:g}s 内未完成 MCP 握手（initialize / list_tools 无响应）"
+        f" —— 进程可能已启动但不响应，需单独排查该 server 的 stdio 管道"
+    )
 
 
 async def build_inventory(
@@ -88,7 +147,7 @@ async def build_inventory(
         try:
             return server, await fetch_server_tools(cfg, server, timeout_s), ""
         except Exception as exc:  # noqa: BLE001 —— 单 server 失败不应拖垮整体
-            return server, None, f"{type(exc).__name__}: {exc}"[:200]
+            return server, None, _describe_error(exc)
 
     results = await asyncio.gather(*(one(s) for s in names))
 

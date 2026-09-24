@@ -2,7 +2,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from powermcp_gateway.inventory import ServerFailure, ToolInventory, ToolRecord
+from powermcp_gateway.inventory import (
+    ServerFailure,
+    ToolInventory,
+    ToolRecord,
+    _describe_error,
+    _is_timeout,
+    _timeout_error,
+    build_inventory,
+)
 
 
 def _fake_sdk_tool(name: str = "run_power_flow", schema: dict | None = None):
@@ -57,3 +65,90 @@ async def test_fetch_real_server():
     tools = await fetch_server_tools(cfg, "pandapower")
     assert len(tools) == 8
     assert "run_power_flow" in {t.name for t in tools}
+
+
+# —— 失败原因的展开（契约 8 的 detail 必须可执行）——
+
+def test_describe_error_unwraps_exception_group():
+    """anyio 把子进程错误包在 ExceptionGroup 里，必须展开。
+
+    真实案例：opendss 的契约 8 detail 曾只剩
+    "ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)"，
+    而真正可执行的 "pip install powermcp[opendss]" 被吞掉 ——
+    这违反方案 §4.4「⚠️/❌ 必须给出可执行修复路径」。
+    """
+    inner = RuntimeError(
+        "ANDES: required package 'andes' is not installed.\n"
+        "  Install it with:  pip install powermcp[andes]"
+    )
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
+
+    text = _describe_error(group)
+
+    assert "pip install powermcp[andes]" in text   # 可执行信息必须保住
+    assert "RuntimeError" in text                  # 叶子异常类型必须保住
+    assert "\n" not in text                        # 折叠为单行，便于徽章渲染
+
+
+def test_describe_error_handles_plain_exception():
+    assert _describe_error(ValueError("boom")) == "ValueError: boom"
+
+
+def test_describe_error_handles_nested_groups():
+    inner = ExceptionGroup("inner", [KeyError("k")])
+    outer = ExceptionGroup("outer", [inner, TimeoutError("t")])
+    text = _describe_error(outer)
+    assert "KeyError" in text
+    assert "TimeoutError" in text
+
+
+def test_describe_error_deduplicates_repeated_leaves():
+    dup = RuntimeError("same")
+    group = ExceptionGroup("g", [dup, RuntimeError("same")])
+    assert _describe_error(group).count("same") == 1
+
+
+async def test_build_inventory_surfaces_grouped_reason(monkeypatch):
+    """build_inventory 归集失败时，必须把 ExceptionGroup 展开后写入 failures。"""
+
+    async def boom(cfg, server, timeout_s=None):
+        raise ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [RuntimeError("Install it with:  pip install powermcp[opendss]")],
+        )
+
+    monkeypatch.setattr("powermcp_gateway.inventory.fetch_server_tools", boom)
+
+    inv = await build_inventory(cfg=None, servers=["opendss"])  # type: ignore[arg-type]
+
+    assert len(inv.failures) == 1
+    assert inv.failures[0].server == "opendss"
+    assert "pip install powermcp[opendss]" in inv.failures[0].error
+
+
+# —— 超时路径也必须可执行（asyncio.timeout 原生抛出的 TimeoutError 消息为空）——
+
+def test_is_timeout_detects_plain_timeout():
+    assert _is_timeout(TimeoutError()) is True
+
+
+def test_is_timeout_detects_nested_timeout():
+    """anyio 的清理异常可能把 TimeoutError 包在 ExceptionGroup 里。"""
+    group = ExceptionGroup("g", [RuntimeError("x"), TimeoutError()])
+    assert _is_timeout(group) is True
+
+
+def test_is_timeout_rejects_other_errors():
+    assert _is_timeout(RuntimeError("x")) is False
+    assert _is_timeout(ExceptionGroup("g", [ValueError("v")])) is False
+
+
+def test_timeout_error_carries_server_and_stage():
+    """超时异常必须自带上文 —— 否则契约 8 的 detail 退化成 "TimeoutError:"。"""
+    err = _timeout_error("opendss", 90.0)
+    text = _describe_error(err)
+
+    assert "opendss" in text                      # 哪个 server
+    assert "90s" in text                          # 等了多久
+    assert "握手" in text                          # 卡在哪一阶段
+    assert text != "TimeoutError:"                # 不再是无信息的空消息
