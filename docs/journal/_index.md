@@ -8,6 +8,30 @@
 
 ## 文档列表（倒序）
 
+### 🏗️ 2026-09-24 — 网关交付（**子项目 2：契约引擎 T0**）
+📄 [计划与执行记录](../superpowers/plans/2026-09-24-gateway-contract-engine-t0.md) · 代码 [`gateway/`](../../gateway/) · 缺陷立项 [opendss 挂载](../superpowers/plans/2026-09-24-opendss-sdk-mount-defect.md)
+
+**首个可运行的工程交付物**：本地网关 —— 拉起 MCP server、求值 T0 静态契约、经 HTTP 暴露契约状态。
+
+- **位置**：`gateway/`（新建）。**本轮同时给项目根 `git init`** —— 此前根目录**无任何版本控制**
+  （2026-09-24 已发生过一次交付物被覆盖且无法恢复的事故，这是那道兜底）
+- **交付**：10/10 Task · 64/64 Step · **76 单元测试 + 1 集成测试通过** · 20 个提交
+- **端点**：`GET /health` · `GET /servers` · `GET /contracts/t0`
+- ✅ **`PowerMCP/` 保持 0 行改动**（*zero source mutation*）
+- **实测快照**：已挂载 **8/9** · 工具 **117** · `summary = incident`
+  契约 2 → 5 satisfied + 2 degraded + 2 structural；契约 5 → 11 条重名（**全部 schema 不同**）
+- ⚠️ **计划 Goal 有一条未达成**：Goal 写"拉起 9 个"，实际 **8 个** ——
+  **opendss 无法经 mcp SDK 挂载**（裸 stdio 探针 1.86s 正常响应，经 SDK 握手 90s/180s 超时）。
+  已单独立项，**根因未定**，影响契约 2 / 契约 8 / 能力矩阵 OpenDSS 行
+- ⚠️ **与计划预设的偏差（环境相关，非实现缺陷）**：原预测 `hope`/`genx` 因缺 Julia 拉不起来 ——
+  **实测相反，9 个全部可拉起**。**错因**：把「引擎**求解**需要 Julia」与「server **进程**无法启动」
+  混为一谈；`list_tools` 只要求模块可导入，而 T0 契约**一次求解都不跑**。
+  真实的可启动风险是**缺 pip extra**（`pip install powermcp[andes]` 那类）
+- **计划已回填为"已交付实现"**：Task 1/5 的代码块已同步为交付版，
+  ⚠️ 因此该计划现在描述的是**"已经这么建了"**，不再是前置规格
+
+---
+
 ### 2026-09-24 — UI 设计规范（**前端设计方案的实现级展开**）
 📄 [../PowerMCP_UI设计规范.md](../PowerMCP_UI设计规范.md) · 令牌真源 [design/tokens.json](../../design/tokens.json) · 校验 [tools/check_design_tokens.py](../../tools/check_design_tokens.py)
 

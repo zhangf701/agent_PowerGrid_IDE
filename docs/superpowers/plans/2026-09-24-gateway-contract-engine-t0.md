@@ -312,10 +312,12 @@ git commit -m "feat(gateway): 仓库初始化与配置解析"
 - Produces:
   - `ToolRecord`：`server: str` · `name: str` · `description: str | None` · `input_schema: dict` · `output_schema: dict | None`
     - 类方法 `ToolRecord.from_sdk(server: str, tool: object) -> ToolRecord`
-  - `ServerFailure`：`server: str` · `error: str` · `causes: tuple[str, ...]` · `hint: str | None` · `probe_missing: str | None`
+  - `ServerFailure`：`server: str` · `error: str` · `hint: str | None` · `probe_missing: str | None`
+    （`error` 已含摊平后的完整原因文本；**无 `causes` 字段** —— 见执行记录的偏差表）
   - `ToolInventory`：`tools: tuple[ToolRecord, ...]` · `failures: tuple[ServerFailure, ...]` · **`requested: tuple[str, ...]`**
     - `names(server)` · `by_name(name)` · `servers()` · **`all_servers()`**
-  - `def describe_exception(exc: BaseException) -> tuple[str, tuple[str, ...]]` —— 摊平 + 摘要
+  - `def _describe_error(exc: BaseException) -> str` —— 递归摊平 `BaseExceptionGroup`，返回可读摘要
+  - `def _is_timeout(exc: BaseException) -> bool` · `def _timeout_error(server, timeout) -> TimeoutError`
   - `def install_hint_for(server: str) -> tuple[str | None, str | None]` —— `(hint, probe_missing)`
   - `async def fetch_server_tools(cfg, server, timeout_s=None) -> list[ToolRecord]`
   - `async def build_inventory(cfg, servers, *, timeout_s=None) -> ToolInventory`
@@ -1497,8 +1499,9 @@ git commit -m "feat(gateway): 契约 5 命名空间求值器"
 - Produces:
   - `DocImplEvaluator`（`contract = 2`）
   - `SERVER_DOC_DIRS: dict[str, str]`
-  - `split_sections(markdown: str) -> list[tuple[str, str]]`
-  - `extract_declared_tool_names(markdown: str, *, known_tools: set[str], exclude: set[str] = frozenset()) -> set[str]`
+  - `extract_declared_tool_names(markdown: str) -> set[str]`
+    （结构化提取 v2：只认工具名位置，无 kwargs、无 `split_sections` —— 见执行记录偏差表）
+  - `TOOL_SECTIONS: tuple[str, ...]` —— 实测自 8 个 README 的清单区块标题
 
 **规则**（方案 §2.2：契约 2 输出 `✅`/`⚠️`/`❌`）：
 - 文档中声明、但 `list_tools` 里不存在 → **`violated`**
