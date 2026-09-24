@@ -67,3 +67,35 @@ def test_audit_file_per_session(tmp_path):
     log = AuditLog(tmp_path)
     assert log.path_for("s1") != log.path_for("s2")
     assert log.path_for("s1").name.startswith("audit-s1")
+
+
+# ── 以下两条为实现者实测发现的回归测试 ──────────────────────────────────
+
+def test_replay_sees_events_appended_without_explicit_flush(tmp_path):
+    """★ 回归：append 有缓冲，replay 必须先 flush。
+
+    初版 replay 直接 read_text，而 append 写的是带缓冲的文件对象 ——
+    `_FSYNC_EVERY` 以内的事件**完全不可见**，且**静默返回**而非报错。
+    原 6 条测试都在 replay 前调了 flush()，因此这个缺口毫无覆盖。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.append("s1", _ev(2))       # 故意不调 flush()
+
+    assert [e.seq for e in log.replay("s1")] == [1, 2]
+
+
+def test_replay_skips_valid_json_that_is_not_an_object(tmp_path):
+    """★ 回归：截断的尾部可能是**合法 JSON 但不是对象**（如 `12345`）。
+
+    初版只捕 JSONDecodeError，这种输入会抛 TypeError 把回放打崩，
+    与 docstring 承诺的"不让回放崩掉"矛盾。
+    """
+    log = AuditLog(tmp_path)
+    log.append("s1", _ev(1))
+    log.flush()
+    with log.path_for("s1").open("a", encoding="utf-8") as fh:
+        fh.write("12345\n")            # 合法 JSON，不是对象
+        fh.write('"just a string"\n')
+
+    assert [e.seq for e in log.replay("s1")] == [1]

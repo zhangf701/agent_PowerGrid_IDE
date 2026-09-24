@@ -59,6 +59,15 @@ class AuditLog:
         self._pending.clear()
 
     def replay(self, session_id: str) -> tuple[Event, ...]:
+        """回放某会话的审计流。
+
+        ★ 必须先 `flush()`：`append` 写的是**带缓冲的文件对象**，只有 flush 才落到
+          OS 层；否则 `read_text` 读不到最近 `_FSYNC_EVERY` 条以内的事件，
+          而且**静默返回不完整的结果**而非报错 —— 这是最难发现的一类错
+          （已由实现者实测：append 2 条后 replay 返回空）。
+        """
+        self.flush()                        # ← 回归修复：见 docstring
+
         path = self.path_for(session_id)
         if not path.is_file():
             return ()
@@ -70,10 +79,12 @@ class AuditLog:
                 continue
             try:
                 d = json.loads(line)
+                if not isinstance(d, dict):
+                    continue        # 合法 JSON 但不是对象（如截断成 `12345`）
                 out.append(Event(
                     seq=d["seq"], channel=Channel(d["channel"]), kind=d["kind"],
                     payload=d.get("payload") or {}, at=d["at"],
                 ))
-            except (json.JSONDecodeError, KeyError, ValueError):
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 continue        # 截断/损坏的行跳过，不让回放崩掉
         return tuple(out)
