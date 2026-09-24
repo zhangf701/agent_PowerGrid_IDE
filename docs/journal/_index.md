@@ -8,6 +8,22 @@
 
 ## 文档列表（倒序）
 
+### 🚩 2026-09-24 — HANDOFF（**子项目 3 全部交付完成**）
+📄 [handoff_2026-09-24_gateway-t2-complete.md](handoff_2026-09-24_gateway-t2-complete.md)
+
+**新对话接手请先读这份**（比下一份更新）。子项目 3（T2 + 审计 + SSE）**7/7 Task 全部交付**，
+**138 passed**，端到端验收通过（完成标准 4/4）。
+
+- **5 处经用户裁决的判据级改动**：契约 4 同时识别**函数式注册**（OpenDSS 55 工具全靠它）·
+  `checked==0` 改报 `unknown` · `_dispatch` 回传 `is_error` · `EventBus.subscribe_queue()` 同步注册 ·
+  app 加 **lifespan flush 审计**（否则进程退出即丢证据）
+- ⚠️ **Task 7 未经独立子代理审查**（账户频率限制 429）—— 下次会话优先补做
+- ⚠️ **最终全分支审查尚未执行** —— 台账累积 30+ 条 Minor 待裁决
+- 📌 **新建技能 `plan-code-preflight`**：派发前把计划代码提取到真实位置跑一遍 ——
+  本轮 7 个任务**每一个**都因此抓出「照抄必然失败」的问题（合计 20+ 处）
+
+---
+
 ### 🚩 2026-09-24 — HANDOFF（UI 规范定稿 + 子项目 3 计划与首两个任务）
 📄 [handoff_2026-09-24_gateway-t2-sdd.md](handoff_2026-09-24_gateway-t2-sdd.md)
 
