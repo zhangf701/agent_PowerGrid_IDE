@@ -445,3 +445,146 @@ async def test_events_stream_stops_on_client_disconnect(app, monkeypatch):
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(gen.__anext__(), 1)   # 有界：挂死 → TimeoutError → 失败
     assert bus.subscriber_count() == 0            # 断开后已注销
+
+
+# ── /sessions/{sid}/tools/call 路由（HTTP 端到端）──────────────────────────
+# 以上测试打的是 `api_mod.call_with_contracts`（**函数**），路由本身零覆盖（N-5）。
+# 下面经 `POST /sessions/{sid}/tools/call` 覆盖 M-2/M-3：
+#   缺字段 → 400（不再是 500）、工具不存在 → 404、配置/清单失败 → 503、
+#   成功路径的 `dataclasses.asdict(outcome)` 序列化。
+
+
+def _fake_inventory(*tools):
+    """构造一个只含给定工具的 `ToolInventory`（测试用最小真源）。"""
+    from powermcp_gateway.inventory import ToolInventory
+
+    return ToolInventory(tools=tuple(tools), failures=(), requested=("pandapower",))
+
+
+def _tool_record(**over):
+    from powermcp_gateway.inventory import ToolRecord
+
+    base = dict(
+        server="pandapower",
+        name="run_power_flow",
+        description=None,
+        input_schema={"properties": {"net": {"type": "string"}}},
+        output_schema=None,
+    )
+    base.update(over)
+    return ToolRecord(**base)
+
+
+async def test_tools_call_unknown_session_404(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/sessions/nope/tools/call",
+                         json={"server": "pandapower", "tool": "run_power_flow"})
+    assert r.status_code == 404
+
+
+async def test_tools_call_missing_server_field_400(app):
+    """★ 缺 `server` 键必须是 400（客户端错误），**不再是 500**（M-2）。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pandapower"]})).json()["id"]
+        r = await c.post(f"/sessions/{sid}/tools/call", json={"tool": "run_power_flow"})
+    assert r.status_code == 400
+    assert "server" in r.json()["detail"]
+
+
+async def test_tools_call_missing_tool_field_400(app):
+    """★ 缺 `tool` 键同样必须是 400（M-2）。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pandapower"]})).json()["id"]
+        r = await c.post(f"/sessions/{sid}/tools/call", json={"server": "pandapower"})
+    assert r.status_code == 400
+    assert "tool" in r.json()["detail"]
+
+
+async def test_tools_call_unknown_tool_404(app, monkeypatch):
+    """工具不在清单里（此处清单为空）→ 404，而非 500。"""
+    from pathlib import Path
+
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.config import GatewayConfig
+
+    monkeypatch.setattr(
+        api_mod, "_cfg",
+        lambda: GatewayConfig(powermcp_root=Path("."), python=Path("py")),
+    )
+
+    async def fake_inv(cfg, servers, timeout_s=None):
+        return _fake_inventory()                       # 空清单 → recs 为空
+
+    monkeypatch.setattr(api_mod, "build_inventory", fake_inv)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pandapower"]})).json()["id"]
+        r = await c.post(f"/sessions/{sid}/tools/call",
+                         json={"server": "pandapower", "tool": "nope", "args": {}})
+    assert r.status_code == 404
+
+
+async def test_tools_call_success_serializes_outcome(app, monkeypatch):
+    """★ 成功路径：钉住 `dataclasses.asdict(outcome)` 的序列化与路由接线。
+
+    打桩方式选择：monkeypatch `api_mod.build_inventory`（造清单）+ `_cfg`（避开
+    真实配置发现）+ `proxy._dispatch`（不拉起引擎），**让真实的路由 → `call_with_contracts`
+    → `call_tool` 链路跑通**。理由：本测试要覆盖的正是**路由自身的接线**（取 `recs[0].
+    input_schema` 作 `get_schema`、经会话总线求值、`asdict` 序列化）—— 只打桩 `_dispatch`
+    即可让这整条链真实执行，比直接打桩 `call_with_contracts` 覆盖更深；而 `build_inventory`
+    必须打桩，否则会真的拉起 stdio 子进程。
+    """
+    from pathlib import Path
+
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.config import GatewayConfig
+
+    monkeypatch.setattr(
+        api_mod, "_cfg",
+        lambda: GatewayConfig(powermcp_root=Path("."), python=Path("py")),
+    )
+
+    async def fake_inv(cfg, servers, timeout_s=None):
+        return _fake_inventory(_tool_record())
+
+    monkeypatch.setattr(api_mod, "build_inventory", fake_inv)
+
+    seen: dict = {}
+
+    async def fake_dispatch(cfg, server, tool, args):
+        seen["called"] = (server, tool, args)
+        return {"is_error": False, "content": [{"type": "text", "text": "ok"}]}
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pandapower"]})).json()["id"]
+        r = await c.post(f"/sessions/{sid}/tools/call",
+                         json={"server": "pandapower", "tool": "run_power_flow",
+                               "args": {"net": "x"}})
+
+    assert r.status_code == 200
+    body = r.json()                                    # 能被 JSON 解析即覆盖 asdict 序列化
+    assert body["ok"] is True
+    assert body["server"] == "pandapower"
+    assert body["tool"] == "run_power_flow"
+    assert body["result"]["content"][0]["text"] == "ok"
+    assert seen["called"] == ("pandapower", "run_power_flow", {"net": "x"})
+
+
+async def test_tools_call_config_failure_is_503(app, monkeypatch):
+    """★ `_cfg()` 失败必须映射为 503（与 `/contracts/t0` 同语义），不是 500（M-3）。"""
+    from powermcp_gateway import api as api_mod
+    from powermcp_gateway.config import ConfigError
+
+    def boom():
+        raise ConfigError("配置无法解析")
+
+    monkeypatch.setattr(api_mod, "_cfg", boom)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        sid = (await c.post("/sessions", json={"servers": ["pandapower"]})).json()["id"]
+        r = await c.post(f"/sessions/{sid}/tools/call",
+                         json={"server": "pandapower", "tool": "run_power_flow", "args": {}})
+    assert r.status_code == 503

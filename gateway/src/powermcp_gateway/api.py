@@ -172,11 +172,31 @@ def register_session_routes(app: FastAPI) -> None:
         except KeyError:
             return JSONResponse(status_code=404, content={"detail": "会话不存在"})
 
-        server = payload["server"]
-        tool = payload["tool"]
+        # ★ 请求体缺字段是**客户端错误**（400），不是 500。
+        #   原先 `payload["server"]` 直接下标，缺键即 `KeyError` → HTTP 500 ——
+        #   把一个可诊断的坏请求报成了服务端故障（M-2）。
+        server = payload.get("server")
+        tool = payload.get("tool")
+        if not isinstance(server, str) or not server:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "请求体缺少 `server`（需为非空字符串）"},
+            )
+        if not isinstance(tool, str) or not tool:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "请求体缺少 `tool`（需为非空字符串）"},
+            )
         args = payload.get("args") or {}
 
-        inv = await build_inventory(_cfg(), [server])
+        # ★ 与 `/contracts/t0` 保持**同一错误语义**：配置/清单系统性失败 → 503（M-3）。
+        #   注意 `build_inventory` 会把**单个** server 的失败收进 `inv.failures` 而不抛；
+        #   这里捕获到异常意味着系统性失败（如 `_cfg()` 无法解析配置）—— 503 恰当。
+        #   单 server 失败仍走既有路径：`recs` 为空 → 404。
+        try:
+            inv = await build_inventory(_cfg(), [server])
+        except Exception as exc:  # noqa: BLE001 —— 统一映射为 503，不外泄为 500
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         recs = [t for t in inv.tools if t.server == server and t.name == tool]
         if not recs:
             return JSONResponse(

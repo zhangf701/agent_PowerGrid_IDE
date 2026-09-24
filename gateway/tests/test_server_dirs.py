@@ -1,5 +1,3 @@
-import pytest
-
 from powermcp_gateway.contracts.server_dirs import SERVER_DIRS
 
 EXPECTED = {

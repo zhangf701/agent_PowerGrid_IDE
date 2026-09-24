@@ -156,9 +156,49 @@ def test_tool_is_error_is_not_reported_as_success(monkeypatch):
         cfg=None, server="pypsa", tool="run_power_flow", args={"network_name": "n"},
         schema=SCHEMA,
     ))
+    # 行为断言（非措辞断言 —— 见 T5-M3）：失败必须体现在 ok 上，诊断材料必须保留，
+    # 且 error 必须带上工具的**真实文本**（否则只报"以 is_error 返回"等于藏起最有用的信息）。
     assert outcome.ok is False
-    assert "is_error" in outcome.error
+    assert outcome.result is not None
     assert outcome.result["content"][0]["text"] == "solver diverged"
+    assert "solver diverged" in outcome.error, "error 未带工具真实输出"
+
+
+def test_is_error_message_is_built_from_content_safely(monkeypatch):
+    """★ `is_error` 的 error 由 content 文本拼成：多段以 " | " 连接、
+    非 dict / 缺失 text 的元素安全跳过、审计事件与返回值用**同一条**消息；
+    无可用文本时退回固定文案（**绝不产生空消息**）。"""
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def dispatch_a(cfg, server, tool, args):
+        return {"is_error": True, "content": [
+            {"type": "text", "text": "first"},
+            "not-a-dict",                       # 非 dict → 跳过
+            {"type": "text"},                   # 缺 text → 跳过
+            {"type": "text", "text": "second"},
+        ]}
+
+    monkeypatch.setattr(proxy, "_dispatch", dispatch_a)
+    bus = EventBus()
+    out = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="t", args={"network_name": "n"},
+        schema=SCHEMA, bus=bus, session_id="s1",
+    ))
+    assert out.ok is False
+    assert "first | second" in out.error
+
+    errs = [e.payload["error"] for e in bus.events() if e.kind == "tool_error"]
+    assert errs and errs[0] == out.error, "审计事件与返回值的 error 不是同一条消息"
+
+    async def dispatch_b(cfg, server, tool, args):
+        return {"is_error": True}               # 无 content → 无可用文本
+
+    monkeypatch.setattr(proxy, "_dispatch", dispatch_b)
+    out2 = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="t", args={"network_name": "n"}, schema=SCHEMA))
+    assert out2.error, "提取不到文本时不得产生空消息"
+    assert "is_error=True" in out2.error
 
 
 def test_contract_violation_payload_is_a_contract_finding():

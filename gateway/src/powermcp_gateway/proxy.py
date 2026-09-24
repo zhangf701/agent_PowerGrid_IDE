@@ -134,6 +134,30 @@ def _emit_finding(
     _emit(bus, audit, session_id, kind, asdict(finding))
 
 
+def _error_text_from_content(content: object) -> str:
+    """从 MCP 结果的 `content` 提取纯文本（`[{"type": "text", "text": ...}, ...]`）。
+
+    ★ 工具的**真实错误消息**（如 `"solver diverged"`）只存在于 `content` 里，
+      而 `is_error` 路径的 `error` 才是诊断时人最先看到的东西 —— 不提取就等于
+      把最有信息量的部分藏起来（T5-M2）。
+
+    ★ 对非 list/tuple、非 dict 元素、缺失/非 str 的 `text` **一律安全跳过**，
+      不抛异常（隔离坏输入）。无可用文本时返回空串，由调用方退回固定文案。
+    """
+    if not isinstance(content, (list, tuple)):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return " | ".join(parts)
+
+
 async def call_tool(
     cfg: GatewayConfig,
     server: str,
@@ -197,13 +221,18 @@ async def call_tool(
     if result.get("is_error"):
         # MCP 工具失败的标准形态：**不抛异常**，以 is_error=True 返回。
         # 不检查它就会把引擎侧失败报成 ok=True —— 正是契约 3 要防的形态。
+        # ★ error 必须带上工具的**真实输出**：工具的失败消息（如 "solver diverged"）
+        #   只在 result["content"] 里，而 error 才是诊断时人最先看到的东西（T5-M2）。
+        #   提取不到文本时退回固定文案（绝不产生空消息）。
+        message = "工具以 is_error=True 返回（MCP 标准错误形态，非异常）"
+        detail = _error_text_from_content(result.get("content"))
+        if detail:
+            message = f"{message}：{detail}"[:300]      # 与既有 [:300] 截断风格一致
         _emit(bus, audit, session_id, "tool_error", {
-            "server": server, "tool": tool,
-            "error": "工具以 is_error=True 返回（MCP 标准错误形态，非异常）",
+            "server": server, "tool": tool, "error": message,
         })
         return CallOutcome(
-            ok=False, server=server, tool=tool, result=result,
-            error="工具以 is_error=True 返回（MCP 标准错误形态，非异常）",
+            ok=False, server=server, tool=tool, result=result, error=message,
         )
 
     _emit(bus, audit, session_id, "tool_call", {
