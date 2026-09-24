@@ -133,3 +133,25 @@ def test_closed_bus_does_not_lose_the_outcome(monkeypatch):
     ))
     assert bad_outcome.ok is False
     assert [v.kind for v in bad_outcome.violations] == ["unknown_arg"]
+
+
+def test_tool_is_error_is_not_reported_as_success(monkeypatch):
+    """★ MCP 工具失败的标准形态：**不抛异常**，以 `is_error=True` 返回。
+
+    只取 `content` 会把它报成 `ok=True` —— 正是契约 3 要防的
+    「看起来成功、实际没生效」形态的镜像。
+    """
+    import powermcp_gateway.proxy as proxy
+
+    async def failing_dispatch(cfg, server, tool, args):
+        return {"is_error": True, "content": [{"type": "text", "text": "solver diverged"}]}
+
+    monkeypatch.setattr(proxy, "_dispatch", failing_dispatch)
+
+    outcome = asyncio.run(call_tool(
+        cfg=None, server="pypsa", tool="run_power_flow", args={"network_name": "n"},
+        schema=SCHEMA,
+    ))
+    assert outcome.ok is False
+    assert "is_error" in outcome.error
+    assert outcome.result["content"][0]["text"] == "solver diverged"
