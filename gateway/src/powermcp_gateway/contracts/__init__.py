@@ -24,3 +24,8 @@ from .registry import REGISTRY
 REGISTRY.register(NamespacingEvaluator())
 
 __all__ += ["REGISTRY", "NamespacingEvaluator"]
+
+from .doc_impl import DocImplEvaluator
+
+REGISTRY.register(DocImplEvaluator())
+__all__ += ["DocImplEvaluator"]
