@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "powermcp-gateway"
+version = "0.1.0"
+description = "PowerMCP 本地网关：契约引擎 + 编排（P1 子项目 2）"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2,<3",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/powermcp_gateway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: 需要真实拉起 MCP server（慢，约 30–90 秒/个）",
+]

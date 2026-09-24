@@ -1,0 +1,18 @@
+# 上游 clone —— 各自是独立的 git 仓库，绝不能记成 gitlink
+/PowerMCP/
+/PowerSkills/
+
+# 大体积数据与中间产物
+/GridData/
+/work/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# 运行产物
+*.log
+gateway/.cache/
