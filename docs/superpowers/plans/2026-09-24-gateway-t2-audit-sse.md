@@ -2119,7 +2119,7 @@ def test_format_sse_includes_id_and_event_name():
     )
     assert lines["id"] == "7"                       # 序列号即 id —— 断线重连可续
     assert lines["event"] == "evidence"             # ★ 通道即事件名
-    assert json.loads(lines["data"])["contract"] == 3
+    assert json.loads(lines["data"])["payload"]["contract"] == 3
 
 
 def test_format_sse_telemetry_uses_its_own_event_name():
@@ -2127,6 +2127,32 @@ def test_format_sse_telemetry_uses_its_own_event_name():
                at="2026-09-24T00:00:00Z")
     assert "event: telemetry" in format_sse(ev)
 ```
+
+**另外，在 `gateway/tests/test_session.py` 末尾追加 2 个测试**（覆盖本次给 `EventBus` 新增的同步注册 API）：
+
+```python
+def test_subscribe_queue_registers_synchronously():
+    """★ 注册必须**同步**生效 —— 否则「先订阅再补历史」之间会有丢失窗口。"""
+    bus = EventBus()
+    bus.publish(Channel.EVIDENCE, "before", {})
+    q = bus.subscribe_queue()
+    assert bus.subscriber_count() == 1          # 无需 await 即已注册
+    bus.publish(Channel.EVIDENCE, "after", {})
+    assert q.get_nowait().kind == "after"       # 注册之后的事件进队列
+    bus.unsubscribe(q)
+    assert bus.subscriber_count() == 0
+
+
+def test_unsubscribe_is_idempotent():
+    bus = EventBus()
+    q = bus.subscribe_queue()
+    bus.unsubscribe(q)
+    bus.unsubscribe(q)                          # 重复注销不得抛
+    assert bus.subscriber_count() == 0
+```
+
+> `test_session.py` 既有 13 个测试已在用 `EventBus` / `Channel`，import 应已齐备；
+> 若确实缺，按该文件既有的 import 风格补上。
 
 - [ ] **Step 2: 跑测试，确认失败**
 
@@ -2171,7 +2197,13 @@ def format_sse(event: Event) -> str:
 
 
 async def sse_stream(bus: EventBus) -> AsyncIterator[str]:
-    """把总线上的事件转成 SSE 帧。订阅者断开时由生成器自动清理。"""
+    """把总线上的事件转成 SSE 帧（**不含历史补发**）。
+
+    ⚠️ 与 `EventBus.subscribe_queue()` 的区别：本生成器是 async generator，
+      订阅者要到**第一次迭代**才注册 —— 所以**不能**用它实现"先订阅、再补发历史"，
+      两步之间会有丢失窗口。需要历史补发的场景（HTTP SSE 端点）请用
+      `subscribe_queue()`。本函数适合"只要实时流、不要历史"的消费者。
+    """
     async for event in bus.subscribe():
         yield format_sse(event)
 ```
@@ -2184,7 +2216,51 @@ cd d:/coding/powerMcp_Pskills/gateway
 ```
 Expected: PASS（2 passed）
 
-- [ ] **Step 5: 写失败的 API 测试 `gateway/tests/test_api_t2.py`**
+- [ ] **Step 5: 给 `EventBus` 加同步注册 API（改 Task 0 已交付的 `session.py`）**
+
+> ★ **为什么需要**：`subscribe()` 是 async generator —— 订阅者要到第一次 `__anext__()`
+> 才真正注册。SSE 端点必须「先订阅、再补发历史」，否则两步之间 `yield` 让出的窗口里
+> 发布的事件会**既不在历史快照里、也不在订阅队列里**，静默丢失
+> （EVIDENCE 通道的设计前提是"不可丢"）。同步注册方法让「注册」与「取快照」之间**无 await 窗口**。
+>
+> ⚠️ 这是本任务对 Task 0 已交付代码的**唯一**改动，**只加方法、不改既有行为**。
+
+在 `gateway/src/powermcp_gateway/session.py` 的 `EventBus` 类中，
+**在 `subscriber_count()` 之前**（即 `subscribe()` 方法之后）插入：
+
+```python
+    def subscribe_queue(self) -> asyncio.Queue[Event | None]:
+        """**同步**注册一个订阅者并返回其队列 —— 立即生效，无 await 窗口。
+
+        与 `subscribe()` 的区别：后者是 async generator，订阅者要到第一次
+        `__anext__()` 才真正注册。调用方若需要「注册订阅者」与「取历史快照」
+        原子（例如 SSE 端点要先订阅、再补发历史），必须用本方法 ——
+        否则两步之间 `yield` 让出的窗口里发布的事件会既不在快照里、
+        也不在订阅队列里，**静默丢失**。
+
+        调用方负责在结束时调用 `unsubscribe(q)`。
+        """
+        q: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=1024)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue[Event | None]) -> None:
+        """注销 `subscribe_queue()` 返回的队列。**幂等**。"""
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+```
+
+- [ ] **Step 6: 跑 `test_session.py`，确认通过（含新增 2 个）**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_session.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r6b
+```
+Expected: PASS（既有 13 + 新增 2 = 15 passed）
+
+- [ ] **Step 7: 写失败的 API 测试 `gateway/tests/test_api_t2.py`**
 
 ```python
 import pytest
@@ -2213,12 +2289,30 @@ async def test_create_session_rejects_unknown_server(app):
     assert r.status_code == 400        # 商业引擎已被方案 v3 移除
 
 
-async def test_session_events_streams_sse_headers(app):
+async def test_session_events_returns_streaming_response(app):
+    """★ `ASGITransport` **无法**测无限流式响应 —— 实测会挂死。
+
+    它会等 ASGI 应用整体结束，而 SSE 永不结束，所以
+    `async with c.stream(...)` **连响应头都拿不到**。故直接调用端点函数检查返回对象。
+
+    验证「路由已注册 + 返回 `StreamingResponse` + `media_type` 为 `text/event-stream`」。
+    真实 HTTP 下的响应头与断开清理留给 Task 7 的端到端验收；流的序列化由
+    `test_events.py` 的 `format_sse` 单测覆盖。
+    """
+    from fastapi.responses import StreamingResponse
+    from starlette.requests import Request
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         sid = (await c.post("/sessions", json={"servers": ["pypsa"]})).json()["id"]
-        async with c.stream("GET", f"/sessions/{sid}/events") as resp:
-            assert resp.status_code == 200
-            assert resp.headers["content-type"].startswith("text/event-stream")
+
+    route = next(r for r in app.routes
+                 if getattr(r, "path", None) == "/sessions/{sid}/events")
+    request = Request({"type": "http", "method": "GET", "path": "/x",
+                       "headers": [], "query_string": b""})
+    resp = await route.endpoint(sid, request)
+
+    assert isinstance(resp, StreamingResponse)
+    assert resp.media_type == "text/event-stream"
 
 
 async def test_unknown_session_events_404(app):
@@ -2227,15 +2321,15 @@ async def test_unknown_session_events_404(app):
     assert r.status_code == 404
 ```
 
-- [ ] **Step 6: 跑测试，确认失败**
+- [ ] **Step 8: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r6c
 ```
 Expected: FAIL —— 404 / 405（端点尚未存在）
 
-- [ ] **Step 7: 重写 `gateway/src/powermcp_gateway/api.py`**
+- [ ] **Step 9: 重写 `gateway/src/powermcp_gateway/api.py`**
 
 **为什么整体重写而不是插入**：新端点必须与既有端点共享**同一个** `SessionStore` / `AuditLog`
 实例（测试要能拿到它们），所以把状态与路由注册提到**模块级**，不再塞在 `create_app` 的闭包里。
@@ -2252,6 +2346,7 @@ Expected: FAIL —— 404 / 405（端点尚未存在）
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from pathlib import Path
 from typing import Callable
@@ -2262,7 +2357,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .audit import AuditLog
 from .config import GatewayConfig
 from .contracts.engine import T0Cache, evaluate_t0
-from .events import format_sse, sse_stream
+from .events import format_sse
 from .inventory import build_inventory
 from .proxy import CallOutcome, call_tool
 from .session import SessionStore
@@ -2272,6 +2367,11 @@ OPEN_SOURCE_SERVERS: tuple[str, ...] = (
     "pandapower", "pypsa", "surge", "andes",
     "egret", "opendss", "hope", "genx", "powerio",
 )
+
+#: SSE 空闲时的断开轮询间隔（秒）。**空闲连接也必须能检测到断开** ——
+#: 否则一个已挂掉的浏览器标签页会**永久占住订阅者名额**，最终让整个会话的
+#: EVIDENCE 发布失败（见 Task 0 审查的队头阻塞后果）。
+_DISCONNECT_POLL_S = 1.0
 
 _cache = T0Cache()
 _STORE = SessionStore()
@@ -2330,13 +2430,39 @@ def register_session_routes(app: FastAPI) -> None:
             return JSONResponse(status_code=404, content={"detail": "会话不存在"})
 
         async def gen():
-            # 先补发已发生的事件 —— 晚订阅 / 断线重连不丢历史
-            for event in bus.events():
-                yield format_sse(event)
-            async for frame in sse_stream(bus):
-                if await request.is_disconnected():
-                    return
-                yield frame
+            # ★ 先**同步**注册订阅者，再取历史快照 —— 两步之间无 await 窗口。
+            #   若先取快照再订阅，中间每次 yield 让出的窗口里发布的事件会
+            #   既不在快照、也不在队列里 —— **静默丢失**（EVIDENCE 不可丢）。
+            q = bus.subscribe_queue()
+            try:
+                last_seq = 0
+                for event in bus.events():      # 补发历史：晚订阅 / 断线重连不丢
+                    yield format_sse(event)
+                    last_seq = event.seq
+
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            q.get(), timeout=_DISCONNECT_POLL_S
+                        )
+                    except asyncio.TimeoutError:
+                        # ★ 空闲时也必须轮询断开 —— 否则一个已挂掉的标签页会
+                        #   永久占住订阅者名额，最终让整个会话的 EVIDENCE 发布失败。
+                        if await request.is_disconnected():
+                            return
+                        continue
+
+                    if event is None:           # 总线关闭的终止哨兵
+                        return
+                    if event.seq <= last_seq:   # 已在历史里补发过
+                        continue
+                    last_seq = event.seq
+
+                    if await request.is_disconnected():
+                        return
+                    yield format_sse(event)
+            finally:
+                bus.unsubscribe(q)
 
         return StreamingResponse(
             gen(),
@@ -2388,7 +2514,7 @@ def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
     async def contracts_t0() -> dict:
         try:
             c = _cfg()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         inv = await build_inventory(c, OPEN_SOURCE_SERVERS)
@@ -2404,15 +2530,23 @@ def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
     return app
 ```
 
-- [ ] **Step 8: 跑测试，确认通过**
+- [ ] **Step 10: 跑测试，确认通过**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py tests/test_api.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_api_t2.py tests/test_api.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r6d
 ```
 Expected: PASS（6 passed —— 含既有 2 个，确认无回归）
 
-- [ ] **Step 9: 提交**
+- [ ] **Step 11: 跑全量单元测试，确认无回归**
+
+```bash
+cd d:/coding/powerMcp_Pskills/gateway
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r6e
+```
+Expected: 全部 PASS（既有 126 + 本任务 8 = 134）
+
+- [ ] **Step 12: 提交**
 
 ```bash
 cd d:/coding/powerMcp_Pskills
