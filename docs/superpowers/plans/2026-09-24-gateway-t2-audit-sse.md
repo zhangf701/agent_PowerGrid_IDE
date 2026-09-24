@@ -44,21 +44,29 @@
 
 **实测得到的判据**：**求解型工具若报告"成功"，但从未读取引擎的真实状态字段，则存在"求解失败被报成成功"的风险。**
 
-实测产出 **7 条**，且对照组正确：
+实测产出 **6 条**，且对照组正确：
 
 | 工具 | 引擎状态读取 | 判定 |
 |---|---|---|
 | `pandapower.run_power_flow` | `net.converged` | ✅ 可信 |
 | `pandapower.run_contingency_analysis` | `contingency_net.converged` | ✅ 可信 |
 | `andes.run_power_flow` | `ss.PFlow.converged` | ✅ 可信 |
+| `andes.run_time_domain_simulation` | `"completed" if success else "failed"`（`success = ss.TDS.run()`） | ✅ 可信 |
 | `pypsa.run_power_flow` | — | ⚠️ 风险 |
 | `pypsa.run_contingency_analysis` | — | ⚠️ 风险 |
-| `andes.run_time_domain_simulation` | — | ⚠️ 风险 |
 | `andes.run_eigenvalue_analysis` | — | ⚠️ 风险 |
 | `egret.solve_unit_commitment_problem` / `solve_ac_opf` / `solve_dc_opf` | — | ⚠️ 风险 |
 
 ⚠️ **判据必须能区分「分层设计」与「以成功掩盖失败」**：pandapower 的 `status: "success"` 是
 **传输层**语义，物理结果在 `converged` 字段 —— 那是正确设计，**不得误报**。上表 3 个 ✅ 就是对照组。
+
+> ⚠️ **工具注册有两种形态**（2026-09-24 实测补充）：装饰器 `@mcp.tool` 与函数式 `mcp.tool()(fn)`。
+> **OpenDSS 的 55 个工具全靠函数式注册** —— 只认装饰器会让它整站漏检（`tools=0`），
+> 进而在 `checked == 0` 时报出一条假绿灯 `satisfied`。
+> 故 Task 3 的 `_tool_functions` 必须**同时识别两种形态**，且 **`checked == 0` 一律报
+> `unknown / structural`**（不得报 `satisfied`，与 UI 规范 P5「禁止静默 fail-open」一致）。
+> 实测修正后：覆盖 **8/8** server，risky 仍 **6** 条；仅 `genx` 落 `unknown`
+> （识别 7 个工具、无一匹配求解型命名 —— 判据不适用，而非判据失效）。
 
 ### 已知的既有缺陷（本计划不修，但会影响验收）
 
@@ -1015,7 +1023,6 @@ def _fn(src: str) -> ast.FunctionDef:
 def test_detects_engine_read():
     fn = _fn('''
     def tool():
-        net.converged
         return {"status": "success", "converged": net.converged}
     ''')
     hard, reads = analyse_tool_fn(fn)
@@ -1053,7 +1060,7 @@ def test_conditional_status_counts_as_read():
         return {"status": "completed" if success else "failed"}
     ''')
     hard, reads = analyse_tool_fn(fn)
-    assert hard is True
+    assert hard is False, "条件表达式的状态不是**硬编码**成功（它有条件地报成功）"
     assert reads, "条件表达式的状态应被视为读取（值不是字面量常量）"
 
 
@@ -1079,7 +1086,8 @@ def test_pypsa_run_power_flow_is_flagged(tmp_path):
 
     risky = [f for f in findings if f.state == "degraded"]
     assert risky, f"未检出，实际 {[(f.subject, f.state) for f in findings]}"
-    assert risky[0].subject == "pypsa.run_power_flow"
+    assert risky[0].subject == "pypsa"                       # finding 按 server 聚合
+    assert risky[0].evidence["risky_tools"] == ["run_power_flow"]
 
 
 def test_pandapower_design_is_not_flagged(tmp_path):
@@ -1099,13 +1107,64 @@ def test_pandapower_design_is_not_flagged(tmp_path):
     ev = StatusMappingEvaluator(source_dirs={"pandapower": "pandapower"})
     findings = ev.evaluate(inv=None, cfg=Cfg())   # type: ignore[arg-type]
     assert [f.state for f in findings] == ["satisfied"]
+
+
+def test_functional_registration_is_recognised(tmp_path):
+    """★ 实测形态：OpenDSS 用 mcp.tool()(fn) 注册，不是装饰器。
+
+    只认装饰器会让 OpenDSS 的 55 个工具全部漏检（见模块 docstring）。
+    """
+    d = tmp_path / "OpenDSS"
+    d.mkdir()
+    (d / "opendss_mcp.py").write_text(textwrap.dedent('''
+        def solve_snapshot() -> dict:
+            dss_tools.simulation.solve_snapshot()
+            return {"status": "success"}
+
+        def register_simulation_tools(mcp) -> None:
+            mcp.tool()(solve_snapshot)
+    '''), encoding="utf-8")
+
+    class Cfg:
+        powermcp_root = tmp_path
+
+    ev = StatusMappingEvaluator(source_dirs={"opendss": "OpenDSS"})
+    findings = ev.evaluate(inv=None, cfg=Cfg())   # type: ignore[arg-type]
+
+    assert [f.state for f in findings] == ["degraded"], (
+        f"函数式注册的 solve_snapshot 未被识别：{[(f.subject, f.state) for f in findings]}"
+    )
+    assert findings[0].evidence["risky_tools"] == ["solve_snapshot"]
+    assert findings[0].evidence["tools_recognised"] == 1
+
+
+def test_zero_checked_is_structural_unknown(tmp_path):
+    """★ checked == 0 不得报 satisfied —— 那是假绿灯（UI 规范 P5 禁止静默 fail-open）。"""
+    d = tmp_path / "GenX"
+    d.mkdir()
+    (d / "genx_mcp.py").write_text(textwrap.dedent('''
+        @mcp.tool()
+        def dispatch() -> dict:
+            return {"status": "success"}
+    '''), encoding="utf-8")
+
+    class Cfg:
+        powermcp_root = tmp_path
+
+    ev = StatusMappingEvaluator(source_dirs={"genx": "GenX"})
+    findings = ev.evaluate(inv=None, cfg=Cfg())   # type: ignore[arg-type]
+
+    assert [f.state for f in findings] == ["unknown"]
+    assert findings[0].reason == "structural"
+    assert findings[0].evidence["tools_recognised"] == 1
+    assert findings[0].evidence["solve_tools_checked"] == 0
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_status_mapping.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_status_mapping.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r3
 ```
 Expected: FAIL —— `ModuleNotFoundError`
 
@@ -1124,18 +1183,47 @@ Expected: FAIL —— `ModuleNotFoundError`
     求解型工具若报告"成功"，但**从未读取引擎的真实状态字段**，
     则存在"求解失败被报成成功"的风险。
 
-实测（2026-09-24，8 个 server）产出 7 条，且对照组正确：
+实测（2026-09-24，8 个 server）产出 6 条，且对照组正确：
   pandapower.run_power_flow         读 net.converged            → 不报
   pandapower.run_contingency_analysis 读 contingency_net.converged → 不报
   andes.run_power_flow              读 ss.PFlow.converged        → 不报
+  andes.run_time_domain_simulation  读 "completed" if success else "failed" → 不报
   pypsa.run_power_flow              无读取                        → 报
   pypsa.run_contingency_analysis    无读取                        → 报
-  andes.run_time_domain_simulation  无读取                        → 报
   andes.run_eigenvalue_analysis     无读取                        → 报
   egret.solve_unit_commitment_problem / solve_ac_opf / solve_dc_opf 无读取 → 报
 
 ⚠️ 判据必须区分「分层设计」与「以成功掩盖失败」：pandapower 的 `status: "success"`
    是**传输层**语义，物理结果在 `converged` 字段 —— 那是正确设计，不得误报。
+
+## 工具注册有两种形态，只认一种会漏掉整个 server
+
+实测发现 `PowerMCP/` 里 MCP 工具的注册**不只有装饰器**：
+
+| 形态 | 写法 | 使用者 |
+|---|---|---|
+| (a) 装饰器 | `@mcp.tool()` / `@mcp.tool` | pandapower / pypsa / surge / andes / egret / hope / genx |
+| (b) 函数式 | `mcp.tool()(fn)`，包在 `register_*_tools(mcp)` 里 | **OpenDSS（55 个工具全靠这种）** |
+
+只认 (a) 时 OpenDSS 的 55 个工具**全部漏检**（`tools=0`），于是 `checked == 0`，
+在旧口径下报 `satisfied`，理由是「0 个求解型工具均读取了引擎状态字段」——
+这是一条**假绿灯**：网关根本没看到 OpenDSS 的任何工具。其中 `solve_snapshot`
+名字含 `solve`，本应被本契约检查。
+
+修正后实测：OpenDSS 识别出 55 个工具、`solve_checked=1`，其余 7 个 server 的
+工具数**逐个不变**（无新误报），risky 总数仍为 6。
+
+## `checked == 0` 不得报 satisfied
+
+`checked == 0` 有两种成因，旧口径无法区分却一律报 satisfied：
+
+1. 该 server 确无求解型工具（判据不适用）—— 报 satisfied 尚可接受
+2. **工具定义形态未被识别**（判据失效）—— 报 satisfied 是假绿灯
+
+与 UI 规范 P5「禁止静默 fail-open」一致的处理：**`checked == 0` → `unknown / structural`**，
+并在 detail 里带上已识别的工具总数，让"看不到"与"确实没有"可诊断。
+
+修正后实测：仅 `genx` 落在此分支（识别 7 个工具、无一匹配求解型命名）。
 
 ## 为什么是 T0 而不是 T2
 
@@ -1152,6 +1240,8 @@ from pathlib import Path
 from ..config import GatewayConfig
 from ..inventory import ToolInventory
 from .model import ContractFinding
+# 目录映射取自单一真源（Task 2）—— 本模块**不再自带副本**
+from .server_dirs import SERVER_DIRS
 
 #: 求解型工具的命名特征
 SOLVE_NAME = re.compile(
@@ -1164,9 +1254,6 @@ STATUS_KEYS = frozenset({"status", "converged", "success", "succeeded", "ok"})
 
 #: 视为"报告成功"的字面量
 _SUCCESS_LITERALS = ("success", "completed", True)
-
-# 目录映射取自单一真源（Task 2）—— 本模块**不再自带副本**
-from .server_dirs import SERVER_DIRS
 
 
 def analyse_tool_fn(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, tuple[str, ...]]:
@@ -1200,13 +1287,49 @@ def analyse_tool_fn(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, t
 
 
 def _tool_functions(tree: ast.Module):
+    """产出被注册为 MCP 工具的函数定义 —— 识别两种形态。
+
+    (a) 装饰器：``@mcp.tool()`` / ``@mcp.tool``
+    (b) 函数式：``mcp.tool()(fn)`` —— OpenDSS 的 55 个工具全靠这种
+
+    只认 (a) 会让 OpenDSS 整站漏检，见模块 docstring。
+    """
+    funcs: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcs.setdefault(node.name, node)
+
+    seen: set[int] = set()
+
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for dec in node.decorator_list:
             f = dec.func if isinstance(dec, ast.Call) else dec
             if isinstance(f, ast.Attribute) and f.attr == "tool":
-                yield node
+                if id(node) not in seen:
+                    seen.add(id(node))
+                    yield node
+                break
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        inner = call.func
+        if not isinstance(inner, ast.Call):
+            continue
+        inner_f = inner.func
+        if not (isinstance(inner_f, ast.Attribute) and inner_f.attr == "tool"):
+            continue
+        for arg in call.args:
+            if isinstance(arg, ast.Name) and arg.id in funcs:
+                target = funcs[arg.id]
+                if id(target) not in seen:
+                    seen.add(id(target))
+                    yield target
 
 
 class StatusMappingEvaluator:
@@ -1232,18 +1355,30 @@ class StatusMappingEvaluator:
 
             risky: list[str] = []
             checked = 0
+            recognised = 0
+            unparseable: list[str] = []
             for py in sorted(server_dir.rglob("*.py")):
                 try:
                     tree = ast.parse(py.read_text(encoding="utf-8"))
                 except (SyntaxError, UnicodeDecodeError):
+                    unparseable.append(str(py.relative_to(server_dir)))
                     continue
                 for fn in _tool_functions(tree):
+                    recognised += 1
                     if not SOLVE_NAME.search(fn.name):
                         continue
                     checked += 1
                     hard_success, reads = analyse_tool_fn(fn)
                     if hard_success and not reads:
                         risky.append(fn.name)
+
+            base_evidence = {
+                "server": server,
+                "tools_recognised": recognised,
+                "solve_tools_checked": checked,
+                "unparseable": unparseable,
+                "method": "static-ast",
+            }
 
             if risky:
                 findings.append(ContractFinding(
@@ -1252,14 +1387,23 @@ class StatusMappingEvaluator:
                         f"{len(risky)} 个求解型工具报告成功但**从不读取引擎状态**："
                         f"{'、'.join(risky)}。求解失败可能被报成成功。"
                     ),
-                    evidence={"server": server, "risky_tools": risky,
-                              "solve_tools_checked": checked, "method": "static-ast"},
+                    evidence={**base_evidence, "risky_tools": risky},
+                ))
+            elif checked == 0:
+                findings.append(ContractFinding(
+                    contract=4, state="unknown", reason="structural", subject=server,
+                    detail=(
+                        f"已识别 {recognised} 个工具，但无一匹配求解型命名 —— 本判据对该 server "
+                        f"无适用对象。**不报 satisfied**：无法区分「确无求解型工具」与"
+                        f"「工具定义形态未被识别」。"
+                    ),
+                    evidence=base_evidence,
                 ))
             else:
                 findings.append(ContractFinding(
                     contract=4, state="satisfied", reason=None, subject=server,
-                    detail=f"{checked} 个求解型工具均读取了引擎状态字段。",
-                    evidence={"server": server, "solve_tools_checked": checked},
+                    detail=f"求解型工具均读取了引擎状态字段（共 {checked} 个）。",
+                    evidence=base_evidence,
                 ))
 
         return findings
@@ -1269,9 +1413,9 @@ class StatusMappingEvaluator:
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_status_mapping.py -v
+../PowerMCP/.venv/Scripts/python.exe -m pytest tests/test_contract_status_mapping.py -v -p no:cacheprovider --basetemp=./.pytest_tmp/r3
 ```
-Expected: PASS（6 passed）
+Expected: PASS（8 passed）
 
 - [ ] **Step 5: 在真实仓库上跑一次，核对与手工实测一致**
 
@@ -1287,7 +1431,7 @@ for f in StatusMappingEvaluator().evaluate(None, cfg):
     print(f"{f.subject:<12} {f.state:<10} {f.detail[:88]}")
 PY
 ```
-Expected: `pypsa` / `andes` / `egret` 报 `degraded`；`pandapower` / `surge` / `genx` / `hope` / `opendss` 报 `satisfied`。
+Expected: `pypsa` / `andes` / `egret` 报 `degraded`；`pandapower` / `surge` / `hope` / `opendss` 报 `satisfied`；**`genx` 报 `unknown`（structural，因 `checked == 0`）**。
 
 - [ ] **Step 6: 注册并提交**
 
@@ -1302,7 +1446,12 @@ __all__ += ["StatusMappingEvaluator"]
 
 ```bash
 cd d:/coding/powerMcp_Pskills/gateway
-../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration"
+../PowerMCP/.venv/Scripts/python.exe -m pytest -q -m "not integration" -p no:cacheprovider --basetemp=./.pytest_tmp/r3
+```
+
+Expected: 全部 PASS（既有 103 + 本任务 8 = 111）
+
+```bash
 cd d:/coding/powerMcp_Pskills
 git add gateway/
 git commit -m "feat(gateway): 契约 4 状态映射可信度（判据经实测重新界定）"
