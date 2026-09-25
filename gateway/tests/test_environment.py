@@ -15,13 +15,12 @@ import pytest
 from powermcp_gateway.config import GatewayConfig
 from powermcp_gateway.environment import (
     ALLOWED_SOLVERS,
-    ENV_MODULES_ROOT,
     EXCLUDED_SOLVERS,
     build_report,
-    modules_root,
     safe_endpoint,
 )
 from powermcp_gateway.llm import ENV_API_KEY, ENV_BASE_URL, ENV_MODEL, ENV_TIMEOUT_S
+from powermcp_gateway.modules import ENV_MODULES_ROOT, modules_root
 
 _SECRET = "sk-DO-NOT-LEAK-9f3a7c"
 

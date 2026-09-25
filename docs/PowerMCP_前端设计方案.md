@@ -585,6 +585,17 @@ server 挂载状态与依赖缺失由 `GET /contracts/t0` 给出，该分工写�
 
 > **完整设计见 [前端模块化架构](PowerMCP_前端模块化架构.md)。** 本节只给边界与判据。
 
+> ✅ **2026-09-25 交付（网关侧）**：`modules.py`（清单解析 + 校验 + 装配 + 脚手架）·
+> `GET /modules` · `scripts/create_module.py`。
+> **★ 内核自证条件已可检验**：模块根**不存在** / **为空** / **全部装配失败** / **全部禁用**
+> 四种状态下，内核端点（`/health` `/servers` `/environment` `/skills` `/cases`）**全部正常**
+> —— 见 `tests/test_api_modules.py::test_kernel_still_works_without_modules`。
+> ⏳ 前端侧的槽位注入（L2）待前端工程启动。
+> ⚠️ **有意取舍**：模块的 `tools` 是**软收窄**（该选题的推荐工具集），**不是硬白名单** ——
+> 硬限制会让「通用工作台」退化成「一次只能用一个选题」。该说明也写进了 `/modules` 的 `notes`。
+> ⚠️ **YAML 陷阱**：`on` / `off` / `yes` / `no` 会被解析成**布尔值**，故模块 id 不能用这些词
+> （诊断信息已点明，见 `modules.parse_manifest`）。
+
 ### 6.1 模块清单格式
 
 ```yaml
@@ -657,6 +668,12 @@ slots:   []
 ### 6.6 脚手架
 
 `create-module <id> --kind research` → **默认生成 L0**（强制「先声明、后写码」的顺序）。
+
+✅ **2026-09-25 交付**：`python gateway/scripts/create_module.py <id> [--name ...] [--kind ...] [--root ...] [--force]`
+—— 生成 `module.yaml`（带注释的 L0 模板）+ `README.md` + `prompts/` `schema/` `checks/`
+`templates/` `ui/` 五个目录。
+**round-trip 已测**：脚手架产物**必须能通过装配**（`test_scaffold_output_loads_cleanly`），
+否则新选题一开工就是坏的。
 
 ### 6.7 示例模块：N-1 关键故障排序
 

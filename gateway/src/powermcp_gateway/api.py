@@ -41,6 +41,7 @@ from .environment import build_report as build_environment_report
 from .events import format_sse
 from .inventory import build_inventory
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
+from .modules import build_report as build_modules_report
 from .proxy import CallOutcome, call_tool
 from .session import Channel, SessionStore
 from .skills import build_report as build_skills_report
@@ -797,6 +798,27 @@ def create_app(cfg: GatewayConfig | None = None, *,
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return build_skills_report(c)
+
+    @app.get("/modules")
+    async def modules() -> dict:
+        """选题模块清单与装配状态（方案 v4 §六）。
+
+        ★★ **内核不依赖任何模块** —— 模块根不存在、为空、或全部禁用时，
+          本端点照常 200 且 `failures` 为空。这正是本架构的**自证条件**：
+          若禁用模块内核就不可用，说明内核被领域知识污染了。
+        ★ **fail-loud**：单个模块装配失败只标记它自己（`failures`），
+          不影响其他模块，也不影响内核。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        skills = build_skills_report(c)
+        return build_modules_report(
+            c,
+            known_servers=OPEN_SOURCE_SERVERS,
+            known_skills=tuple(s["id"] for s in skills["skills"]),
+        )
 
     @app.get("/contracts/t0")
     async def contracts_t0() -> dict:

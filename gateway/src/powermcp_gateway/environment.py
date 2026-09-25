@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import (
@@ -26,12 +25,12 @@ from .config import (
 )
 from .contracts import REGISTRY
 from .llm import ENV_API_KEY, ENV_BASE_URL, ENV_MODEL, ENV_TIMEOUT_S, LlmConfig, LlmConfigError
+# ★ 模块装配**委托** `modules.py`（单一真源）—— 避免 `/environment` 与 `/modules`
+#   各算一遍、口径漂移。
+from .modules import load_modules, modules_root
 from .skills import build_report as skills_report
 
 logger = logging.getLogger(__name__)
-
-#: 覆盖模块根目录（默认取 PowerMCP 的兄弟目录）
-ENV_MODULES_ROOT = "POWERMCP_MODULES_ROOT"
 
 #: 路径围笼环境变量（PowerIO 沙箱用）
 ENV_ALLOWED_ROOTS = "POWERIO_MCP_ALLOWED_ROOTS"
@@ -59,14 +58,6 @@ _NOTES: tuple[str, ...] = (
     "网关已改为**显式透传**（见 `server_env` 段），但二者仍需在**网关进程**的环境里设置；"
     "且 `HIGHS_LIB_DIR` 未持久化 → 启动网关时没设就一直不可用（2026-09-25 实测并修复）。",
 )
-
-
-def modules_root(cfg: GatewayConfig) -> Path:
-    """定位选题模块根目录（默认 `PowerMCP` 的兄弟目录 `modules/`）。"""
-    override = os.environ.get(ENV_MODULES_ROOT)
-    if override:
-        return Path(override)
-    return cfg.powermcp_root.parent / "modules"
 
 
 def safe_endpoint(base_url: str) -> str:
@@ -171,19 +162,21 @@ def _server_env_section() -> dict:
 
 
 def _modules_section(cfg: GatewayConfig) -> dict:
-    root = modules_root(cfg)
-    found: list[str] = []
-    if root.is_dir():
-        found = sorted(
-            p.parent.name for p in root.glob("*/module.yaml")
-        )
+    """选题模块装配状态。
+
+    ★ **委托 `modules.load_modules`**（单一真源）—— 否则 `/environment` 与 `/modules`
+      会各算一遍，两处口径一旦漂移就会出现"环境说 1 个、模块页说 2 个"。
+    """
+    rep = load_modules(modules_root(cfg))
     return {
-        "root": str(root),
-        "root_exists": root.is_dir(),
-        "modules": found,
+        "root": rep.root,
+        "root_exists": rep.root_exists,
+        "modules": [m.id for m in rep.modules],
+        "enabled": [m.id for m in rep.modules if m.enabled],
+        "failed": [f.module_id for f in rep.failures],
         "note": (
-            "选题模块（方案 v4 §六）。尚未实现装配机制 —— "
-            "当前只如实报出目录与已发现的模块清单。"
+            "选题模块（方案 v4 §六）。**内核不依赖任何模块** —— "
+            "模块根不存在或全部禁用时内核照常可用，这是本架构的自证条件。"
         ),
     }
 
