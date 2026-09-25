@@ -30,6 +30,7 @@ from .cases import (
 )
 from .cases import build_report as build_cases_report
 from .case_ir import (
+    ARTIFACT_NAME,
     CaseIrError,
     artifact_to_payload,
     load_artifact,
@@ -147,6 +148,63 @@ def _event_payload(ev: AgentEvent) -> dict:
     if ev.kind == "tool_error":
         return {"server": ev.server, "tool": ev.tool, "detail": ev.detail}
     return {"detail": ev.detail}
+
+
+def _case_store() -> CaseStore:
+    """会话无关的算例索引（与 `register_case_routes` 内的 `_store()` 同源同义）。"""
+    return CaseStore(cases_root(_cfg()))
+
+
+def build_case_context() -> str:
+    """算例库现状 → 并入对话 system 消息（v4 §4.3「对话分析」的数据源接线）。
+
+    ★ 为什么必须有：张老师首轮实测——用户在界面登记并解析了算例，但模型
+      **完全不知道**，只能瞎猜内置算例名（`__invalid__`）。模型需要的不是 IR
+      本体（51KB），而是三件事：**有哪些算例、路径在哪、是否已解析**。
+
+    - 只读索引 + 现状视图（available / drift / within_allowed_roots 现算），
+      **不拉起任何 server**（廉价，同 /environment 的口径）；
+    - 已解析与否看产物文件是否存在（`<cid>/parse.json`）；
+    - 算例库为空 → 空串（不注入）；读取失败 → 空串 + warning（不阻断对话）。
+    """
+    try:
+        store = _case_store()
+        cfg = _cfg()
+        cases = store.list()
+    except Exception:
+        logger.warning("算例库现状读取失败，本轮对话不注入算例上下文", exc_info=True)
+        return ""
+    if not cases:
+        return ""
+    root = cases_root(cfg)
+    lines: list[str] = []
+    for case in cases:
+        try:
+            v = store.view(case)
+        except Exception:
+            logger.warning("算例现状计算失败：%s", case.id, exc_info=True)
+            continue
+        parsed = (root / case.id / ARTIFACT_NAME).is_file()
+        flags = []
+        if not v.available:
+            flags.append("文件已不在")
+        if v.drift:
+            flags.append("内容已变（重新解析前结果不可信）")
+        if not v.within_allowed_roots:
+            flags.append("server 子进程读不到")
+        flag_s = ("（⚠ " + "；".join(flags) + "）") if flags else ""
+        lines.append(
+            f"- {case.label}（id={case.id}，{case.format}）路径：`{case.source_path}`"
+            f" · 已解析：{'是' if parsed else '否'}{flag_s}"
+        )
+    if not lines:
+        return ""
+    return (
+        "以下是算例库当前登记的全部算例。用户在界面上「登记 / 解析」的"
+        "就是它们 —— 当用户说『已解析』『已载入』时，指的就是下列算例："
+        "直接用其路径载入分析，**不要**向用户索要路径，也**不要**用猜测的"
+        "内置算例名替代。\n" + "\n".join(lines)
+    )
 
 
 def _publish_evidence(bus, session_id: str, kind: str, payload: dict) -> None:
@@ -467,8 +525,11 @@ def register_session_routes(app: FastAPI) -> None:
             # ★ G-4（prompts 接线，2026-09-25）：把**启用模块**的提示词并入 system 消息 ——
             #   此前「模块声明了 prompts 但 LLM 不读」，装配成功 ≠ 能干活。
             #   全部模块禁用 → 空串 → 不注入，内核行为与无模块时一致（自证条件不被破坏）。
-            #   放在流内构建前、且**不回传给客户端**（客户端历史仍是它自己的，不混入内核内容）。
+            # ★ 算例库接线（v4 §4.3）：把**已登记算例**的现状并入 system 消息 ——
+            #   张老师首轮实测：用户「已解析」了算例，模型却不知道，只能瞎猜内置算例名。
+            #   两者合并进**同一条** system 消息（客户端历史仍是它自己的，不混入内核内容）。
             convo = list(messages)
+            sys_parts: list[str] = []
             try:
                 supplement = build_prompt_supplement(_cfg())
             except Exception as exc:
@@ -478,13 +539,21 @@ def register_session_routes(app: FastAPI) -> None:
                     "detail": f"模块提示词收集失败，本轮未注入：{exc}"[:400],
                 })
             if supplement:
-                convo.insert(0, ChatMessage(
-                    role="system",
-                    content=(
-                        "以下是当前启用的选题模块提供的领域提示词"
-                        "（来自模块 prompts，非内核内置）：\n\n" + supplement
-                    ),
-                ))
+                sys_parts.append(
+                    "以下是当前启用的选题模块提供的领域提示词"
+                    "（来自模块 prompts，非内核内置）：\n\n" + supplement
+                )
+            try:
+                case_ctx = build_case_context()
+            except Exception as exc:
+                case_ctx = ""
+                yield _chat_sse("notice", {
+                    "detail": f"算例库现状读取失败，本轮未注入：{exc}"[:400],
+                })
+            if case_ctx:
+                sys_parts.append(case_ctx)
+            if sys_parts:
+                convo.insert(0, ChatMessage(role="system", content="\n\n".join(sys_parts)))
 
             async for ev in run_turn(
                 provider, convo, specs=inv.tools,

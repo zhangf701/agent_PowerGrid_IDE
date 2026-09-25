@@ -123,19 +123,23 @@ def _detail(resp) -> dict:
 
 
 async def _setup(monkeypatch, provider, tools=(), failures=(), servers=None,
-                 modules_root=None):
+                 modules_root=None, cases_root=None):
     seen = _patch_inventory(monkeypatch, tools, failures)
     _patch_dispatch(monkeypatch)
-    # ★ 把模块根指到**空目录**，隔离本仓库真实 `modules/` 的泄漏 ——
-    #   否则"启用了模块 → 注入提示词"会改变所有 chat 测试的消息序列假设。
-    #   需要真实模块的测试用 `modules_root=` 显式传入。
+    # ★ 把模块根与算例根都指到**空目录**，隔离本仓库/真实 HOME 的状态泄漏 ——
+    #   否则「启用了模块 → 注入提示词」「登记了算例 → 注入算例现状」都会改变
+    #   chat 测试的消息序列假设。需要真实内容的测试用对应参数显式传入。
     import tempfile
 
+    from powermcp_gateway.cases import ENV_CASES_ROOT
     from powermcp_gateway.modules import ENV_MODULES_ROOT
 
     if modules_root is None:
         modules_root = tempfile.mkdtemp(prefix="pwmods_empty_")
+    if cases_root is None:
+        cases_root = tempfile.mkdtemp(prefix="pwcases_empty_")
     monkeypatch.setenv(ENV_MODULES_ROOT, modules_root)
+    monkeypatch.setenv(ENV_CASES_ROOT, cases_root)
     app = create_app(cfg=GatewayConfig.discover(), provider=provider)
     sid = await _new_session(app, servers)
     return app, sid, seen
@@ -394,3 +398,63 @@ async def test_no_modules_means_no_injection(monkeypatch, tmp_path):
     await _read(await _call(app, sid, {"message": "hi"}))
     sent = provider.calls[0]["messages"]
     assert [m.role for m in sent] == ["user"]
+
+
+# ---------------------------------------------------------------- 算例库接线（v4 §4.3）
+
+
+async def test_registered_cases_are_injected_into_system_message(monkeypatch, tmp_path):
+    """★ 算例库接线：用户在界面「登记/解析」的算例，模型必须知道（含路径与解析状态）。"""
+    import tempfile as tf
+    from powermcp_gateway.cases import ENV_CASES_ROOT
+
+    cases = tmp_path / "cases"; cases.mkdir()
+    case_file = tmp_path / "case39.m"
+    case_file.write_text("% MATPOWER dummy\n", encoding="utf-8")
+    monkeypatch.setenv(ENV_CASES_ROOT, str(cases))
+
+    provider = FakeProvider([[Chunk(text="好的")]])
+    app, sid, _ = await _setup(monkeypatch, provider, cases_root=str(cases))
+
+    # 通过真实端点登记算例（与用户在界面上的动作同一条路径）
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/cases", json={"path": str(case_file), "label": "IEEE39 基准"})
+    assert r.status_code == 201, r.text
+
+    events = _events(await _read(await _call(app, sid, {"message": "计算潮流"})))
+    assert "final" in _kinds(events)
+    sent = provider.calls[0]["messages"]
+    assert sent[0].role == "system"
+    assert "算例库" in sent[0].content
+    assert str(case_file) in sent[0].content
+    assert "IEEE39 基准" in sent[0].content
+
+
+async def test_case_context_reports_parsed_state(monkeypatch, tmp_path):
+    """登记 + 解析后，system 消息里该算例应标「已解析：是」。"""
+    import json as _json
+    import tempfile as tf
+    from pathlib import Path
+    from powermcp_gateway.cases import ENV_CASES_ROOT
+
+    cases = tmp_path / "cases"; cases.mkdir()
+    case_file = tmp_path / "case14.m"
+    case_file.write_text("% dummy\n", encoding="utf-8")
+    monkeypatch.setenv(ENV_CASES_ROOT, str(cases))
+
+    provider = FakeProvider([[Chunk(text="好的")]])
+    app, sid, _ = await _setup(monkeypatch, provider, cases_root=str(cases))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        cid = (await c.post("/cases", json={"path": str(case_file)})).json()["case"]["id"]
+        # 直接落一个解析产物（不必真拉起 powerio）
+        d = cases / cid; d.mkdir()
+        (d / "parse.json").write_text(_json.dumps({
+            "case_id": cid, "source_path": str(case_file),
+            "source_sha256": "x", "value_type": "powerio.BalancedNetwork",
+            "ir": "{}", "ir_parsed": True, "parsed_at": "2026-09-25T00:00:00",
+        }, ensure_ascii=False), encoding="utf-8")
+
+    await _read(await _call(app, sid, {"message": "hi"}))
+    sent = provider.calls[0]["messages"]
+    assert sent[0].role == "system"
+    assert "已解析：是" in sent[0].content
