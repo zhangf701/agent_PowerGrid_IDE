@@ -156,7 +156,8 @@ def test_manifest_referenced_file_must_exist(tmp_path):
 
 def test_declaration_file_present_is_ok(tmp_path):
     p = _write(tmp_path, "demo",
-               _MINIMAL + "\nentities:\n  - id: a\n    schema: ./schema/a.json\n")
+               _MINIMAL.replace("maturity: L0", "maturity: L1")
+               + "\nentities:\n  - id: a\n    schema: ./schema/a.json\n")
     (tmp_path / "demo" / "schema").mkdir()
     (tmp_path / "demo" / "schema" / "a.json").write_text("{}", encoding="utf-8")
     assert parse_manifest(p).entities[0].id == "a"
@@ -164,8 +165,17 @@ def test_declaration_file_present_is_ok(tmp_path):
 
 def test_single_string_accepted_for_tools(tmp_path):
     """容错：`tools: x` 与 `tools: [x]` 等价。"""
-    p = _write(tmp_path, "demo", _MINIMAL + "\ntools: surge.run_power_flow\n")
+    p = _write(tmp_path, "demo",
+               _MINIMAL + "\nrequires:\n  servers: [surge]\ntools: surge.run_power_flow\n")
     assert parse_manifest(p).tools == ("surge.run_power_flow",)
+
+
+def test_tools_without_servers_declaration_is_warned(tmp_path):
+    """G-7 的软化另一半：有 tools 但没声明 servers —— 不是矛盾，但提示补声明。"""
+    _write(tmp_path, "demo", _MINIMAL + "\ntools: [surge.run_dc_power_flow]\n")
+    rep = load_modules(tmp_path)
+    assert rep.failures == ()
+    assert any("未声明 `requires.servers`" in n for n in rep.notes)
 
 
 def test_bad_tools_type_is_error(tmp_path):
@@ -227,11 +237,12 @@ def test_yaml_boolean_id_is_rejected_with_helpful_message(tmp_path):
 
 def test_effective_is_union_of_enabled_modules(tmp_path):
     _write(tmp_path, "a", _MINIMAL.replace("id: demo", "id: a")
-           + "\ntools: [x.1]\nskills: [s1]\nrequires:\n  servers: [surge]\n  solvers: [HiGHS]\n")
+           + "\ntools: [surge.1]\nskills: [s1]\n"
+             "requires:\n  servers: [surge]\n  solvers: [HiGHS]\n")
     _write(tmp_path, "b", _MINIMAL.replace("id: demo", "id: b")
-           + "\ntools: [x.2]\nskills: [s2]\nrequires:\n  servers: [pypsa]\n")
+           + "\ntools: [pypsa.2]\nskills: [s2]\nrequires:\n  servers: [pypsa]\n")
     eff = load_modules(tmp_path).effective
-    assert eff["tools"] == ["x.1", "x.2"]
+    assert eff["tools"] == ["pypsa.2", "surge.1"]
     assert eff["skills"] == ["s1", "s2"]
     assert eff["servers"] == ["pypsa", "surge"]
     assert eff["solvers"] == ["HiGHS"]
@@ -241,6 +252,7 @@ def test_cross_module_declaration_clash_is_refused(tmp_path):
     """★ 同名声明**禁止**（不静默覆盖）—— 否则按 id 引用会产生歧义。"""
     for mid in ("a", "b"):
         _write(tmp_path, mid, _MINIMAL.replace("id: demo", f"id: {mid}")
+               .replace("maturity: L0", "maturity: L1")
                + "\nentities:\n  - id: same\n    schema: ./schema/s.json\n")
         (tmp_path / mid / "schema").mkdir(parents=True, exist_ok=True)
         (tmp_path / mid / "schema" / "s.json").write_text("{}", encoding="utf-8")
@@ -362,3 +374,124 @@ def test_scaffold_engineering_kind(tmp_path):
     p = scaffold_module(tmp_path, "eng", kind=KIND_ENGINEERING)
     manifest = yaml.safe_load((p / "module.yaml").read_text(encoding="utf-8"))
     assert manifest["kind"] == KIND_ENGINEERING
+
+
+# ---------------------------------------------------------------- 校验补强 G-7 / G-8
+# 来源：两个真实模块的验证过程（`.superpowers/sdd/m15-module-gaps.py` 实测确认原先拦不住）
+
+def test_g7_tools_must_be_covered_by_requires_servers(tmp_path):
+    """★ G-7：`servers: [surge]` 却列了 `pypsa.*` —— 清单自相矛盾，必须装配失败。"""
+    p = _write(tmp_path, "demo",
+               _MINIMAL + "\nrequires:\n  servers: [surge]\ntools: [pypsa.optimize_network]\n")
+    with pytest.raises(ModuleError) as ei:
+        parse_manifest(p)
+    msg = str(ei.value)
+    assert "自相矛盾" in msg and "pypsa" in msg
+
+
+def test_g7_passes_when_servers_cover_tools(tmp_path):
+    p = _write(tmp_path, "demo",
+               _MINIMAL + "\nrequires:\n  servers: [surge, pypsa]\n"
+                          "tools: [surge.run_dc_power_flow, pypsa.optimize_network]\n")
+    m = parse_manifest(p)
+    assert set(m.servers) == {"surge", "pypsa"} and len(m.tools) == 2
+
+
+def test_g7_ignores_tools_without_dot(tmp_path):
+    """没有点的工具名（畸形）不参与前缀判定 —— 那是另一类问题，不在这里误报。"""
+    p = _write(tmp_path, "demo", _MINIMAL + "\ntools: [没有点的名字]\n")
+    assert parse_manifest(p).tools == ("没有点的名字",)
+
+
+def test_g8_l0_with_l1_content_is_refused(tmp_path):
+    """★ G-8：`maturity: L0`（仅声明式）却填了 entities —— 声明与实际不符。"""
+    p = _write(tmp_path, "demo",
+               _MINIMAL + "\nentities:\n  - id: e\n    schema: ./schema/s.json\n")
+    (tmp_path / "demo" / "schema").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "demo" / "schema" / "s.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ModuleError) as ei:
+        parse_manifest(p)
+    assert "声明与实际不符" in str(ei.value) or "L0" in str(ei.value)
+
+
+def test_g8_l2_without_slots_is_refused(tmp_path):
+    p = _write(tmp_path, "demo", _MINIMAL.replace("maturity: L0", "maturity: L2"))
+    with pytest.raises(ModuleError) as ei:
+        parse_manifest(p)
+    assert "L2" in str(ei.value)
+
+
+def test_g8_l1_with_entities_passes(tmp_path):
+    p = _write(tmp_path, "demo",
+               _MINIMAL.replace("maturity: L0", "maturity: L1")
+               + "\nentities:\n  - id: e\n    schema: ./schema/s.json\n")
+    (tmp_path / "demo" / "schema").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "demo" / "schema" / "s.json").write_text("{}", encoding="utf-8")
+    assert parse_manifest(p).maturity == "L1"
+
+
+def test_g8_l1_without_entities_passes(tmp_path):
+    """L1 但没填 entities 只是「声明得比实际高」，无害 —— 不拒绝。"""
+    p = _write(tmp_path, "demo", _MINIMAL.replace("maturity: L0", "maturity: L1"))
+    assert parse_manifest(p).maturity == "L1"
+
+
+# ---------------------------------------------------------------- 校验补强 G-9 / G-10
+# 这两条是**外部名字**尺度 → 只警告不拒绝（与 requires.servers / skills 的既有尺度一致）
+
+def test_g9_unknown_server_prefix_in_tools_is_warned(tmp_path):
+    """★ G-9：原先只校验 `requires.servers` 的已知性，tools 里写错 server 毫无提示。"""
+    _write(tmp_path, "demo",
+           _MINIMAL + "\nrequires:\n  servers: [不存在的server]\n"
+                      "tools: [不存在的server.某工具]\n")
+    rep = load_modules(tmp_path, known_servers=("surge",))
+    assert rep.failures == (), "外部名字只警告，不装配失败"
+    joined = " ".join(rep.notes)
+    assert "tools` 引用了未知 server" in joined
+
+
+def test_g9_known_servers_produce_no_warning(tmp_path):
+    _write(tmp_path, "demo",
+           _MINIMAL + "\nrequires:\n  servers: [surge]\ntools: [surge.run_dc_power_flow]\n")
+    rep = load_modules(tmp_path, known_servers=("surge",))
+    assert not any("未知 server" in n for n in rep.notes)
+
+
+def test_g10_unknown_slot_is_warned_not_refused(tmp_path):
+    """★ G-10：拼错的槽位名会静默失效；但**槽位清单尚未冻结**，故只警告。"""
+    _write(tmp_path, "demo",
+           _MINIMAL.replace("maturity: L0", "maturity: L2")
+           + "\nslots:\n  - id: 拼错的槽位\n")
+    rep = load_modules(tmp_path)
+    assert rep.failures == ()
+    assert any("未知槽位" in n and "尚未冻结" in n for n in rep.notes)
+
+
+def test_g10_known_slot_produces_no_warning(tmp_path):
+    _write(tmp_path, "demo",
+           _MINIMAL.replace("maturity: L0", "maturity: L2")
+           + "\nslots:\n  - id: nav.extra\n")
+    rep = load_modules(tmp_path)
+    assert rep.failures == ()
+    assert not any("未知槽位" in n for n in rep.notes)
+
+
+def test_slot_names_are_the_five_from_the_spec(tmp_path):
+    """槽位清单与 UI 规范 §4.7.6 / 方案 v4 §3.3 保持一致。"""
+    from powermcp_gateway.modules import SLOT_NAMES
+    assert set(SLOT_NAMES) == {
+        "nav.extra", "case.detail.tabs", "chat.result.after",
+        "experiment.result.columns", "verification.extra",
+    }
+
+
+# ---------------------------------------------------------------- 真实模块仍合规
+
+def test_real_modules_pass_the_new_rules():
+    """★ 四条新规则不得把已有的两个真实模块判死 —— 否则是规则过严而非模块有错。"""
+    rep = load_modules(modules_root(GatewayConfig.discover()),
+                       known_servers=("surge", "pandapower", "pypsa", "powerio",
+                                      "andes", "egret", "opendss", "hope", "genx"))
+    assert rep.failures == (), f"真实模块被新规则判死：{rep.failures}"
+    assert len(rep.modules) == 2
+    assert not any("未知 server" in n or "未知槽位" in n for n in rep.notes)

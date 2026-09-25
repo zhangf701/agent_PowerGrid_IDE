@@ -48,6 +48,17 @@ KINDS = (KIND_RESEARCH, KIND_ENGINEERING)
 
 MATURITY_LEVELS = ("L0", "L1", "L2")
 
+#: 已知槽位名（方案 v4 §3.3 / §4.7.6）。
+#: ⚠️ **尚未冻结** —— 按「先做 2 个真实模块验证、再冻结」的约定，
+#: 未知槽位名当前只**警告**不拒绝（见 `load_modules`）。
+SLOT_NAMES: tuple[str, ...] = (
+    "nav.extra",
+    "case.detail.tabs",
+    "chat.result.after",
+    "experiment.result.columns",
+    "verification.extra",
+)
+
 #: 清单中「指向本项目内文件」的字段 → 该文件必须存在
 _FILE_REF_FIELDS = ("schema", "columns", "file", "template")
 
@@ -257,6 +268,36 @@ def parse_manifest(path: Path, *, core_version: str = CORE_VERSION) -> Module:
     if missing:
         raise ModuleError("清单指向的文件不存在：" + "；".join(missing))
 
+    servers = _as_str_list(requires.get("servers"), "requires.servers")
+    tools = _as_str_list(raw.get("tools"), "tools")
+
+    # ---- G-7：清单**自相矛盾** —— 声明了 requires.servers，却不覆盖 tools 的前缀 ----
+    # 尺度：这是清单内部的不一致（不是"外部名字是否存在"），故**装配失败**。
+    # ⚠️ **只在 `requires.servers` 非空时判定** —— 否则「只用 tools、不写 servers」
+    #    这种写法会被一刀切掉；那种情况改为在 load_modules 里**警告**（提示补声明）。
+    tool_servers = {t.split(".", 1)[0] for t in tools if "." in t}
+    if servers:
+        undeclared = sorted(tool_servers - set(servers))
+        if undeclared:
+            raise ModuleError(
+                f"`tools` 引用了 `requires.servers` 未声明的 server：{undeclared} —— "
+                "清单自相矛盾（`requires.servers` 的含义是「本模块需要哪些 server」，"
+                "工具引用了它就说明它被需要）。请补进 `requires.servers`。"
+            )
+
+    # ---- G-8：`maturity` 声明与实际内容不符 ----
+    # 尺度同上：声明不准 = 清单错，故**装配失败**。
+    if maturity == "L0" and (entities or result_tables or slots):
+        raise ModuleError(
+            f"`maturity: L0`（仅声明式）却填了 L1/L2 的内容："
+            f"entities={len(entities)} · result_tables={len(result_tables)} · "
+            f"slots={len(slots)} —— 请升到 L1/L2，或删掉这些声明"
+        )
+    if maturity == "L2" and not slots:
+        raise ModuleError(
+            "`maturity: L2`（组件式）却没有任何 `slots` —— 声明与实际不符"
+        )
+
     return Module(
         id=mid,
         name=str(raw.get("name") or mid),
@@ -265,9 +306,9 @@ def parse_manifest(path: Path, *, core_version: str = CORE_VERSION) -> Module:
         maturity=maturity,
         enabled=bool(raw.get("enabled", True)),
         path=path.parent.name,
-        servers=_as_str_list(requires.get("servers"), "requires.servers"),
+        servers=servers,
         solvers=_as_str_list(requires.get("solvers"), "requires.solvers"),
-        tools=_as_str_list(raw.get("tools"), "tools"),
+        tools=tools,
         skills=_as_str_list(raw.get("skills"), "skills"),
         entities=entities,
         result_tables=result_tables,
@@ -333,15 +374,40 @@ def load_modules(root: Path, *, known_servers: tuple[str, ...] = (),
         for d in mod.declarations:
             claimed[d.id] = mod.id
 
-        # 外部系统的名字只**警告**（不替上游断言）
+        # ---- 外部系统的名字只**警告**（不替上游断言）----
+        if not mod.servers and mod.tools:
+            # G-7 的软化另一半：没声明 servers 却有 tools —— 不是矛盾，但 UI 会看不到
+            # 「本模块需要哪些 server」，故提示补声明。
+            notes.append(
+                f"模块 `{mod.id}` 有 `tools` 却未声明 `requires.servers` —— "
+                "界面将无法展示「本模块需要哪些 server」，建议补上"
+            )
         if known_servers:
             unknown = [s for s in mod.servers if s not in known_servers]
             if unknown:
                 notes.append(f"模块 `{mod.id}` 声明的 server 不在已知清单中：{unknown}")
+            # G-9：`tools` 前缀的 server 未知 —— 原先只校验 requires.servers，
+            #      tools 里写错 server 名不会有任何提示（实测确认过）。
+            bad_tool_servers = sorted(
+                {t.split(".", 1)[0] for t in mod.tools if "." in t} - set(known_servers)
+            )
+            if bad_tool_servers:
+                notes.append(
+                    f"模块 `{mod.id}` 的 `tools` 引用了未知 server：{bad_tool_servers}"
+                )
         if known_skills:
             unknown_sk = [s for s in mod.skills if s not in known_skills]
             if unknown_sk:
                 notes.append(f"模块 `{mod.id}` 声明的 skill 不存在：{unknown_sk}")
+        # G-10：槽位名合法性 —— 拼错的槽位名会**静默失效**（模块作者以为注入了，实际没有）。
+        # ⚠️ 槽位清单**尚未冻结**，故此处只警告不拒绝。
+        bad_slots = sorted({s.id for s in mod.slots} - set(SLOT_NAMES))
+        if bad_slots:
+            notes.append(
+                f"模块 `{mod.id}` 声明了未知槽位：{bad_slots}"
+                f"（已知：{list(SLOT_NAMES)}）—— 拼错的槽位名会静默失效；"
+                "槽位清单尚未冻结，故只警告"
+            )
 
         modules.append(mod)
 
