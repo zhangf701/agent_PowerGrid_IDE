@@ -120,9 +120,24 @@ class ToolInventory:
 
 
 async def fetch_server_tools(
-    cfg: GatewayConfig, server: str, timeout_s: float | None = None
+    cfg: GatewayConfig, server: str, timeout_s: float | None = None,
+    *, sid: str | None = None, pool: Any | None = None,
 ) -> list[ToolRecord]:
-    """拉起单个 server 并取回其工具清单。失败时抛异常，由 build_inventory 归集。"""
+    """拉起单个 server 并取回其工具清单。失败时抛异常，由 build_inventory 归集。
+
+    ★ 传入 `sid` + `pool` 时**复用会话级持久连接**（子项目 4）—— 列工具与
+      执行走同一个 server 进程，每轮对话不必重新挂载（T6-M5 的 inventory 侧）。
+    """
+    if pool is not None and sid is not None:
+        try:
+            result = await pool.list_tools(sid, server, timeout_s=timeout_s)
+            return [ToolRecord.from_sdk(server, t) for t in result.tools]
+        except Exception as exc:  # noqa: BLE001 —— 与 legacy 路径同一超时补全口径
+            if _is_timeout(exc):
+                raise _timeout_error(server, timeout_s if timeout_s is not None
+                                     else cfg.server_timeout_s) from exc
+            raise
+
     params = StdioServerParameters(
         command=str(cfg.python),
         args=["-m", "powermcp.cli", "run", server],
@@ -201,17 +216,24 @@ async def build_inventory(
     cfg: GatewayConfig,
     servers: Iterable[str],
     timeout_s: float | None = None,
+    *, sid: str | None = None, pool: Any | None = None,
 ) -> ToolInventory:
     """并发拉起多个 server；单个失败不影响其余，缺口记入 failures。
 
     失败时**必须保留可执行信息**：摊平 ExceptionGroup 取真实原因，
     并在**确属依赖缺失**时从 registry 附上安装提示（方案 §4.4 硬要求）。
+    传入 `sid` + `pool` 时复用会话级持久连接（见 fetch_server_tools）。
     """
     names = list(servers)
 
     async def one(server: str) -> tuple[str, list[ToolRecord] | None, ServerFailure | None]:
         try:
-            return server, await fetch_server_tools(cfg, server, timeout_s), None
+            if pool is not None and sid is not None:
+                recs = await fetch_server_tools(cfg, server, timeout_s, sid=sid, pool=pool)
+            else:
+                # 旧路径保持**原签名**调用 —— 测试里 monkeypatch 的假实现签名不变
+                recs = await fetch_server_tools(cfg, server, timeout_s)
+            return server, recs, None
         except Exception as exc:  # noqa: BLE001 —— 单 server 失败不应拖垮整体
             error = _describe_error(exc)
             hint, probe = install_hint_for(server)

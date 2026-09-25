@@ -420,7 +420,11 @@ def register_session_routes(app: FastAPI) -> None:
         #   这里捕获到异常意味着系统性失败（如 `_cfg()` 无法解析配置）—— 503 恰当。
         #   单 server 失败仍走既有路径：`recs` 为空 → 404。
         try:
-            inv = await build_inventory(_cfg(), [server])
+            # ★ 子项目 4：池开启时复用会话持久连接（列工具与执行同一进程）
+            if _POOL is not None:
+                inv = await build_inventory(_cfg(), [server], sid=sid, pool=_POOL)
+            else:
+                inv = await build_inventory(_cfg(), [server])
         except Exception as exc:  # noqa: BLE001 —— 统一映射为 503，不外泄为 500
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         recs = [t for t in inv.tools if t.server == server and t.name == tool]
@@ -493,7 +497,10 @@ def register_session_routes(app: FastAPI) -> None:
             #   （秒级/个，见 T6-M5）。放在流外会把 TTFT 拖到秒级且无法提前结束；
             #   失败则以 `error` 事件如实报出，而不是静默退化。
             try:
-                inv = await build_inventory(_cfg(), servers)
+                if _POOL is not None:
+                    inv = await build_inventory(_cfg(), servers, sid=sid, pool=_POOL)
+                else:
+                    inv = await build_inventory(_cfg(), servers)
             except Exception as exc:
                 yield _chat_sse("error", {"detail": f"工具清单构建失败：{exc}"})
                 _publish_evidence(bus, sid, "turn_error",

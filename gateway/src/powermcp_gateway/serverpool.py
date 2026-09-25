@@ -104,14 +104,18 @@ class _Conn:
                     item = await self._queue.get()
                     if item is None:                       # shutdown 哨兵
                         return
-                    fut, tool, args = item
+                    fut, kind, name, args = item
                     pending = fut
                     try:
-                        result = await session.call_tool(tool, arguments=args)
-                        fut.set_result({
-                            "is_error": bool(result.is_error),
-                            "content": [c.model_dump() for c in result.content],
-                        })
+                        if kind == "list":
+                            result = await session.list_tools()
+                            fut.set_result(result)         # SDK ListToolsResult（.tools）
+                        else:
+                            result = await session.call_tool(name, arguments=args)
+                            fut.set_result({
+                                "is_error": bool(result.is_error),
+                                "content": [c.model_dump() for c in result.content],
+                            })
                     except asyncio.CancelledError:
                         raise
                     except BaseException as exc:           # noqa: BLE001
@@ -140,7 +144,8 @@ class _Conn:
                 if item is not None and not item[0].done():
                     item[0].set_exception(MountError("连接已关闭，调用未执行"))
 
-    async def call(self, tool: str, args: dict, timeout_s: float) -> dict:
+    async def _request(self, kind: str, name: str, args: dict,
+                       timeout_s: float) -> Any:
         # ★ **首次挂载也要限时** —— server 起不来/握手挂死（opendss 形态）时，
         #   不能让调用无限等 `ready`；挂载与执行共用同一预算。
         if not self.ready.done():
@@ -153,14 +158,20 @@ class _Conn:
                 ) from None
         session = self.ready.result()                      # 挂载失败 → MountError
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._queue.put_nowait((fut, tool, args))
+        self._queue.put_nowait((fut, kind, name, args))
         try:
             return await asyncio.wait_for(fut, timeout_s)
         except TimeoutError:
             raise TimeoutError(
-                f"{self.key[1]} 在 {timeout_s:g}s 内未完成工具调用 `{tool}` —— "
+                f"{self.key[1]} 在 {timeout_s:g}s 内未完成 {kind} `{name or ''}` —— "
                 f"该连接将被丢弃并在下次调用时重新挂载"
             ) from None
+
+    async def call(self, tool: str, args: dict, timeout_s: float) -> dict:
+        return await self._request("call", tool, args, timeout_s)
+
+    async def list_tools(self, timeout_s: float) -> Any:
+        return await self._request("list", "", {}, timeout_s)
 
     async def aclose(self) -> None:
         if self.task.done():
@@ -277,6 +288,31 @@ class ServerPool:
             conn = self._conn_for(sid, server)
             result = await conn.call(tool, args, timeout_s)
             return CallResult(result=result, remounted=True)
+
+    async def list_tools(self, sid: str, server: str,
+                         *, timeout_s: float | None = None) -> Any:
+        """经持久连接取回工具清单（SDK ListToolsResult）。
+
+        ★ 让 `inventory.build_inventory` 复用池连接 —— 否则每轮对话都要为列工具
+          重新挂载一遍 server（T6-M5 的 inventory 侧残留），首字节延迟乘 server 数。
+        断裂语义与 `call()` 相同：重连一次并重跑。
+        """
+        if timeout_s is None:
+            timeout_s = self._cfg.server_timeout_s
+        self.calls += 1
+        try:
+            conn = self._conn_for(sid, server)
+            return await conn.list_tools(timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as first:                     # noqa: BLE001
+            if not _is_conn_broken(first) and not isinstance(first, (TimeoutError, MountError)):
+                raise
+            await self.drop(sid, server)
+            self.remounts += 1
+            logger.warning("连接断裂（%s.%s），已重连并重跑 list_tools", sid, server)
+            conn = self._conn_for(sid, server)
+            return await conn.list_tools(timeout_s)
 
     # -- 生命周期 -----------------------------------------------------------
 

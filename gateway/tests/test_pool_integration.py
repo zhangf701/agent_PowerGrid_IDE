@@ -38,7 +38,7 @@ async def test_pool_persists_state_across_http_calls(monkeypatch, cfg):
     connector = FakeConnector(); connector.add()
     pool = ServerPool(cfg, connector=connector)
 
-    async def fake_inventory(c, servers):
+    async def fake_inventory(c, servers, **kwargs):
         return ToolInventory(tools=(_spec("surge", "count_call"),),
                              failures=(), requested=tuple(servers))
     monkeypatch.setattr(api_mod, "build_inventory", fake_inventory)

@@ -510,7 +510,9 @@ async function ensureSession() {
   if (sessionId) return sessionId;
   const body = await api('/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ servers: ['surge', 'powerio'] }),
+    // ★ 会话申请的 server 清单 = 工具面的范围。先前只有 surge+powerio，
+    //   导致模型说「没有任何 ANDES/pandapower 工具」（ANDES 实测可挂载，6 工具）。
+    body: JSON.stringify({ servers: ['surge', 'powerio', 'pandapower', 'pypsa', 'andes'] }),
   });
   sessionId = body.id;
   if (!NOSSE) subscribeEvents(sessionId);

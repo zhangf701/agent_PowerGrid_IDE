@@ -24,6 +24,16 @@ from powermcp_gateway.serverpool import MountError, ServerPool
 CFG = GatewayConfig.discover()
 
 
+class _FakeListResult:
+    def __init__(self, tools): self.tools = tools
+
+
+class _FakeTool:
+    """模拟 SDK Tool：`ToolRecord.from_sdk` 读 name / description / input_schema。"""
+
+    def __init__(self, name): self.name, self.description, self.input_schema = name, None, {}
+
+
 class FakeSession:
     """有状态假会话：`count_call` 调用返回**本会话**累计次数 —— 跨调用一致即证明复用。"""
 
@@ -59,6 +69,9 @@ class FakeSession:
             raise self.exc_on_call
         self.counter += 1
         return _FakeResult(content=[_FakeText(f"count={self.counter}")])
+
+    async def list_tools(self):
+        return _FakeListResult(tools=[_FakeTool("t1"), _FakeTool("t2")])
 
 
     async def aclose(self):
@@ -208,3 +221,14 @@ async def test_aclose_closes_everything(cfg):
     await pool.aclose()
     assert pool.stats()["mounted"] == 0
     assert all(s.closed for s in conn.created)
+
+
+async def test_list_tools_reuses_same_session(cfg):
+    """★ list_tools 与 call_tool 走**同一条**持久连接 —— inventory 复用池的前提。"""
+    conn = FakeConnector(); conn.add()
+    pool = ServerPool(cfg, connector=conn)
+    r = await pool.list_tools("s1", "surge")
+    assert [t.name for t in r.tools] == ["t1", "t2"]
+    tools = (await pool.call("s1", "surge", "t1", {})).result
+    assert "count=1" in str(tools["content"])
+    assert len(conn.created) == 1 and pool.stats()["mounted"] == 1
