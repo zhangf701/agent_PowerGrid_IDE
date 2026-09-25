@@ -33,6 +33,7 @@ class CallOutcome:
     result: dict | None = None
     violations: tuple[ArgViolation, ...] = ()
     error: str | None = None
+    remounted: bool = False   # True = 经「断裂后重连」的连接执行（此前的 server 状态已丢失）
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -198,6 +199,7 @@ async def call_tool(
     bus: EventBus | None = None,
     audit: AuditLog | None = None,
     session_id: str | None = None,
+    pool: Any | None = None,
 ) -> CallOutcome:
     """转发一次工具调用，并在转发**之前**用声明的 schema 校验参数（契约 3）。
 
@@ -277,8 +279,17 @@ async def call_tool(
             error="; ".join(v.detail for v in violations),
         )
 
+    remounted = False
     try:
-        result = await _dispatch(cfg, server, tool, args)
+        if pool is not None and session_id is not None:
+            # ★ 子项目 4：经**会话级持久连接**执行 —— 同一 (session, server) 的
+            #   多次调用共享同一 server 进程，有状态工作流（载入 → 分析）才成立。
+            #   连接断裂时池内自动重连一次并重跑，remounted=True 如实上报状态丢失。
+            res = await pool.call(session_id, server, tool, args,
+                                  timeout_s=cfg.server_timeout_s)
+            result, remounted = res.result, res.remounted
+        else:
+            result = await _dispatch(cfg, server, tool, args)
     except Exception as exc:  # 引擎失败要如实暴露，不吞
         _emit(bus, audit, session_id, "tool_error", {
             "server": server, "tool": tool, "error": f"{type(exc).__name__}: {exc}"[:300],
@@ -301,9 +312,11 @@ async def call_tool(
         })
         return CallOutcome(
             ok=False, server=server, tool=tool, result=result, error=message,
+            remounted=remounted,
         )
 
     _emit(bus, audit, session_id, "tool_call", {
         "server": server, "tool": tool, "args": args,
     })
-    return CallOutcome(ok=True, server=server, tool=tool, result=result)
+    return CallOutcome(ok=True, server=server, tool=tool, result=result,
+                       remounted=remounted)

@@ -216,6 +216,12 @@ async def run_turn(
                 ChatMessage(role="tool", content=_content_text(outcome), tool_call_id=call.id)
             )
             if outcome.ok:
+                if getattr(outcome, "remounted", False):
+                    # ★ 子项目 4：连接断裂自动重连后，server 进程是新的 ——
+                      # 状态丢失必须说出来，否则用户会以为刚才载入的算例还在。
+                    yield AgentEvent(kind="notice", detail=(
+                        f"`{spec.server}` 进程中断后已自动重连 —— "
+                        "**此前装载的算例 / 网络状态已丢失**，需要重新载入。"))
                 yield AgentEvent(
                     kind="tool_call", server=spec.server, tool=spec.name, args=args,
                 )

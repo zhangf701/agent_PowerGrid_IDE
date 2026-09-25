@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
@@ -46,6 +47,7 @@ from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .modules import build_prompt_supplement
 from .modules import build_report as build_modules_report
 from .proxy import CallOutcome, call_tool
+from .serverpool import ServerPool
 from .session import Channel, SessionStore
 from .skills import build_report as build_skills_report
 
@@ -84,12 +86,21 @@ async def _lifespan(app: FastAPI):
         _AUDIT.close()
     except Exception:
         logger.warning("退出时 flush/close 审计失败 —— 缓冲区内的证据事件可能丢失", exc_info=True)
+    if _POOL is not None:
+        try:
+            await _POOL.aclose()
+        except Exception:
+            logger.warning("退出时关闭 server 连接池失败 —— 子进程可能残留", exc_info=True)
 
 _cache = T0Cache()
 _STORE = SessionStore()
 _AUDIT = AuditLog(Path.home() / ".powermcp" / "audit")
 _CONFIG: GatewayConfig | None = None
 _PROVIDER: OpenAICompatProvider | None = None
+#: 会话级持久 server 连接池（子项目 4 / T6-M5 根治）。
+#: ★ **默认关闭**（None = 每次调用临时挂载的旧语义），由 `POWERMCP_SESSION_POOL=1`
+#:   或 `create_app(pool=…)` 显式开启 —— 既有测试 monkeypatch `_dispatch` 的语义不变。
+_POOL: "ServerPool | None" = None
 
 
 def _cfg() -> GatewayConfig:
@@ -243,6 +254,7 @@ async def call_with_contracts(
         _cfg(), server, tool, args,
         schema=get_schema(server, tool),
         bus=_STORE.bus(sid), audit=_AUDIT, session_id=sid,
+        pool=_POOL,
     )
 
 
@@ -821,7 +833,8 @@ def register_check_routes(app: FastAPI) -> None:
 
 
 def create_app(cfg: GatewayConfig | None = None, *,
-               provider: OpenAICompatProvider | None = None) -> FastAPI:
+               provider: OpenAICompatProvider | None = None,
+               pool: "ServerPool | None" = None) -> FastAPI:
     app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
     if cfg is not None:
         global _CONFIG
@@ -829,6 +842,15 @@ def create_app(cfg: GatewayConfig | None = None, *,
     if provider is not None:
         global _PROVIDER
         _PROVIDER = provider
+    # ★ 子项目 4：会话级持久 server 连接池。默认关闭（旧语义：逐调用挂载）；
+    #   `POWERMCP_SESSION_POOL=1`（run_gateway 启动脚本已设）或显式传 `pool=` 开启。
+    global _POOL
+    if pool is not None:
+        _POOL = pool
+    elif os.environ.get("POWERMCP_SESSION_POOL") == "1":
+        _POOL = ServerPool(_cfg())
+    else:
+        _POOL = None
 
     @app.get("/health")
     async def health() -> dict:
@@ -839,7 +861,9 @@ def create_app(cfg: GatewayConfig | None = None, *,
           让它在这里可读，就不必翻日志才发现"证据流已在悄悄掉数据"。
           `audit.append_failures` 是**累计量**（丢失量级），`audit.handles` 是现状量。
         """
-        return {"status": "ok", "audit": _AUDIT.stats()}
+        return {"status": "ok", "audit": _AUDIT.stats(),
+                "server_pool": (_POOL.stats() if _POOL is not None
+                                else {"enabled": False})}
 
     @app.get("/servers")
     async def servers() -> dict[str, list[str]]:

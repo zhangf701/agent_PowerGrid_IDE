@@ -14,6 +14,8 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export POWERIO_MCP_ALLOWED_ROOTS="$ROOT"
+# ★ 子项目 4：会话级持久 server 连接池（有状态工作流的前提，T6-M5 根治）
+export POWERMCP_SESSION_POOL=1
 
 : "${POWERMCP_LLM_BASE_URL:=https://api.deepseek.com}"
 : "${POWERMCP_LLM_MODEL:=deepseek-chat}"

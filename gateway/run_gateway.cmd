@@ -14,6 +14,8 @@ rem ============================================================
 setlocal
 for %%i in ("%~dp0..") do set "POWERMCP_ROOT=%%~fi"
 set "POWERIO_MCP_ALLOWED_ROOTS=%POWERMCP_ROOT%"
+rem ★ 子项目 4：会话级持久 server 连接池（有状态工作流的前提，T6-M5 根治）
+set "POWERMCP_SESSION_POOL=1"
 
 if not defined POWERMCP_LLM_BASE_URL set "POWERMCP_LLM_BASE_URL=https://api.deepseek.com"
 if not defined POWERMCP_LLM_MODEL set "POWERMCP_LLM_MODEL=deepseek-chat"
