@@ -8,7 +8,16 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-25 — JOURNAL（**G-1/G-2/G-4/G-5 落地**）★ 最新
+### 🚩 2026-09-25 — JOURNAL（**opendss 根因定位，修复待完成**）★ 最新
+📄 [2026-09-25-opendss-rootcause-pending.md](2026-09-25-opendss-rootcause-pending.md)
+
+**"唯一真阻塞"有了可复现的根因**：SDK 白名单环境 × `ctypes.LoadLibrary`（py_dss_interface）
+= 子进程静默挂死；完整环境 3s 全通 55 工具。修复方向两条例证待裁决，**未实施**（张老师指示先完成 MVP）。
+证据链：`.superpowers/sdd/m23~m31-*`。
+
+---
+
+### 🚩 2026-09-25 — JOURNAL（**G-1/G-2/G-4/G-5 落地**）
 📄 [2026-09-25-g1-g5-wiring.md](2026-09-25-g1-g5-wiring.md)
 
 四项裁决落地：`sample_cases` / `columns_source` 清单字段 · checks 契约冻结（G-5）+ 执行引擎
