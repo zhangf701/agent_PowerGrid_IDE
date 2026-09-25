@@ -158,6 +158,83 @@ M3 一开始**未变红**（假护栏）——我的测试夹具让"任意标题
 | 端到端 | `m6-p02-e2e.py` —— 真实 app 打两个端点，断言廉价/不泄密/健康度 unknown/技能数一致 |
 | 上游 | `PowerMCP/` 与 `PowerSkills/` 均 **0 行改动** ✓ |
 
+## 五之三、★★ 一个阻塞级真缺陷 + P0-2b 算例库
+
+### (a) 缺陷：MCP 子进程**拿不到**关键环境变量
+
+P0-2b 要求"算例能被 server 读到"，故先做存储决策的实测（提案 §十四-4 的前置）。
+实测（`.superpowers/sdd/m7-env-passthrough.py`）发现：
+
+**MCP SDK 只继承一份白名单环境变量**（`mcp/client/stdio.py` 的
+`DEFAULT_INHERITED_ENV_VARS`，Windows 上仅 APPDATA / HOMEDRIVE / HOMEPATH /
+LOCALAPPDATA / PATH / PATHEXT / PROCESSOR_ARCHITECTURE / SYSTEMDRIVE / SYSTEMROOT /
+TEMP / USERNAME / USERPROFILE），其余**一律不传**。
+
+实测结果：父进程设 `POWERIO_MCP_ALLOWED_ROOTS` 与 `HIGHS_LIB_DIR` 后，
+**二者都不在** `get_default_environment()` 里。后果：
+
+| 变量 | 后果 |
+|---|---|
+| `POWERIO_MCP_ALLOWED_ROOTS` | **路径围笼形同虚设** —— server 只认默认根（`powerio.mcp.sandbox` 导入时的 cwd，即 `PowerMCP` 仓库根）→ **网关读不到算例目录**。表现为"读不到文件"而不是报错，极易误判为"路径写错了" |
+| `HIGHS_LIB_DIR` | surge 的 DC OPF **永远拿不到求解器路径**。此前记为「仅在 shell 会话内有效」**不准确** —— 经网关调用时**从不生效** |
+
+**修法**：
+- `config.py` 加 `SERVER_ENV_PASSTHROUGH` + `server_env()`：**只传「已设置且非空」的项**
+  （空串会被上游当作"未配置"而落到 legacy 变量）；另加逃生口
+  `POWERMCP_GATEWAY_EXTRA_SERVER_ENV`（避免将来"某引擎需要某变量但清单里没有"只能改代码）。
+- `proxy.py` 抽出 `_server_params()` 并显式传 `env` —— 让"传了什么"成为**可直接断言**的接缝。
+- `environment.py` 新增 `server_env` 段：列出透传清单 + **本次实际会传哪些**。
+
+✅ **同时回答了提案 §十四-4**：算例库放 `~/.powermcp_gateway/cases/` **不需要改动
+`PowerMCP/` 一行** —— 网关只是把环境变量透传给子进程。
+
+### (b) P0-2b：算例库（`case` 一级实体）
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `gateway/src/powermcp_gateway/cases.py` | 343 | 登记 / 列举 / 详情 / 注销 + 现状视图 |
+| `api.py`（附加式 +129） | — | `GET/POST /cases` · `GET/DELETE /cases/{id}` |
+| `tests/test_cases.py` / `test_api_cases.py` | 527 | 29 + 18 = **47 个新测试** |
+
+**三条关键设计决定**：
+
+1. **按路径引用，不复制文件** —— 复制会在用户数据旁悄悄多出一份，且他改了原文件而库里还是旧的
+   （**静默不一致**）。代价是"可复现依赖源文件在位"，故**登记时记录 sha256、读取时现算比对**，
+   把 `drift` 显式报出来。
+2. **`DELETE` 只注销登记，绝不删除源文件** —— 数据安全底线：
+   一个 HTTP 动词不该能删掉磁盘上的算例。
+3. **`within_allowed_roots` 与 `config.server_env()` 同源** —— 否则会声称"可读"而 server
+   实际读不到（正是上面 (a) 那类"设了不生效"的坑）。并把 `CaseIndexError` 单列成类型，
+   让端点**不靠匹配错误文本**区分 400 / 500。
+
+**存储**：索引为可读 JSON + `os.replace` 原子替换。
+**有意偏离 v4 §11.4 原写的「SQLite WAL」**（本地单用户、几十到几百条，JSON 可读可 diff 可手工核对），
+**已同步更新 v4 文档**，避免文档与实现不一致。
+
+### ★ 变异探针又逼出 3 条**测试**缺陷（这次是测试的问题）
+
+M4 / M5 / M8 起初未变红，逐条归因：
+
+| 变异 | 归因 | 修法 |
+|---|---|---|
+| M5 不校验路径是否存在 | **测试巧合通过** —— 夹具用 `不存在.m`，而兜底的 `is_file()` 报「必须是文件：…不存在.m」**恰好也含"不存在"** | 改用不含该词的 `ghost.m` |
+| M8 更新时覆盖登记时间 | **测试依赖时间分辨率** —— 两次登记落在同一秒，`_now()` 返回相同字符串 | 用可控时钟（`monkeypatch` 一个递增 tick 迭代器） |
+| M4 文件被删仍报 available | **代码有快路径**：`is_file()` 提前返回，避免"文件缺失"这种常见情形**每次列清单都刷 warning** | 补 `caplog` 断言：缺失不得告警；另补一条对照测试「真实读取失败**必须**告警」 |
+
+> 三条都不是"代码有 bug"，而是**测试没区分力**。M4 那条还顺带说明了快路径的存在理由 ——
+> 原本我以为它只是冗余防御。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 测试 | **285 → 349 passed, 1 deselected**（+64），无回归 |
+| 变异探针 | **16/16 全红**（env 5 条 `m8-env-mutation.py` + cases 11 条 `m9-cases-mutation.py`） |
+| 端到端 | `m10-cases-e2e.py` —— 真实 app 走完 登记→更新→列举→漂移→注销，**源文件始终未被触碰**，真实 HOME 未被污染 |
+| 上游 | `PowerMCP/` 与 `PowerSkills/` 均 **0 行改动** ✓ |
+
+**提交**：`3dbb37d`（env 修复 + 算例库）。
+
 ## 六、仍未做 / 下一步
 
 1. **《UI 设计规范》未同步至 v2** —— 已在 v4 §十四-1 声明「同步完成前，v1.2 与 v4 冲突处以 v4 为准」。

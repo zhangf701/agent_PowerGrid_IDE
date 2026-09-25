@@ -27,11 +27,20 @@
 - ✅ **P0-2a 已交付**：`GET /environment`（廉价检查，不拉起 server）+ `GET /skills`
   （22 技能 + **Escalation triggers** —— v3 零覆盖的「研究方法」载体；健康度只报可计算信号，
   整体如实标 `unknown`）。**独立复现了审计报告的三条结论**（ltspice 缺 escalation 表 / 无悬空引用 / 无孤儿手册）。
-- 测试：**181 → 285 passed, 1 deselected**；变异探针累计 **29/29 全红**（P0-1 18 条 + P0-2a 11 条）；
+- ✅ **P0-2b 已交付**：`case` 一级实体（v4 引入；v3 只有 session 粒度）+ `GET/POST /cases` ·
+  `GET/DELETE /cases/{id}`。**按路径引用不复制**（登记 sha256 + 读取现算 drift）·
+  **DELETE 只注销登记、绝不删除源文件** · 索引为可读 JSON + 原子替换。
+- ★★ **修复一个阻塞级真缺陷**：**MCP SDK 只继承白名单环境变量** ——
+  `POWERIO_MCP_ALLOWED_ROOTS` 与 `HIGHS_LIB_DIR` **都不在其中**，不显式传就等于"设了也不生效"。
+  后果：**路径围笼形同虚设**（server 只认默认根，读不到算例目录）、surge 的 DC OPF 永远拿不到求解器。
+  已改为显式透传，并新增 `server_env` 观测面。
+- 测试：**181 → 349 passed, 1 deselected**；变异探针累计 **45/45 全红**；
   `PowerMCP/` 与 `PowerSkills/` 均 0 行改动。
-- 下一步：**P0-2b `/cases*`**（引入 case/project 新一级实体 + 存储决策 + PowerIO 解析）
-  → P0-3 内核骨架与模块脚手架 → 设计系统落地（**前置：UI 规范同步至 v2**）。
-- 提交：`84cbb66`（文档重定位）· `8786495`（P0-1）· `1b87182`（P0-2a）。
+- ⚠️ **两轮变异探针共逼出 4 条「假护栏」**（1 条真 bug：escalation 子标题致假警报；
+  3 条测试缺陷：文件名巧合、时间分辨率、快路径无断言）—— 方法教训见下。
+- 下一步：**P0-2b-2 `/cases/{id}/parse`**（需真实拉起 server）→ P0-3 内核骨架与模块脚手架
+  → 设计系统落地（**前置：UI 规范同步至 v2**）。
+- 提交：`84cbb66`（文档重定位）· `8786495`（P0-1）· `1b87182`（P0-2a）· `6b0fc45`（journal）· `3dbb37d`（env 修复 + P0-2b）。
 
 ---
 
