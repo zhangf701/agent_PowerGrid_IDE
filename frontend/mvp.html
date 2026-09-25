@@ -131,22 +131,38 @@
             border-radius: var(--p-radius-md); padding: var(--p-space-2);
             margin: var(--p-space-2) 0; font-size: var(--p-font-size-bodySm); }
 
-  /* 技能手册 */
-  #skillsPanel { margin-top: var(--p-space-4); }
-  #skillsPanel summary { cursor: pointer; font-size: var(--p-font-size-h2); font-weight: 500; }
-  #skillsPanel summary .muted { font-size: var(--p-font-size-caption); font-weight: 400; }
-  #skillFilter { width: 100%; margin: var(--p-space-2) 0; }
+  /* ── 主区视图标签（对话 / 技能手册）──────────────── */
+  #viewTabs { display: flex; gap: var(--p-space-1);
+              padding: var(--p-space-1) var(--p-space-3);
+              border-bottom: 1px solid var(--c-border-subtle);
+              background: var(--c-surface-raised); }
+  #viewTabs .tab { height: 30px; background: transparent;
+                   color: var(--c-text-secondary); border-color: transparent; }
+  #viewTabs .tab.active { background: var(--c-interactive-primary-bg);
+                          color: var(--c-interactive-primary-fg); }
+  .hidden { display: none !important; }
+
+  /* 技能手册视图（主区宽幅） */
+  #viewSkills { flex: 1; overflow: auto; padding: var(--p-space-4); min-width: 0; }
+  .skillsHead { display: flex; gap: var(--p-space-3); align-items: center;
+                margin-bottom: var(--p-space-2); flex-wrap: wrap; }
+  #skillFilter { flex: 1; max-width: 460px; }
+  .skillGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+               gap: var(--p-space-3); align-items: start; }
   .skill { border: 1px solid var(--c-border-subtle); border-radius: var(--p-radius-lg);
-           padding: var(--p-space-2) var(--p-space-3); margin-bottom: var(--p-space-2); }
-  .skill .head { display: flex; gap: var(--p-space-2); align-items: baseline; flex-wrap: wrap; }
+           padding: var(--p-space-3); background: var(--c-surface-raised); }
+  .skill .head { display: flex; gap: var(--p-space-2); align-items: baseline;
+                 flex-wrap: wrap; margin-bottom: var(--p-space-1); }
   .skill .name { font-weight: 500; font-family: var(--p-font-mono); }
-  .skill .desc { color: var(--c-text-secondary); font-size: var(--p-font-size-caption);
-                 margin-top: 2px; }
-  .esc { margin-top: var(--p-space-1); font-size: var(--p-font-size-caption); }
-  .esc .row { display: flex; gap: 6px; padding: 1px 0; align-items: baseline; }
-  .esc .arrow { color: var(--c-text-muted); flex: none; }
-  .esc .obs { color: var(--c-text-secondary); flex: 1; min-width: 0; }
-  .esc .to { font-family: var(--p-font-mono); flex: none; }
+  .skill .desc { color: var(--c-text-secondary); font-size: var(--p-font-size-bodySm);
+                 margin-top: var(--p-space-1); overflow-wrap: anywhere; }
+  .esct { width: 100%; border-collapse: collapse; margin-top: var(--p-space-2);
+          font-size: var(--p-font-size-caption); }
+  .esct th { color: var(--c-text-muted); font-weight: 400; text-align: left;
+             padding: 2px 8px 2px 0; border-top: 1px solid var(--c-border-subtle); }
+  .esct td { padding: 3px 8px 3px 0; border-top: 1px solid var(--c-border-subtle);
+             vertical-align: top; }
+  .esct td.to { font-family: var(--p-font-mono); white-space: nowrap; }
 
   #composer { border-top: 1px solid var(--c-border-subtle); padding: var(--p-space-3);
               display: flex; gap: var(--p-space-2); background: var(--c-surface-raised); }
@@ -189,6 +205,11 @@
   <div id="findings"></div>
 </div>
 
+<nav id="viewTabs">
+  <button class="tab active" data-view="viewChat">对话</button>
+  <button class="tab" data-view="viewSkills">技能手册</button>
+</nav>
+
 <main>
   <aside>
     <h2>环境就绪</h2>
@@ -203,21 +224,23 @@
     <div class="muted" style="margin-top:6px">
       登记只记路径与哈希，<strong>不复制文件</strong>；注销也<strong>不会删你的文件</strong>。
     </div>
-
-    <details id="skillsPanel">
-      <summary>技能手册 <span class="muted" id="skillSum"></span></summary>
-      <div class="muted" id="skillHealth" style="margin-top:6px"></div>
-      <input id="skillFilter" placeholder="筛选：名称 / 描述 / 触发条件 / 手册名">
-      <div id="skills"><div class="muted">加载中…</div></div>
-    </details>
   </aside>
 
-  <section class="chat">
+  <section class="chat" id="viewChat">
     <div id="stream"></div>
     <div id="composer">
       <textarea id="input" placeholder="问点什么……（Enter 发送，Shift+Enter 换行）"></textarea>
       <button id="send">发送</button>
     </div>
+  </section>
+
+  <section id="viewSkills" class="hidden">
+    <div class="skillsHead">
+      <input id="skillFilter" placeholder="筛选：名称 / 描述 / 触发条件 / 手册名">
+      <span class="muted" id="skillCount"></span>
+    </div>
+    <div class="muted" id="skillHealth" style="margin-bottom: var(--p-space-3)"></div>
+    <div id="skills" class="skillGrid"><div class="muted">加载中…</div></div>
   </section>
 </main>
 
@@ -409,10 +432,10 @@ async function loadSkills() {
   const body = await api('/skills');
   SKILLS = body.skills || [];
   const s = body.summary || {};
-  $('skillSum').textContent =
-    `（${s.total ?? SKILLS.length}：` +
+  $('skillCount').textContent =
+    `${s.total ?? SKILLS.length} 个技能 · ` +
     Object.entries(s.by_kind || {}).map(([k, n]) => `${k} ${n}`).join(' · ') +
-    `，${s.with_escalation ?? 0} 个带触发表）`;
+    ` · ${s.with_escalation ?? 0} 个带触发表`;
 
   const h = body.health || {};
   const sig = h.signals || {};
@@ -430,6 +453,9 @@ async function loadSkills() {
   renderSkills('');
 }
 
+const KIND_LABEL = { tool: '工作流', engineering: '工程', meta: 'meta' };
+const KIND_BADGE = { tool: 'ok', engineering: 'warn', meta: 'unknown' };
+
 function renderSkills(q) {
   const box = $('skills');
   const needle = q.trim().toLowerCase();
@@ -444,26 +470,35 @@ function renderSkills(q) {
     box.innerHTML = `<div class="muted">没有匹配「${esc(q)}」的技能。</div>`;
     return;
   }
-  const kindBadge = { tool: 'ok', engineering: 'warn', meta: 'unknown' };
   box.innerHTML = hits.map((s) => {
     const desc = s.description || '';
-    const short = desc.length > 160 ? desc.slice(0, 160) + '…' : desc;
-    const escs = (s.escalation || []).map((e) =>
-      `<div class="row"><span class="obs" title="${esc(e.observation)}">${esc(e.observation)}</span>` +
-      `<span class="arrow">→</span><span class="to" title="缓解手册">${esc(e.escalate_to)}</span></div>`
+    const rows = (s.escalation || []).map((e) =>
+      `<tr><td>${esc(e.observation)}</td><td class="to">${esc(e.escalate_to)}</td></tr>`
     ).join('');
     return `<div class="skill">
       <div class="head">
         <span class="name">${esc(s.name)}</span>
-        <span class="badge ${kindBadge[s.kind] || 'unknown'}">${esc(s.kind)}</span>
+        <span class="badge ${KIND_BADGE[s.kind] || 'unknown'}">${esc(KIND_LABEL[s.kind] || s.kind)}</span>
+        <span class="muted" style="margin-left:auto">${esc(s.kind)}</span>
       </div>
-      <div class="desc" title="${esc(desc)}">${esc(short)}</div>
-      ${escs ? `<div class="esc">${escs}</div>` : ''}
+      <div class="desc">${esc(desc)}</div>
+      ${rows ? `<table class="esct">
+        <tr><th>触发条件（观测到即升级）</th><th>缓解手册</th></tr>${rows}</table>` : ''}
     </div>`;
   }).join('');
 }
 
 $('skillFilter').addEventListener('input', (ev) => renderSkills(ev.target.value));
+
+/* ── 主区视图切换：对话 / 技能手册 ── */
+document.querySelectorAll('#viewTabs .tab').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#viewTabs .tab')
+      .forEach((x) => x.classList.toggle('active', x === b));
+    $('viewChat').classList.toggle('hidden', b.dataset.view !== 'viewChat');
+    $('viewSkills').classList.toggle('hidden', b.dataset.view !== 'viewSkills');
+  });
+});
 
 /* ══════════ ③ 会话 + 对话 ══════════ */
 let sessionId = null;

@@ -37,7 +37,7 @@ cd /d/coding/powerMcp_Pskills/gateway && ./run_gateway.sh
 |---|---|---|---|
 | 1 | 页面渲染 | 打开页面 | 无白屏；顶部有校验层状态条 |
 | 2 | 环境就绪 | 环境面板 | Python/网关版本、LLM `api_key_set: true`；**不显示**密钥本体 |
-| 3 | 技能手册 | 技能面板 | 能看到 surge 等技能与 escalation triggers；ltspice 标记"缺 escalation 表" |
+| 3 | 技能手册 | 顶部切到「技能手册」标签；试试筛选框（输入 `电压` 或 `surge`） | 22 张卡片（tool 11 · engineering 10 · meta 1），10 个带「触发条件 → 缓解手册」表；ltspice 标记"缺 escalation 表"；健康度显示 **unknown**（如实状态） |
 | 4 | 算例登记 | 登记一个算例：路径填 `D:\coding\powerMcp_Pskills\examples\data\case39.m` | 200 登记成功；显示 sha256 与标签 |
 | 5 | 算例解析 | 对已登记算例点"解析" | **首次约 5–10 秒**（真实拉起 powerio）；完成后可看 IR / 诊断（case39 诊断应为 0 条） |
 | 6 | 围笼拦截（反向） | 登记一个项目外路径的算例（如 `D:\某其他目录\xxx.m`）再解析 | 409，提示"不在允许根内" |
