@@ -18,7 +18,12 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .config import GatewayConfig
+from .config import (
+    ENV_EXTRA_SERVER_ENV,
+    SERVER_ENV_PASSTHROUGH,
+    GatewayConfig,
+    server_env,
+)
 from .contracts import REGISTRY
 from .llm import ENV_API_KEY, ENV_BASE_URL, ENV_MODEL, ENV_TIMEOUT_S, LlmConfig, LlmConfigError
 from .skills import build_report as skills_report
@@ -49,8 +54,10 @@ _NOTES: tuple[str, ...] = (
     "server 挂载状态、依赖缺失（missing / 需配置路径）与工具面计数见 `GET /contracts/t0`。",
     "「装得上 ≠ 跑得动」必须显式区分：依赖满足、进程能起来，不等于该引擎的**求解**可用"
     "（如 HOPE / GenX 需本地 Julia，Egret 的 Ipopt 实测不可用）。",
-    "`HIGHS_LIB_DIR` 目前**未持久化**，只在设置它的那个 shell 会话内有效 —— "
-    "进程从别处启动时 surge 的 DC OPF 会不可用。",
+    "⚠️ MCP SDK **只继承白名单环境变量**（`mcp.client.stdio.DEFAULT_INHERITED_ENV_VARS`）—— "
+    "`POWERIO_MCP_ALLOWED_ROOTS` 与 `HIGHS_LIB_DIR` **都不在其中**。"
+    "网关已改为**显式透传**（见 `server_env` 段），但二者仍需在**网关进程**的环境里设置；"
+    "且 `HIGHS_LIB_DIR` 未持久化 → 启动网关时没设就一直不可用（2026-09-25 实测并修复）。",
 )
 
 
@@ -143,6 +150,26 @@ def _solvers_section() -> dict:
     }
 
 
+def _server_env_section() -> dict:
+    """将透传给 server 子进程的环境变量**显式列出**。
+
+    ★ 为什么值得占一个报告段：这是最容易"设了以为生效、其实没传"的地方
+      （MCP SDK 只继承白名单）。把「透传清单」与「本次实际会传哪些」都摆出来，
+      就不必去读 `config.py` 猜。
+    """
+    passed = server_env()
+    return {
+        "passthrough": list(SERVER_ENV_PASSTHROUGH),
+        "extra_env_var": ENV_EXTRA_SERVER_ENV,
+        "will_pass": sorted(passed),
+        "will_pass_count": len(passed),
+        "note": (
+            "MCP SDK 只继承白名单变量，其余**必须显式传**，否则父进程设了也不生效。"
+            f"用 `{ENV_EXTRA_SERVER_ENV}`（逗号或分号分隔的变量名）可追加透传项。"
+        ),
+    }
+
+
 def _modules_section(cfg: GatewayConfig) -> dict:
     root = modules_root(cfg)
     found: list[str] = []
@@ -174,6 +201,7 @@ def build_report(cfg: GatewayConfig) -> dict:
         "powermcp": _powermcp_section(cfg),
         "paths": _paths_section(),
         "solvers": _solvers_section(),
+        "server_env": _server_env_section(),
         "llm": _llm_section(),
         "contracts": {
             "registered": [

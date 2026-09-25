@@ -145,13 +145,37 @@ def test_modules_section_when_absent(cfg, tmp_path, monkeypatch):
     assert sec["root_exists"] is False and sec["modules"] == []
 
 
+# ---------------------------------------------------------------- 子进程环境透传
+
+
+def test_server_env_section_lists_passthrough_and_actual(cfg, monkeypatch):
+    """★ 最容易"设了以为生效、其实没传"的地方 —— 报告必须把清单与实际都摆出来。"""
+    monkeypatch.setenv("POWERIO_MCP_ALLOWED_ROOTS", "D:/GridData")
+    monkeypatch.delenv("HIGHS_LIB_DIR", raising=False)
+    sec = build_report(cfg)["server_env"]
+
+    assert "POWERIO_MCP_ALLOWED_ROOTS" in sec["passthrough"]
+    assert sec["will_pass"] == ["POWERIO_MCP_ALLOWED_ROOTS"]
+    assert sec["will_pass_count"] == 1
+    assert sec["extra_env_var"] == "POWERMCP_GATEWAY_EXTRA_SERVER_ENV"
+    assert "白名单" in sec["note"]
+
+
+def test_server_env_section_empty_when_nothing_set(cfg, monkeypatch):
+    for k in ("POWERIO_MCP_ALLOWED_ROOTS", "POWERIO_MCP_ROOT",
+              "POWERIO_MCP_ALLOWED_ROOT", "HIGHS_LIB_DIR"):
+        monkeypatch.delenv(k, raising=False)
+    sec = build_report(cfg)["server_env"]
+    assert sec["will_pass"] == [] and sec["will_pass_count"] == 0
+
+
 # ---------------------------------------------------------------- 整体形状
 
 
 def test_report_shape_and_contracts(cfg, llm_env):
     r = build_report(cfg)
     assert set(r) == {
-        "gateway", "powermcp", "paths", "solvers", "llm",
+        "gateway", "powermcp", "paths", "solvers", "server_env", "llm",
         "contracts", "skills", "modules", "notes",
     }
     assert r["gateway"]["python_ok"] is True

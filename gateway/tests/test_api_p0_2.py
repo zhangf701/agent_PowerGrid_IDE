@@ -44,7 +44,7 @@ async def test_environment_ok_without_session(app):
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {
-        "gateway", "powermcp", "paths", "solvers", "llm",
+        "gateway", "powermcp", "paths", "solvers", "server_env", "llm",
         "contracts", "skills", "modules", "notes",
     }
     assert body["powermcp"]["root_ok"] is True

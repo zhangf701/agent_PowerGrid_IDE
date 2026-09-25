@@ -166,7 +166,7 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 |---|---|---|---|
 | `GET /environment` | ① 环境就绪 | P1 | ✅ **2026-09-25 交付**（廉价检查，不拉起 server） |
 | `GET /skills` | ⑤ 技能手册 | P1 | ✅ **2026-09-25 交付**（22 技能 + escalation triggers） |
-| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | ⏳ 待做（**P0-2b** —— 引入新一级实体与存储决策） |
+| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | 🔄 **P0-2b 进行中**：登记/列举/详情/注销 **✅ 2026-09-25 交付**；parse / diagnostics ⏳ 待做（需真实拉起 server） |
 | `POST /experiments` · `GET /experiments/{id}` · `/results` · `/export` | ④ 实验矩阵 | P2 | ⏳ 待做 |
 | `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
@@ -209,7 +209,8 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 |---|---|---|---|
 | 1 | 契约层默认状态 | **默认开、折叠为状态条** | 默认关；默认开且展开 |
 | 2 | 技能触发方式 | **双轨**：目录可点 + LLM 自动建议 | 仅显式；仅隐式 |
-| 3 | 算例库存储位置 | **独立目录** `~/.powermcp_gateway/cases/`（严守 `PowerMCP/` 0 行改动） | 复用 `~/.powermcp/runs/`（需评估是否算改动上游） |
+> | 3 | 算例库存储位置 | **独立目录** `~/.powermcp_gateway/cases/`（严守 `PowerMCP/` 0 行改动） | 复用 `~/.powermcp/runs/`（需评估是否算改动上游） |
+> | — | ✅ **第 3 项已实测确认（2026-09-25）**：不需要改动 `PowerMCP/` 一行 —— 网关只需把 `POWERIO_MCP_ALLOWED_ROOTS` **透传给 server 子进程**。实测中发现并修复了一个真缺陷：MCP SDK 只继承**白名单**环境变量，该变量与 `HIGHS_LIB_DIR` **都不在其中** |
 | 4 | 实验矩阵执行模型 | **先串行**，跑通后再评估并发（并发需先完成 §11.2） | 直接并发 |
 | 5 | 导出格式 | **Markdown（技术文档）+ CSV（数据）+ HTML→PDF（正式报告，按用户级规则）** | 仅 Markdown |
 

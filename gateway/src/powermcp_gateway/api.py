@@ -19,6 +19,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .agent import DEFAULT_MAX_ROUNDS, AgentEvent, run_turn
 from .audit import AuditLog
+from .cases import (
+    CaseError,
+    CaseIndexError,
+    CaseStore,
+    cases_root,
+)
+from .cases import build_report as build_cases_report
 from .config import GatewayConfig
 from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
@@ -452,6 +459,127 @@ def register_session_routes(app: FastAPI) -> None:
         )
 
 
+def _parse_case_request(payload: dict) -> tuple[dict, str | None]:
+    """解析算例登记请求体。
+
+    ★ `path` 必填且非空；`label` / `tags` / `notes` 可选。
+      类型错误一律 400 并指明字段 —— 不把畸形请求送进文件系统。
+    """
+    raw = payload.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        return {}, "请求体需提供 `path`（算例文件路径，非空字符串）"
+
+    label = payload.get("label")
+    if label is not None and not isinstance(label, str):
+        return {}, "`label` 必须是字符串"
+
+    notes = payload.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return {}, "`notes` 必须是字符串"
+
+    tags_raw = payload.get("tags")
+    if tags_raw is None:
+        tags: list[str] = []
+    elif isinstance(tags_raw, list) and all(isinstance(t, str) for t in tags_raw):
+        tags = tags_raw
+    else:
+        return {}, "`tags` 必须是字符串数组"
+
+    return {
+        "path": raw.strip(),
+        "label": (label or "").strip() or None,
+        "tags": tags,
+        "notes": notes or "",
+    }, None
+
+
+def register_case_routes(app: FastAPI) -> None:
+    """注册算例库端点（方案 v4 §4.2）。
+
+    ★ 算例是 v4 引入的**新一级实体**：v3 只有 session 粒度，研究无法「组织」。
+    ★ 端点本身**不碰文件内容** —— 只登记路径与哈希；解析为 PowerIO IR
+      是后续单元（P0-2b-2，需要真实拉起 server）。
+    """
+
+    def _store() -> CaseStore:
+        return CaseStore(cases_root(_cfg()))
+
+    @app.get("/cases")
+    async def list_cases() -> dict:
+        """列出全部算例，含**现算**的可用性 / 漂移 / server 可读性。"""
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            return build_cases_report(c)
+        except CaseIndexError as exc:
+            # 索引损坏是**服务端数据问题** → 500（不是客户端的错）
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/cases")
+    async def register_case(payload: dict):
+        """登记一个算例（同一路径重复登记 = 更新，返回 200 而非 201）。"""
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        parsed, err = _parse_case_request(payload)
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+
+        store = _store()
+        try:
+            case, created = store.register(
+                parsed["path"], label=parsed["label"],
+                tags=tuple(parsed["tags"]), notes=parsed["notes"],
+            )
+            view = store.view(case)
+        except CaseIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except CaseError as exc:
+            # 路径不存在 / 是目录 / 超限 —— 都是**客户端输入问题**
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+        return JSONResponse(
+            status_code=201 if created else 200,
+            content={"created": created, "case": view.to_dict()},
+        )
+
+    @app.get("/cases/{cid}")
+    async def get_case(cid: str):
+        store = _store()
+        try:
+            case = store.get(cid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "算例不存在"})
+        except CaseIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return store.view(case).to_dict()
+
+    @app.delete("/cases/{cid}")
+    async def delete_case(cid: str):
+        """**注销登记** —— 只删索引条目，**绝不删除源文件**。
+
+        ★ 数据安全底线：一个 HTTP 动词不该能删掉用户磁盘上的算例。
+          若要真正删除文件，那是文件系统的事，不由本端点代劳。
+        """
+        store = _store()
+        try:
+            removed = store.unregister(cid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "算例不存在"})
+        except CaseIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {
+            "unregistered": removed.id,
+            "label": removed.label,
+            "source_path": removed.source_path,
+            "source_file_kept": True,
+        }
+
+
 def create_app(cfg: GatewayConfig | None = None, *,
                provider: OpenAICompatProvider | None = None) -> FastAPI:
     app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
@@ -523,4 +651,5 @@ def create_app(cfg: GatewayConfig | None = None, *,
         }
 
     register_session_routes(app)
+    register_case_routes(app)
     return app

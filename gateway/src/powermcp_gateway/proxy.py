@@ -17,7 +17,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .audit import AuditLog
-from .config import GatewayConfig
+from .config import GatewayConfig, server_env
 from .contracts.model import ContractFinding
 from .contracts.params import ArgViolation, schema_is_unusable, validate_args
 from .session import Channel, EventBus
@@ -50,6 +50,26 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
+def _server_params(cfg: GatewayConfig, server: str) -> StdioServerParameters:
+    """构造 MCP server 子进程的启动参数。
+
+    ★ **必须显式传 `env`**（见 `config.SERVER_ENV_PASSTHROUGH` 的实测记录）：
+      MCP SDK 只继承一份**白名单**环境变量，`POWERIO_MCP_ALLOWED_ROOTS`
+      与 `HIGHS_LIB_DIR` 都**不在**其中 —— 不显式传就等于"父进程设了也不生效"。
+      后果分别是：**路径围笼形同虚设**（server 只认默认根 = `cfg.powermcp_root`，
+      因而读不到算例目录）、**surge 的 DC OPF 永远拿不到求解器路径**。
+
+    抽成独立函数是为了让"传了什么 env"成为一个**可直接断言**的接缝
+    （无需真的拉起子进程）。
+    """
+    return StdioServerParameters(
+        command=str(cfg.python),
+        args=["-m", "powermcp.cli", "run", server],
+        cwd=str(cfg.powermcp_root),
+        env=server_env(),
+    )
+
+
 async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> dict:
     """真正转发给 MCP server。单测里会被 monkeypatch 掉。
 
@@ -65,11 +85,7 @@ async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> d
       不补的话 `CallOutcome.error` 会退化成 `"TimeoutError: "` —— 与
       `inventory._timeout_error` 的既有做法不一致（方案 §4.4 要求给出可执行修复路径）。
     """
-    params = StdioServerParameters(
-        command=str(cfg.python),
-        args=["-m", "powermcp.cli", "run", server],
-        cwd=str(cfg.powermcp_root),
-    )
+    params = _server_params(cfg, server)
     try:
         async with asyncio.timeout(cfg.server_timeout_s):
             async with stdio_client(params) as (read, write):
