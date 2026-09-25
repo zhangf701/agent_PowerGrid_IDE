@@ -6,10 +6,12 @@
 背景：本项目根目录非 git 仓库，文档与代码两处手抄同一份色值无法靠版本控制兜底
 （2026-09-24 已发生过一次交付物被覆盖且不可恢复的事故）。本脚本是该风险的技术缓解。
 
-校验三项：
+校验四项：
   1. JSON 合法 + 所有别名引用可解析
   2. 单一真源一致性 —— 规范文档中出现的每个 `--c-*` / `--p-*` 令牌，其值与 JSON 逐字符相同
   3. 完整性 —— 4 个契约状态 × 2 主题 × 3 个颜色分量齐备
+  4. **派生产物一致性** —— `frontend/src/styles/tokens.css` 的令牌名集合与文档完全一致
+     （防 `tools/build_design_tokens.py` 里那份**复制来的**命名映射表与本文档漂移）
 
 用法：
     python tools/check_design_tokens.py            # 校验
@@ -33,6 +35,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parent.parent
 TOKENS_JSON = ROOT / "design" / "tokens.json"
 SPEC_MD = ROOT / "docs" / "PowerMCP_UI设计规范.md"
+GEN_CSS = ROOT / "frontend" / "src" / "styles" / "tokens.css"
 
 # 规范文档中的路径别名（JSON 路径段 -> CSS 变量名段）
 SEGMENT_RENAME = {"categorical": "cat"}
@@ -239,6 +242,24 @@ def check_completeness(root):
     return problems
 
 
+def check_generated_css(doc_tokens: set):
+    """派生产物一致性：生成的 CSS 令牌名集合与文档**完全一致**。
+
+    ★ 为什么需要：`tools/build_design_tokens.py` 复制了一份「JSON 路径 → CSS 变量名」
+      映射表（与本文档的 `build_expected` 同源）。**两处一旦漂移，生成的 CSS 会与
+      文档校验的令牌名对不上** —— 那是最该防的失败模式（前端拿到的是错的变量名，
+      而文档校验却是绿的）。
+
+    Returns:
+        `(仅在CSS中, 仅在文档中)`；**产物不存在时返回 None**（前端工程尚未生成产物属正常）。
+    """
+    if not GEN_CSS.exists():
+        return None
+    css = GEN_CSS.read_text(encoding="utf-8")
+    gen = set(re.findall(r"^\s*(--[A-Za-z0-9-]+):", css, re.M))
+    return sorted(gen - doc_tokens), sorted(doc_tokens - gen)
+
+
 def main():
     verbose = "-v" in sys.argv
 
@@ -247,7 +268,7 @@ def main():
     print("=" * 66)
 
     root = load_tokens()
-    print(f"[1/3] JSON 合法，别名全部可解析                OK")
+    print(f"[1/4] JSON 合法，别名全部可解析                OK")
 
     expected = build_expected(root)
     print(f"      期望令牌数：{len(expected)}（含 JSON 中未暴露给文档的原始层）")
@@ -256,7 +277,7 @@ def main():
         die(f"规范文档不存在：{SPEC_MD}")
     text = SPEC_MD.read_text(encoding="utf-8")
     found = parse_spec(text, expected)
-    print(f"[2/3] 规范文档中抽到令牌：{len(found)}")
+    print(f"[2/4] 规范文档中抽到令牌：{len(found)}")
 
     mismatched, unknown, missing_doc = [], [], []
     for token, vals in found.items():
@@ -284,7 +305,15 @@ def main():
             print(f"  [{mark}] {token} = {' | '.join(found[token])}")
 
     problems = check_completeness(root)
-    print(f"[3/3] 状态签名完整性检查：{'OK' if not problems else 'FAIL'}")
+    print(f"[3/4] 状态签名完整性检查：{'OK' if not problems else 'FAIL'}")
+
+    drift = check_generated_css(set(found))
+    if drift is None:
+        print(f"[4/4] 派生产物一致性：跳过（{GEN_CSS.relative_to(ROOT)} 尚未生成）")
+        css_extra, css_missing = [], []
+    else:
+        css_extra, css_missing = drift
+        print(f"[4/4] 派生产物一致性：{'OK' if not (css_extra or css_missing) else 'FAIL'}")
 
     print()
     ok = True
@@ -311,12 +340,22 @@ def main():
         for p in problems:
             print(f"   {p}")
 
+    if css_extra or css_missing:
+        ok = False
+        print("❌ 生成的 CSS 与文档令牌名不一致 —— 命名映射表已漂移：")
+        if css_extra:
+            print(f"   仅在 tokens.css 中（{len(css_extra)} 项）：{css_extra}")
+        if css_missing:
+            print(f"   仅在文档中（{len(css_missing)} 项）：{css_missing}")
+        print("   修法：对齐 tools/build_design_tokens.py 与本文档的命名映射，再重新生成。")
+
     print("-" * 66)
     if ok:
         print("✅ 校验通过：规范文档与令牌真源一致。")
+        tail = "" if drift is None else "；派生产物 tokens.css 与文档一致"
         print(f"   {len(found)} 个令牌逐值比对无误；"
               f"{len(REQUIRED_STATES)} 个契约状态 × 2 主题 × {len(STATE_PARTS)} 分量齐备"
-              f"（{'/'.join(REQUIRED_STATES)}）。")
+              f"（{'/'.join(REQUIRED_STATES)}）{tail}。")
         return 0
     print("❌ 校验失败。修改请改 design/tokens.json，文档表格从它抄录。")
     return 1

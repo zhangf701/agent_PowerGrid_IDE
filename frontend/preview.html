@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>PowerMCP 设计令牌预览</title>
+<link rel="stylesheet" href="src/styles/tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:var(--p-space-8); background:var(--c-surface-base);
+         color:var(--c-text-primary); font-family:var(--p-font-sans);
+         font-size:var(--p-font-size-body); line-height:1.6; }
+  h1 { font-size:var(--p-font-size-display); margin:0 0 var(--p-space-2); }
+  h2 { font-size:var(--p-font-size-h1); margin:var(--p-space-10) 0 var(--p-space-3);
+        padding-bottom:var(--p-space-2); border-bottom:1px solid var(--c-border-subtle); }
+  h3 { font-size:var(--p-font-size-h2); margin:var(--p-space-6) 0 var(--p-space-2);
+        color:var(--c-text-secondary); font-weight:500; }
+  code { font-family:var(--p-font-mono); font-size:var(--p-font-size-mono);
+          color:var(--c-code-fg); background:var(--c-code-bg);
+          padding:1px var(--p-space-1); border-radius:var(--p-radius-sm); }
+  .bar { display:flex; align-items:center; gap:var(--p-space-4); flex-wrap:wrap; }
+  .muted { color:var(--c-text-muted); font-size:var(--p-font-size-bodySm); }
+  button { font:inherit; height:32px; padding:0 var(--p-space-4); cursor:pointer;
+            background:var(--c-interactive-primary-bg); color:var(--c-interactive-primary-fg);
+            border:1px solid transparent; border-radius:var(--p-radius-md); }
+  .grid { display:grid; gap:var(--p-space-2);
+           grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); }
+  .sw { display:flex; align-items:center; gap:var(--p-space-2); padding:var(--p-space-1) 0; }
+  .chip { width:20px; height:20px; border-radius:var(--p-radius-sm);
+           border:1px solid var(--c-border-subtle); flex:none; }
+  .val { margin-left:auto; color:var(--c-text-muted); font-size:var(--p-font-size-caption);
+          font-family:var(--p-font-mono); }
+  .sigs { display:grid; gap:var(--p-space-3);
+           grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); }
+  .sig { border:1px solid; border-radius:var(--p-radius-lg);
+          padding:var(--p-space-4); display:flex; align-items:center; gap:var(--p-space-2); }
+  .sig .ic { font-size:var(--p-font-size-h1); }
+  .sig .lb { font-weight:500; }
+  .sig code { margin-left:auto; background:transparent; color:inherit; }
+  .typo { padding:var(--p-space-2) 0; border-bottom:1px dashed var(--c-border-subtle);
+           display:flex; align-items:baseline; gap:var(--p-space-4); }
+  .typo span { color:var(--c-text-secondary); }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1 style="margin:0">PowerMCP 设计令牌预览</h1>
+  <button id="toggle">切换深色</button>
+</div>
+<p class="muted">
+  由 <code>tools/build_design_tokens.py</code> 从 <code>design/tokens.json</code> 生成 —— 勿手改。<br>
+  真源版本 1.0.0（2026-09-24）。
+  本页直接引用生成产物 <code>src/styles/tokens.css</code>，因此它绿 = 生成链是通的。
+</p>
+
+<h2>状态签名（5 态 × 色 + 图标 + 标签）</h2>
+<p class="muted">颜色<strong>不得</strong>单独承载信息 —— 每个状态必须同时含图标与文字（P2）。</p>
+<div class="sigs">
+    <div class="sig" style="background:var(--c-contract-satisfied-bg);border-color:var(--c-contract-satisfied-border);color:var(--c-contract-satisfied-fg)">
+      <span class="ic">✔</span>
+      <span class="lb">满足</span>
+      <code>satisfied</code>
+    </div>
+    <div class="sig" style="background:var(--c-contract-degraded-bg);border-color:var(--c-contract-degraded-border);color:var(--c-contract-degraded-fg)">
+      <span class="ic">▲</span>
+      <span class="lb">降级</span>
+      <code>degraded</code>
+    </div>
+    <div class="sig" style="background:var(--c-contract-violated-bg);border-color:var(--c-contract-violated-border);color:var(--c-contract-violated-fg)">
+      <span class="ic">✖</span>
+      <span class="lb">违反</span>
+      <code>violated</code>
+    </div>
+    <div class="sig" style="background:var(--c-contract-unknown-bg);border-color:var(--c-contract-unknown-border);color:var(--c-contract-unknown-fg)">
+      <span class="ic">?</span>
+      <span class="lb">未知</span>
+      <code>unknown</code>
+    </div>
+    <div class="sig" style="background:var(--c-contract-incident-bg);border-color:var(--c-contract-incident-border);color:var(--c-contract-incident-fg)">
+      <span class="ic">!</span>
+      <span class="lb">事故</span>
+      <code>incident</code>
+    </div>
+</div>
+
+<h2>语义色（组件只允许引用这一层）</h2>
+<p class="muted">原始层颜色<strong>不</strong>暴露为 CSS 变量 —— 否则深色主题失效（§3.1）。
+色块<strong>随主题实时变化</strong>；数值列左为浅色、右为深色（两者相同时只显示一个）。</p>
+  <h3>surface</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-surface-base)"></span><code>--c-surface-base</code><span class="val">#F7F8FA ／ #0E1116</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-surface-raised)"></span><code>--c-surface-raised</code><span class="val">#FFFFFF ／ #1A1F28</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-surface-sunken)"></span><code>--c-surface-sunken</code><span class="val">#EEF1F5 ／ #0A0D11</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-surface-overlay)"></span><code>--c-surface-overlay</code><span class="val">rgba(18, 22, 29, 0.45) ／ rgba(0, 0, 0, 0.60)</span></div>
+  </div>
+  <h3>text</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-text-primary)"></span><code>--c-text-primary</code><span class="val">#12161D ／ #EDF1F6</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-text-secondary)"></span><code>--c-text-secondary</code><span class="val">#333B48 ／ #D6DDE6</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-text-muted)"></span><code>--c-text-muted</code><span class="val">#6B7686 ／ #97A3B4</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-text-inverse)"></span><code>--c-text-inverse</code><span class="val">#FFFFFF ／ #0E1116</span></div>
+  </div>
+  <h3>border</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-border-subtle)"></span><code>--c-border-subtle</code><span class="val">#DDE3EA ／ #2C3441</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-border-default)"></span><code>--c-border-default</code><span class="val">#C3CCD8 ／ #3D4757</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-border-strong)"></span><code>--c-border-strong</code><span class="val">#97A3B4 ／ #6B7686</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-border-focus)"></span><code>--c-border-focus</code><span class="val">#2563EB ／ #60A5FA</span></div>
+  </div>
+  <h3>interactive</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-interactive-default)"></span><code>--c-interactive-default</code><span class="val">#2563EB ／ #60A5FA</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-interactive-hover)"></span><code>--c-interactive-hover</code><span class="val">#1D4ED8 ／ #7DB4FC</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-interactive-active)"></span><code>--c-interactive-active</code><span class="val">#1E40AF ／ #93C5FD</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-interactive-subtle)"></span><code>--c-interactive-subtle</code><span class="val">#EFF4FE ／ #16233A</span></div>
+  </div>
+  <h3>contract</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-contract-satisfied-bg)"></span><code>--c-contract-satisfied-bg</code><span class="val">#E8F5EC ／ #10291B</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-satisfied-border)"></span><code>--c-contract-satisfied-border</code><span class="val">#9BD3AE ／ #2F6B47</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-satisfied-fg)"></span><code>--c-contract-satisfied-fg</code><span class="val">#1B6B3A ／ #7BD9A0</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-degraded-bg)"></span><code>--c-contract-degraded-bg</code><span class="val">#FFF4E0 ／ #2E2410</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-degraded-border)"></span><code>--c-contract-degraded-border</code><span class="val">#F0C377 ／ #7A5A1E</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-degraded-fg)"></span><code>--c-contract-degraded-fg</code><span class="val">#8A5A00 ／ #F0C377</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-violated-bg)"></span><code>--c-contract-violated-bg</code><span class="val">#FDEBEC ／ #33151A</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-violated-border)"></span><code>--c-contract-violated-border</code><span class="val">#F0A3A8 ／ #7E2F38</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-violated-fg)"></span><code>--c-contract-violated-fg</code><span class="val">#A32A32 ／ #F39AA2</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-unknown-bg)"></span><code>--c-contract-unknown-bg</code><span class="val">#EEF1F5 ／ #1F242E</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-unknown-border)"></span><code>--c-contract-unknown-border</code><span class="val">#C3CCD8 ／ #3D4757</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-unknown-fg)"></span><code>--c-contract-unknown-fg</code><span class="val">#4A5464 ／ #B8C2CF</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-incident-bg)"></span><code>--c-contract-incident-bg</code><span class="val">#F3EEFB ／ #241A38</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-incident-border)"></span><code>--c-contract-incident-border</code><span class="val">#C4A8E8 ／ #7C3AED</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-contract-incident-fg)"></span><code>--c-contract-incident-fg</code><span class="val">#5B2C9E ／ #A78BFA</span></div>
+  </div>
+  <h3>code</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-code-bg)"></span><code>--c-code-bg</code><span class="val">#F4F6F9 ／ #14181F</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-code-fg)"></span><code>--c-code-fg</code><span class="val">#1F2530 ／ #D6DDE6</span></div>
+  </div>
+  <h3>chart</h3>
+  <div class="grid">
+      <div class="sw"><span class="chip" style="background:var(--c-chart-grid)"></span><code>--c-chart-grid</code><span class="val">#DDE3EA ／ #2C3441</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-axis)"></span><code>--c-chart-axis</code><span class="val">#6B7686</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-1)"></span><code>--c-chart-cat-1</code><span class="val">#2563EB ／ #60A5FA</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-2)"></span><code>--c-chart-cat-2</code><span class="val">#D97706 ／ #FBBF24</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-3)"></span><code>--c-chart-cat-3</code><span class="val">#059669 ／ #34D399</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-4)"></span><code>--c-chart-cat-4</code><span class="val">#7C3AED ／ #A78BFA</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-5)"></span><code>--c-chart-cat-5</code><span class="val">#DC2626 ／ #F87171</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-6)"></span><code>--c-chart-cat-6</code><span class="val">#0891B2 ／ #22D3EE</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-7)"></span><code>--c-chart-cat-7</code><span class="val">#DB2777 ／ #F472B6</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-8)"></span><code>--c-chart-cat-8</code><span class="val">#65A30D ／ #A3E635</span></div>
+      <div class="sw"><span class="chip" style="background:var(--c-chart-cat-9)"></span><code>--c-chart-cat-9</code><span class="val">#78716C ／ #A8A29E</span></div>
+  </div>
+
+<h2>间距</h2>
+<div class="grid">
+      <div class="sw"><code>--p-space-0</code><span class="val">0px</span></div>
+      <div class="sw"><code>--p-space-1</code><span class="val">4px</span></div>
+      <div class="sw"><code>--p-space-2</code><span class="val">8px</span></div>
+      <div class="sw"><code>--p-space-3</code><span class="val">12px</span></div>
+      <div class="sw"><code>--p-space-4</code><span class="val">16px</span></div>
+      <div class="sw"><code>--p-space-5</code><span class="val">20px</span></div>
+      <div class="sw"><code>--p-space-6</code><span class="val">24px</span></div>
+      <div class="sw"><code>--p-space-8</code><span class="val">32px</span></div>
+      <div class="sw"><code>--p-space-10</code><span class="val">40px</span></div>
+      <div class="sw"><code>--p-space-12</code><span class="val">48px</span></div>
+      <div class="sw"><code>--p-space-16</code><span class="val">64px</span></div>
+</div>
+
+<h2>圆角</h2>
+<div class="grid">
+      <div class="sw"><code>--p-radius-none</code><span class="val">0px</span></div>
+      <div class="sw"><code>--p-radius-sm</code><span class="val">4px</span></div>
+      <div class="sw"><code>--p-radius-md</code><span class="val">6px</span></div>
+      <div class="sw"><code>--p-radius-lg</code><span class="val">8px</span></div>
+      <div class="sw"><code>--p-radius-xl</code><span class="val">12px</span></div>
+      <div class="sw"><code>--p-radius-full</code><span class="val">9999px</span></div>
+</div>
+
+<h2>描边宽度</h2>
+<div class="grid">
+      <div class="sw"><code>--p-border-hairline</code><span class="val">1px</span></div>
+      <div class="sw"><code>--p-border-thick</code><span class="val">2px</span></div>
+</div>
+
+<h2>阴影</h2>
+<div class="grid">
+      <div class="sw"><span class="chip" style="box-shadow:0 1px 2px rgba(18, 22, 29, 0.06);background:var(--c-surface-raised)"></span><code>--p-shadow-sm</code><span class="val">0 1px 2px rgba(18, 22, 29, 0.06)</span></div>
+      <div class="sw"><span class="chip" style="box-shadow:0 4px 12px rgba(18, 22, 29, 0.10);background:var(--c-surface-raised)"></span><code>--p-shadow-md</code><span class="val">0 4px 12px rgba(18, 22, 29, 0.10)</span></div>
+      <div class="sw"><span class="chip" style="box-shadow:0 12px 32px rgba(18, 22, 29, 0.16);background:var(--c-surface-raised)"></span><code>--p-shadow-lg</code><span class="val">0 12px 32px rgba(18, 22, 29, 0.16)</span></div>
+</div>
+
+<h2>动效</h2>
+<div class="grid">
+      <div class="sw"><code>--p-duration-fast</code><span class="val">120ms</span></div>
+      <div class="sw"><code>--p-duration-base</code><span class="val">180ms</span></div>
+      <div class="sw"><code>--p-duration-slow</code><span class="val">280ms</span></div>
+      <div class="sw"><code>--p-easing-standard</code><span class="val">cubic-bezier(0.2, 0, 0, 1)</span></div>
+      <div class="sw"><code>--p-easing-enter</code><span class="val">cubic-bezier(0, 0, 0.2, 1)</span></div>
+      <div class="sw"><code>--p-easing-exit</code><span class="val">cubic-bezier(0.4, 0, 1, 1)</span></div>
+</div>
+
+<h2>层级</h2>
+<div class="grid">
+      <div class="sw"><code>--p-z-base</code><span class="val">0</span></div>
+      <div class="sw"><code>--p-z-sticky</code><span class="val">1100</span></div>
+      <div class="sw"><code>--p-z-dropdown</code><span class="val">1000</span></div>
+      <div class="sw"><code>--p-z-drawer</code><span class="val">1200</span></div>
+      <div class="sw"><code>--p-z-modal</code><span class="val">1300</span></div>
+      <div class="sw"><code>--p-z-toast</code><span class="val">1400</span></div>
+      <div class="sw"><code>--p-z-tooltip</code><span class="val">1500</span></div>
+</div>
+
+<h2>字号阶梯</h2>
+<div>
+      <div class="typo" style="font-size:24px"><code>--p-font-size-display</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:20px"><code>--p-font-size-h1</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:16px"><code>--p-font-size-h2</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:14px"><code>--p-font-size-body</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:13px"><code>--p-font-size-bodySm</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:12px"><code>--p-font-size-caption</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+      <div class="typo" style="font-size:13px"><code>--p-font-size-mono</code><span>142% (MVA 判据) · 12 (0-based) · Pandapower</span></div>
+</div>
+
+<script>
+  // 支持 file:// 下直接验证深色主题：preview.html#dark
+  if (location.hash === '#dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+  var btn = document.getElementById('toggle');
+  var sync = function () {
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = dark ? '切换浅色' : '切换深色';
+  };
+  btn.addEventListener('click', function () {
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+    sync();
+  });
+  sync();
+</script>
+</body>
+</html>

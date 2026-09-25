@@ -1,0 +1,152 @@
+/* 由 tools/build_design_tokens.py 从 design/tokens.json 生成 —— 勿手改 */
+/* 真源版本：1.0.0（2026-09-24） */
+
+/* 主题切换靠根元素的 data-theme 属性（light / dark），默认 light。
+   不跟随 prefers-color-scheme —— 本地工程工具应尊重用户的显式选择并记忆。 */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* 尺寸 / 字体 / 动效 / 层级 —— 两个主题下取值相同，故只定义一次 */
+  --p-space-0: 0px;
+  --p-space-1: 4px;
+  --p-space-2: 8px;
+  --p-space-3: 12px;
+  --p-space-4: 16px;
+  --p-space-5: 20px;
+  --p-space-6: 24px;
+  --p-space-8: 32px;
+  --p-space-10: 40px;
+  --p-space-12: 48px;
+  --p-space-16: 64px;
+  --p-radius-none: 0px;
+  --p-radius-sm: 4px;
+  --p-radius-md: 6px;
+  --p-radius-lg: 8px;
+  --p-radius-xl: 12px;
+  --p-radius-full: 9999px;
+  --p-font-size-display: 24px;
+  --p-font-size-h1: 20px;
+  --p-font-size-h2: 16px;
+  --p-font-size-body: 14px;
+  --p-font-size-bodySm: 13px;
+  --p-font-size-caption: 12px;
+  --p-font-size-mono: 13px;
+  --p-border-hairline: 1px;
+  --p-border-thick: 2px;
+  --p-font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", Roboto, sans-serif;
+  --p-font-mono: "JetBrains Mono", "Cascadia Code", Consolas, "SF Mono", "Liberation Mono", monospace;
+  --p-shadow-sm: 0 1px 2px rgba(18, 22, 29, 0.06);
+  --p-shadow-md: 0 4px 12px rgba(18, 22, 29, 0.10);
+  --p-shadow-lg: 0 12px 32px rgba(18, 22, 29, 0.16);
+  --p-duration-fast: 120ms;
+  --p-duration-base: 180ms;
+  --p-duration-slow: 280ms;
+  --p-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --p-easing-enter: cubic-bezier(0, 0, 0.2, 1);
+  --p-easing-exit: cubic-bezier(0.4, 0, 1, 1);
+  --p-z-base: 0;
+  --p-z-sticky: 1100;
+  --p-z-dropdown: 1000;
+  --p-z-drawer: 1200;
+  --p-z-modal: 1300;
+  --p-z-toast: 1400;
+  --p-z-tooltip: 1500;
+
+  /* 语义层（浅色）—— 组件只允许引用这一层的颜色 */
+  --c-surface-base: #F7F8FA;
+  --c-surface-raised: #FFFFFF;
+  --c-surface-sunken: #EEF1F5;
+  --c-surface-overlay: rgba(18, 22, 29, 0.45);
+  --c-text-primary: #12161D;
+  --c-text-secondary: #333B48;
+  --c-text-muted: #6B7686;
+  --c-text-inverse: #FFFFFF;
+  --c-border-subtle: #DDE3EA;
+  --c-border-default: #C3CCD8;
+  --c-border-strong: #97A3B4;
+  --c-border-focus: #2563EB;
+  --c-interactive-default: #2563EB;
+  --c-interactive-hover: #1D4ED8;
+  --c-interactive-active: #1E40AF;
+  --c-interactive-subtle: #EFF4FE;
+  --c-contract-satisfied-bg: #E8F5EC;
+  --c-contract-satisfied-border: #9BD3AE;
+  --c-contract-satisfied-fg: #1B6B3A;
+  --c-contract-degraded-bg: #FFF4E0;
+  --c-contract-degraded-border: #F0C377;
+  --c-contract-degraded-fg: #8A5A00;
+  --c-contract-violated-bg: #FDEBEC;
+  --c-contract-violated-border: #F0A3A8;
+  --c-contract-violated-fg: #A32A32;
+  --c-contract-unknown-bg: #EEF1F5;
+  --c-contract-unknown-border: #C3CCD8;
+  --c-contract-unknown-fg: #4A5464;
+  --c-contract-incident-bg: #F3EEFB;
+  --c-contract-incident-border: #C4A8E8;
+  --c-contract-incident-fg: #5B2C9E;
+  --c-code-bg: #F4F6F9;
+  --c-code-fg: #1F2530;
+  --c-chart-grid: #DDE3EA;
+  --c-chart-axis: #6B7686;
+  --c-chart-cat-1: #2563EB;
+  --c-chart-cat-2: #D97706;
+  --c-chart-cat-3: #059669;
+  --c-chart-cat-4: #7C3AED;
+  --c-chart-cat-5: #DC2626;
+  --c-chart-cat-6: #0891B2;
+  --c-chart-cat-7: #DB2777;
+  --c-chart-cat-8: #65A30D;
+  --c-chart-cat-9: #78716C;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* 只覆盖语义层颜色 —— 尺寸类无需重定义 */
+  --c-surface-base: #0E1116;
+  --c-surface-raised: #1A1F28;
+  --c-surface-sunken: #0A0D11;
+  --c-surface-overlay: rgba(0, 0, 0, 0.60);
+  --c-text-primary: #EDF1F6;
+  --c-text-secondary: #D6DDE6;
+  --c-text-muted: #97A3B4;
+  --c-text-inverse: #0E1116;
+  --c-border-subtle: #2C3441;
+  --c-border-default: #3D4757;
+  --c-border-strong: #6B7686;
+  --c-border-focus: #60A5FA;
+  --c-interactive-default: #60A5FA;
+  --c-interactive-hover: #7DB4FC;
+  --c-interactive-active: #93C5FD;
+  --c-interactive-subtle: #16233A;
+  --c-contract-satisfied-bg: #10291B;
+  --c-contract-satisfied-border: #2F6B47;
+  --c-contract-satisfied-fg: #7BD9A0;
+  --c-contract-degraded-bg: #2E2410;
+  --c-contract-degraded-border: #7A5A1E;
+  --c-contract-degraded-fg: #F0C377;
+  --c-contract-violated-bg: #33151A;
+  --c-contract-violated-border: #7E2F38;
+  --c-contract-violated-fg: #F39AA2;
+  --c-contract-unknown-bg: #1F242E;
+  --c-contract-unknown-border: #3D4757;
+  --c-contract-unknown-fg: #B8C2CF;
+  --c-contract-incident-bg: #241A38;
+  --c-contract-incident-border: #7C3AED;
+  --c-contract-incident-fg: #A78BFA;
+  --c-code-bg: #14181F;
+  --c-code-fg: #D6DDE6;
+  --c-chart-grid: #2C3441;
+  --c-chart-axis: #6B7686;
+  --c-chart-cat-1: #60A5FA;
+  --c-chart-cat-2: #FBBF24;
+  --c-chart-cat-3: #34D399;
+  --c-chart-cat-4: #A78BFA;
+  --c-chart-cat-5: #F87171;
+  --c-chart-cat-6: #22D3EE;
+  --c-chart-cat-7: #F472B6;
+  --c-chart-cat-8: #A3E635;
+  --c-chart-cat-9: #A8A29E;
+}
