@@ -23,10 +23,15 @@
   - ⚠️ 归档修正：`work/frontend-design/` 下的 `_v3.md` 是**过期**版本，docs 版才是权威（已另存 `_v3.1.md`）。
 - ★ **发现并修复：网关当时没有 LLM 层**（`llm`/`provider`/`openai` 在 `gateway/src/` **0 命中**）
   → 「对话分析」（主界面）没有后端。已交付 **P0-1**：`llm.py` + `agent.py` +
-  `POST /sessions/{sid}/chat`；测试 **181 → 235 passed**，变异 **18/18 全红**，`PowerMCP/` 0 行改动。
-- 下一步：**P0-2 网关端点**（`/environment` · `/skills` · `/cases*`）→ P0-3 内核骨架与模块脚手架
-  → 设计系统落地（**前置：UI 规范同步至 v2**）。
-- ⚠️ 本会话改动**尚未提交**（HEAD 仍为 `69b0960`）。
+  `POST /sessions/{sid}/chat`。
+- ✅ **P0-2a 已交付**：`GET /environment`（廉价检查，不拉起 server）+ `GET /skills`
+  （22 技能 + **Escalation triggers** —— v3 零覆盖的「研究方法」载体；健康度只报可计算信号，
+  整体如实标 `unknown`）。**独立复现了审计报告的三条结论**（ltspice 缺 escalation 表 / 无悬空引用 / 无孤儿手册）。
+- 测试：**181 → 285 passed, 1 deselected**；变异探针累计 **29/29 全红**（P0-1 18 条 + P0-2a 11 条）；
+  `PowerMCP/` 与 `PowerSkills/` 均 0 行改动。
+- 下一步：**P0-2b `/cases*`**（引入 case/project 新一级实体 + 存储决策 + PowerIO 解析）
+  → P0-3 内核骨架与模块脚手架 → 设计系统落地（**前置：UI 规范同步至 v2**）。
+- 提交：`84cbb66`（文档重定位）· `8786495`（P0-1）· `1b87182`（P0-2a）。
 
 ---
 

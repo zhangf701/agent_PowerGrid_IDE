@@ -107,6 +107,57 @@ note: 本会话做了两件事：① 前端方案**定位级重定位**（与论
 | 端到端 | `.superpowers/sdd/m4-chat-e2e.py` —— SSE 帧序列 / 契约 fail-closed / 总线 EVIDENCE / NDJSON 审计 四项全过 |
 | `PowerMCP/` | **0 行改动** ✓ |
 
+## 五之二、P0-2a 交付：环境就绪 + 技能手册（`GET /environment` · `GET /skills`）
+
+> 拆分理由：`/cases*` 要引入**新一级实体**（case/project）与存储决策，与这两个
+> **只读索引端点**不是一回事 → 归 P0-2b，本单元只做 P0-2a。
+
+### 新增文件
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `gateway/src/powermcp_gateway/skills.py` | 300 | 索引 `PowerSkills/**/SKILL.md`；解析 frontmatter / kind / Escalation triggers；可计算健康信号 |
+| `gateway/src/powermcp_gateway/environment.py` | 196 | **廉价**环境报告（不拉起任何 server） |
+| `api.py`（附加式 +31） | — | `GET /environment` · `GET /skills` |
+| `tests/test_skills.py` / `test_environment.py` / `test_api_p0_2.py` | 608 | 21 + 17 + 12 = **50 个新测试** |
+
+### 关键设计
+
+- **★ `GET /skills` 是 v4 相对 v3 最重要的补口**：实测 22 个技能（11 tool + 10 engineering + 1 meta），
+  10 个 tool skill 带 escalation 表。surge 有 7 条（`vm_pu < 0.95` → `voltage-violation-mitigation` 等）。
+- **★ 健康度只报可计算信号**，整体如实标 `unknown` —— **不转录人工审计结论**
+  （🔴3/🟠4/🟡1 是人工阅读得出的，硬编码会立刻过期且无法复核）。
+  三类信号：`escalation_missing` / `dangling_escalation` / `orphan_playbooks`。
+  **独立复现了审计报告的三条结论**：`escalation_missing=["ltspice"]`、无悬空引用、无孤儿手册。
+- **★ 环境报告刻意"廉价"**：不调用 `build_inventory`（那会真实拉起 server，秒级/个）。
+  挂载状态由 `GET /contracts/t0` 给出，该分工**写进响应的 `notes`**，避免前端以为漏了。
+  用一条**静态断言**（模块命名空间不得出现 `build_inventory`）把这条约束钉住。
+- **★ 凭据安全**：`llm.endpoint` 只给 `scheme://host`（userinfo / path / query 都可能夹带凭据）；
+  密钥只报 `api_key_set: bool`，**绝不回显值**。测试用 `json.dumps` **全文搜索**而非只查某字段。
+- **不引入 PyYAML**：只需 `name` / `description` 两个标量，按**第一个冒号**切分即可
+  （`description` 里含冒号是真实情况）。
+- **PowerSkills 不在场 → 200 + 空清单**，不是 500（两仓库可分开 clone）。
+- 两处「两个端点都报技能数」的不一致风险：`/environment` 的技能段**委托** `skills.build_report`，
+  并用测试断言两者一致（单一真源）。
+
+### ★ 变异探针逼出的一个真 bug
+
+M3 一开始**未变红**（假护栏）——我的测试夹具让"任意标题即结束 escalation 节"这一分支
+**不可达**（空行检查先命中）。深挖后发现真问题：节内一个 `### 子标题` 会让**整节被跳过**，
+该技能随即被**误报为「缺 escalation 表」**（一条假健康警报）。
+
+→ 修法：结束条件改为按**标题层级**判定（只有同级或更高级标题才结束本节），
+并补测试 `test_triggers_survive_a_subheading_inside_the_section`。修正后 M3 变红。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 测试 | **235 → 285 passed, 1 deselected**（+50），无回归 |
+| 变异探针 | **11/11 全部变红**（`m5-p02-mutation.py`） |
+| 端到端 | `m6-p02-e2e.py` —— 真实 app 打两个端点，断言廉价/不泄密/健康度 unknown/技能数一致 |
+| 上游 | `PowerMCP/` 与 `PowerSkills/` 均 **0 行改动** ✓ |
+
 ## 六、仍未做 / 下一步
 
 1. **《UI 设计规范》未同步至 v2** —— 已在 v4 §十四-1 声明「同步完成前，v1.2 与 v4 冲突处以 v4 为准」。
