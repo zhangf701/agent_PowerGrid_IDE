@@ -8,7 +8,16 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-25 — JOURNAL（**模块校验补强 G-7~G-10**）★ 最新
+### 🚩 2026-09-25 — JOURNAL（**G-1/G-2/G-4/G-5 落地**）★ 最新
+📄 [2026-09-25-g1-g5-wiring.md](2026-09-25-g1-g5-wiring.md)
+
+四项裁决落地：`sample_cases` / `columns_source` 清单字段 · checks 契约冻结（G-5）+ 执行引擎
+`POST /checks/run` · `/chat` 注入模块提示词（G-4 最小闭环）。测试 **447 → 487**；变异 3/3 全红；
+真实模块 E2E 通过。★ 绑定键不能叫 `on`（YAML 布尔陷阱）。
+
+---
+
+### 🚩 2026-09-25 — JOURNAL（**模块校验补强 G-7~G-10**）
 📄 [2026-09-25-module-g7-g10-hardening.md](2026-09-25-module-g7-g10-hardening.md)
 
 四条校验缺口修复：`tools` 前缀一致性（装配失败）· `maturity` 与内容一致（装配失败）·

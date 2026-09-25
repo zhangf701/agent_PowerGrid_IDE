@@ -48,28 +48,31 @@ PY
 | `requires.solvers` | ✅ | ❌ 无校验 | ❌ |
 | `tools` | ✅ | ✅ **前缀须被 `requires.servers` 覆盖（G-7）**；未知 server 告警（G-9） | ❌ 软收窄**未实装** |
 | `skills` | ✅ | ⚠️ 仅「是否存在」 | ❌ 技能手册未按模块过滤 |
+| `sample_cases` | ✅ | ⚠️ 仅类型（运行时数据，不做存在性校验） | ✅ `/modules` 展示（G-1） |
 | `entities` | ✅ | ✅ 文件必须存在 + 跨模块同名禁止 | ❌ 无实体存储 |
-| `result_tables` | ✅ | ✅ 同上 | ❌ 无结果表存储 / 渲染 |
-| `prompts` | ✅ | ✅ 文件必须存在 | ❌ **LLM 不读模块提示词** |
-| `checks` | ✅ | ✅ 文件必须存在 | ❌ **无执行引擎** |
+| `result_tables` | ✅ | ✅ 同上 + **`columns_source` 类型（G-2）** | ❌ 无结果表存储 / 渲染 |
+| `prompts` | ✅ | ✅ 文件必须存在 | ✅ **`/chat` 每轮并入 system 消息（G-4 最小闭环）** |
+| `checks` | ✅ | ✅ 文件必须存在 + **`result_table` 绑定（G-5）** | ✅ **`POST /checks/run` 执行引擎（G-4 最小闭环）** |
 | `exports` | ✅ | ✅ 文件必须存在 | ❌ **无渲染器** |
 | `slots` | ✅ | ⚠️ 未知槽位名告警（G-10；清单未冻结故不拒绝） | ❌ 前端未起步 |
 
-**一句话**：**清单层完备，校验层部分，行为层全部未做。**
-`/modules` 的 `summary` 会显示 `enabled: 2` —— **那不等于"这两个模块已经能干活了"**。
+**一句话**：**清单层完备，校验层基本齐备，行为层最小闭环**（prompts / checks 已接线；
+工具软收窄、技能过滤、结果表存储、exports 渲染、slots 注入仍未做）。
+`/modules` 的 `summary` 会显示 `enabled: 2` —— **那不等于"这两个模块已经能干活了"**，
+但 `/chat` 会读模块提示词、`POST /checks/run` 能跑模块自检了（2026-09-25 起）。
 
 ## 四、发现的扩展点缺口（10 条，含 4 条实测复现）
 
 > 复现脚本：`.superpowers/sdd/m15-module-gaps.py`（4 条校验缺口逐条实测）
 
-### 🔴 必须先裁决（影响 P1 的设计）
+### ✅ 已裁决并落地（2026-09-25，张老师四项裁决）
 
-| # | 缺口 | 影响 | 建议 |
-|---|---|---|---|
-| **G-4** | `prompts` / `checks` / `exports` **声明了但没有执行/加载/渲染** | 模块"装上了"却不产生任何行为；用户会误以为能用 | **P1 必须补**：`/chat` 加载模块提示词；实现 checks 执行引擎与 exports 渲染器 |
-| **G-5** | `checks` 的**契约未定义**：无 `ctx`（拿不到算例/契约快照/引擎状态）、severity 无结构化位置、**未绑定到具体结果表** | 现在写的 4 个 check 是按我提议的 `check(rows) -> list[str]` 写的，接线时很可能要改 | 接线前先定契约；建议 `check(ctx) -> list[Finding]`，并在清单里给 `checks[].on: <result_table_id>` |
-| **G-2** | `result_tables[].columns` 是**静态列**，表达不了「每引擎一列」的**动态列** | 跨引擎对比只能用**长格式**，界面要自己 pivot，并排比对可读性差（与 UI 规范 §5.2 的宽表视图不符） | 二选一：加 `columns_source`（列由数据决定）或**明确只支持长格式**并在 §5.2 改口径 |
-| **G-1** | **没有「默认算例」字段** | 新用户打开一个模块，不知道该从哪个算例开始；只能写在 README 里（界面读不到） | 加 `sample_cases: [...]`（指向算例库 id 或路径） |
+| # | 缺口 | 裁决与落地 |
+|---|---|---|
+| **G-1** | 没有「默认算例」字段 | ✅ 加 `sample_cases` 字段（指向算例库 id 或路径；运行时数据，装配期不做存在性校验）；两个真实模块已声明 `examples/data/case39.m` |
+| **G-2** | 静态列表达不了「每引擎一列」 | ✅ 加 `result_tables[].columns_source` 字段（值 = 展开维度列名，如 `engine`；pivot 渲染归内核）；字段已可用，内核渲染实现归 P1 |
+| **G-4** | prompts / checks / exports 声明了却无行为 | ✅ **最小闭环**：`/chat` 并入模块提示词 + `POST /checks/run` 执行引擎。exports 渲染器排后 |
+| **G-5** | checks 契约未定义 | ✅ 契约冻结第一版：`check(ctx) -> list[str] \| list[dict]`（ctx 含 rows/result_table/module_id/case/case_id）+ 模块级 `RULE_ID` / `SEVERITY`；`checks[].result_table` 绑定结果表（**绑定键不叫 `on`** —— YAML 1.1 把裸 `on` 解析成布尔值，绑定会静默失效）。契约全文见 `gateway/src/powermcp_gateway/checks.py` 模块 docstring |
 
 ### ✅ 校验缺口（4 条曾实测确认"拦不住"，**已于 2026-09-25 修复**）
 
@@ -103,7 +106,8 @@ PY
 
 ## 六、给下一步的建议
 
-1. **先裁决 G-1 / G-2 / G-4 / G-5**（4 条影响 P1 设计）—— 其余可并行。
+1. ~~先裁决 G-1 / G-2 / G-4 / G-5~~ → **✅ 已裁决并落地**（2026-09-25，见 §四）。
+   剩余：exports 渲染器、工具软收窄实装、技能按模块过滤、结果表存储与渲染（含 G-2 的 pivot）。
 2. **不要现在冻结清单 schema** —— G-4/G-5 一旦动手，`checks` / `prompts` / `exports`
    的形状很可能要改，届时已写的 4 个 check 需要同步。
 3. ~~G-7/G-8/G-9/G-10 是低成本的校验补强~~ → **✅ 已完成**（2026-09-25，提交 `95c849d`）。

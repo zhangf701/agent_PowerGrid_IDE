@@ -111,6 +111,33 @@
 | `exports` | 报告模板（按用户级规则：PDF 走 HTML + Chrome headless，**禁用 pandoc**） |
 | `datasets` | 数据集导出（面向科研 8 的机器学习标注数据集） |
 
+## 四之二、★ 2026-09-25 落地补记（G-1 / G-2 / G-4 / G-5，张老师四项裁决）
+
+两个真实模块验证暴露的 10 条缺口中，4 条设计级缺口已裁决并落地（余见 `modules/README.md` §四）：
+
+| # | 裁决 | 落地 |
+|---|---|---|
+| G-1 | 加「默认算例」字段 | 清单新增 `sample_cases`（指向算例库 id 或路径；运行时数据，**装配期不做存在性校验**） |
+| G-2 | 加「动态列」字段 | `result_tables[].columns_source: <展开维度列名>`（如 `engine` → 每引擎一列）；清单只声明意图，**pivot 渲染归内核**（实现归 P1） |
+| G-4 | prompts / checks 接线做**最小闭环** | ① `/chat` 每轮把**启用模块**的 prompts 并入 system 消息（全禁用 → 不注入，自证条件不破坏；总字符上限 8000 防撑爆上下文）；② 新增 `POST /checks/run` 执行引擎 |
+| G-5 | 冻结 checks 契约第一版 | 见下 |
+
+### G-5 契约第一版（全文见 `gateway/src/powermcp_gateway/checks.py` 模块 docstring）
+
+- check 文件导出 `check(ctx)` + 模块级 `RULE_ID`（非空 str）+ `SEVERITY`（info/warning/error）。
+- `ctx`：`rows`（绑定结果表的数据行）、`result_table`、`module_id`、`case`/`case_id`（可选，调用方自带）。
+  **有什么给什么，不假装拿得到引擎状态**。
+- 返回 `list[str]`（severity 用模块默认）或 `list[dict]`（`{message, severity?}`）；**空列表 = 通过**。
+- 清单绑定：`checks[].result_table: <本模块的 result_table id>`（引用未声明表 → **装配失败**）。
+  ★ **绑定键不叫提案里的 `on`** —— YAML 1.1 会把裸键 `on` 解析成布尔值 `True`
+  （本仓库在 `id: on` 上踩过并写进了诊断信息），`on: rt1` 实际是 `{True: 'rt1'}`，绑定会**静默失效**。
+- **未绑定的 check 被跳过并如实上报**（`skipped`），**绝不拿空行跑出虚假的"通过"**。
+- 单个 check 崩溃 → 记一条 `severity=error` 的 Finding，**不中断**同模块其它 check。
+- `ctx` 按鸭子类型使用：check 文件**不 import 内核内部模块**（硬约束 §六）。
+
+验证：**487 passed**（447 → 487，+40）；变异探针 3/3 全红（`.superpowers/sdd/m22-g45-mutation.py`）；
+真实模块端到端实测 `.superpowers/sdd/m21-checks-e2e.py`（脏数据报 4 条 / 干净数据 0 条且非跳过）。
+
 ---
 
 ## 五、模块清单格式（`module.yaml`）
