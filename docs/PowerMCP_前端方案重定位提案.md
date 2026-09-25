@@ -162,12 +162,13 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 
 ## 六、网关缺口（新增端点清单）
 
-| 端点 | 服务视图 | 优先级 |
-|---|---|---|
-| `GET /environment` | ① 环境就绪 | P1 |
-| `GET /skills` | ⑤ 技能手册 | P1 |
-| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 |
-| `POST /experiments` · `GET /experiments/{id}` · `/results` · `/export` | ④ 实验矩阵 | P2 |
+| 端点 | 服务视图 | 优先级 | 状态 |
+|---|---|---|---|
+| `GET /environment` | ① 环境就绪 | P1 | ✅ **2026-09-25 交付**（廉价检查，不拉起 server） |
+| `GET /skills` | ⑤ 技能手册 | P1 | ✅ **2026-09-25 交付**（22 技能 + escalation triggers） |
+| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | ⏳ 待做（**P0-2b** —— 引入新一级实体与存储决策） |
+| `POST /experiments` · `GET /experiments/{id}` · `/results` · `/export` | ④ 实验矩阵 | P2 | ⏳ 待做 |
+| `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
 **已交付可直接复用**：`POST /sessions` · `GET /sessions/{sid}/events` · `POST /sessions/{sid}/tools/call` · `GET /health` · `GET /servers` · `GET /contracts/t0`
 

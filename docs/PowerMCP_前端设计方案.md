@@ -352,7 +352,10 @@ diff     → 声明了但实现不接收的参数 = 静默忽略风险
 依据工程场景 2 的实测：PowerWorld Education 版**不注册 SimAuto COM 类**，装上 `esa` 也无法工作 ——
 `[SKIP] PowerWorld COM/License unavailable，缺失项：SimAuto COM 注册, esa 包`。
 
-**数据来源**：`GET /health`（已有，含 `audit`）· `GET /servers`（已有）· **新增** `GET /environment`（聚合）。
+**数据来源**：`GET /health`（已有，含 `audit`）· `GET /servers`（已有）·
+**`GET /environment`**（✅ 2026-09-25 交付 —— **只做廉价检查，不拉起任何 server**；
+server 挂载状态与依赖缺失由 `GET /contracts/t0` 给出，该分工写在响应的 `notes` 里）。
+⚠️ `llm.endpoint` 只给 `scheme://host`、密钥只报「是否设置」—— **绝不回显凭据**。
 
 ### 4.2 ② 算例库
 
@@ -459,7 +462,13 @@ diff     → 声明了但实现不接收的参数 = 静默忽略风险
 **审计范围局限**：仅覆盖 4 个在役 tool skill 的动态验证 + 层次 3 交叉一致性；
 其余 17 个 skill 的静态文档审计**未做**。
 
-**数据来源**：**新增** `GET /skills`（索引 `PowerSkills/**/SKILL.md` 的 name / description / 工具清单 / escalation 表）
+**数据来源**：**`GET /skills`**（✅ 2026-09-25 交付）—— 索引 `PowerSkills/**/SKILL.md` 的
+`name` / `description` / `kind`（tool / engineering / meta）/ **escalation triggers**（观测值 → 手册）。
+实测：**22 个技能**（11 tool + 10 engineering + 1 meta），10 个 tool skill 带 escalation 表。
+
+> ⚠️ **健康度只报可计算信号**（缺 escalation 表 / 悬空引用 / 孤儿手册），整体**如实标 `unknown`** ——
+> 不转录人工审计结论（那会立刻过期且无法复核），**界面必须显示该未知态**。
+> ⚠️ **尚未提供**：每个技能的「先暴露工具」清单（`## Default tool ladder`）—— 待后续。
 
 ---
 

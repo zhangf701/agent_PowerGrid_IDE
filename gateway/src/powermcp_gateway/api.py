@@ -21,11 +21,13 @@ from .agent import DEFAULT_MAX_ROUNDS, AgentEvent, run_turn
 from .audit import AuditLog
 from .config import GatewayConfig
 from .contracts.engine import T0Cache, evaluate_t0
+from .environment import build_report as build_environment_report
 from .events import format_sse
 from .inventory import build_inventory
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .proxy import CallOutcome, call_tool
 from .session import Channel, SessionStore
+from .skills import build_report as build_skills_report
 
 # P1 只挂开源引擎（方案 v3 已移除全部商业引擎）
 OPEN_SOURCE_SERVERS: tuple[str, ...] = (
@@ -474,6 +476,35 @@ def create_app(cfg: GatewayConfig | None = None, *,
     @app.get("/servers")
     async def servers() -> dict[str, list[str]]:
         return {"servers": list(OPEN_SOURCE_SERVERS)}
+
+    @app.get("/environment")
+    async def environment() -> dict:
+        """环境就绪报告（方案 v4 §4.1）。
+
+        ★ **廉价**：不拉起任何 MCP server —— server 挂载状态见 `GET /contracts/t0`。
+          这一分工写在响应体的 `notes` 里，避免前端以为是漏了。
+        ★ **绝不回显凭据**：`llm.endpoint` 只给 `scheme://host`，密钥只报"是否设置"。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return build_environment_report(c)
+
+    @app.get("/skills")
+    async def skills() -> dict:
+        """PowerSkills 技能索引 + Escalation triggers（方案 v4 §4.5）。
+
+        ★ 这是 v4 相对 v3 的**最重要新增**：21 个技能在 v3 中零覆盖，
+          而 escalation triggers（观测值 → 缓解手册）是「研究方法」最直接的载体。
+        ★ 健康度只报**可计算**信号（缺 escalation 表 / 悬空引用 / 孤儿手册），
+          整体标 `unknown` —— 不转录人工审计结论，也不让用户以为技能都可靠。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return build_skills_report(c)
 
     @app.get("/contracts/t0")
     async def contracts_t0() -> dict:
