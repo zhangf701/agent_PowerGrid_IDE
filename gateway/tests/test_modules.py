@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -16,7 +18,9 @@ from powermcp_gateway.modules import (
     CORE_VERSION,
     ENV_MODULES_ROOT,
     KIND_ENGINEERING,
+    PROMPT_SUPPLEMENT_LIMIT,
     ModuleError,
+    build_prompt_supplement,
     build_report,
     load_modules,
     modules_root,
@@ -495,3 +499,139 @@ def test_real_modules_pass_the_new_rules():
     assert rep.failures == (), f"真实模块被新规则判死：{rep.failures}"
     assert len(rep.modules) == 2
     assert not any("未知 server" in n or "未知槽位" in n for n in rep.notes)
+
+
+# ---------------------------------------------------------------- G-1 / G-2 / G-5 清单补口（2026-09-25 裁决）
+
+def test_g1_sample_cases_are_parsed(tmp_path):
+    """★ G-1：默认算例字段 —— 指向算例库 id 或路径，运行时数据，不做存在性校验。"""
+    p = _write(tmp_path, "demo", _MINIMAL + "\nsample_cases:\n  - examples/data/case39.m\n  - case39\n")
+    assert parse_manifest(p).sample_cases == ("examples/data/case39.m", "case39")
+
+
+def test_g1_sample_cases_single_string_is_accepted(tmp_path):
+    p = _write(tmp_path, "demo", _MINIMAL + "\nsample_cases: examples/data/case39.m\n")
+    assert parse_manifest(p).sample_cases == ("examples/data/case39.m",)
+
+
+def test_g1_sample_cases_bad_type_is_error(tmp_path):
+    p = _write(tmp_path, "demo", _MINIMAL + "\nsample_cases: 123\n")
+    with pytest.raises(ModuleError, match="sample_cases"):
+        parse_manifest(p)
+
+
+def _module_with_result_table(tmp_path, extra: str = "") -> Path:
+    """L1 模块：一个 result_table + 可选的 checks / columns_source 片段。"""
+    (tmp_path / "demo" / "schema").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "demo" / "schema" / "cols.json").write_text("[]", encoding="utf-8")
+    body = (
+        _MINIMAL.replace("maturity: L0", "maturity: L1")
+        + "\nresult_tables:\n  - id: rt1\n    columns: ./schema/cols.json\n" + extra
+    )
+    return _write(tmp_path, "demo", body)
+
+
+def test_g2_columns_source_is_kept_in_detail(tmp_path):
+    """★ G-2：columns_source 声明「列由数据决定」，值 = 展开维度列名；渲染在内核。"""
+    p = _module_with_result_table(tmp_path, "    columns_source: engine\n")
+    rt = parse_manifest(p).result_tables[0]
+    assert rt.detail["columns_source"] == "engine"
+
+
+def test_g2_columns_source_must_be_nonempty_string(tmp_path):
+    for bad in ("123", '""', "true"):
+        p = _module_with_result_table(tmp_path, f"    columns_source: {bad}\n")
+        with pytest.raises(ModuleError, match="columns_source"):
+            parse_manifest(p)
+
+
+def _check_file(tmp_path, name: str = "my_check.py", body: str | None = None) -> None:
+    d = tmp_path / "demo" / "checks"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(body or "", encoding="utf-8")
+
+
+def test_g5_check_result_table_must_reference_declared_table(tmp_path):
+    """★ G-5：`checks[].result_table` 引用未声明的 result_table → 装配失败（清单内部一致性）。"""
+    _check_file(tmp_path)
+    extra = (
+        "checks:\n  - id: c1\n    file: ./checks/my_check.py\n    result_table: 不存在的表\n"
+    )
+    p = _module_with_result_table(tmp_path, extra)
+    with pytest.raises(ModuleError, match="不是本模块已声明的 result_table"):
+        parse_manifest(p)
+
+
+def test_g5_check_result_table_declared_table_passes(tmp_path):
+    _check_file(tmp_path)
+    extra = "checks:\n  - id: c1\n    file: ./checks/my_check.py\n    result_table: rt1\n"
+    p = _module_with_result_table(tmp_path, extra)
+    ck = parse_manifest(p).checks[0]
+    assert ck.detail["result_table"] == "rt1"
+
+
+def test_g5_check_without_result_table_is_allowed(tmp_path):
+    """未绑定 check 允许声明（引擎会跳过并如实上报，见 test_checks.py）。"""
+    _check_file(tmp_path)
+    extra = "checks:\n  - id: c1\n    file: ./checks/my_check.py\n"
+    p = _module_with_result_table(tmp_path, extra)
+    assert parse_manifest(p).checks[0].detail.get("result_table") is None
+
+
+def test_g5_bare_on_key_is_boolean_trapped_so_we_use_result_table(tmp_path):
+    """★ 为什么绑定键不叫 `on`：YAML 1.1 把裸键 `on` 解析成 True —— 绑定会静默失效。"""
+    _check_file(tmp_path)
+    extra = "checks:\n  - id: c1\n    file: ./checks/my_check.py\n    on: rt1\n"
+    p = _module_with_result_table(tmp_path, extra)
+    ck = parse_manifest(p).checks[0]
+    assert True in ck.detail and "on" not in ck.detail   # `on` 已被 YAML 吃掉
+
+
+# ---------------------------------------------------------------- G-4：prompts 接线
+
+
+def _write_prompt_module(root, mid: str, *, enabled: bool = True,
+                         text: str = "请始终检查单位。") -> None:
+    d = root / mid
+    (d / "prompts").mkdir(parents=True, exist_ok=True)
+    (d / "prompts" / "p.md").write_text(text, encoding="utf-8")
+    enabled_line = "enabled: true" if enabled else "enabled: false"
+    (d / "module.yaml").write_text(
+        _MINIMAL + f"{enabled_line}\nprompts:\n  - id: p1\n    file: ./prompts/p.md\n",
+        encoding="utf-8",
+    )
+
+
+def test_prompt_supplement_collects_enabled_module_prompts(tmp_path, monkeypatch, cfg):
+    monkeypatch.setenv(ENV_MODULES_ROOT, str(tmp_path))
+    _write_prompt_module(tmp_path, "demo")
+    out = build_prompt_supplement(cfg)
+    assert "demo" in out and "请始终检查单位。" in out
+
+
+def test_prompt_supplement_empty_when_no_modules(tmp_path, monkeypatch, cfg):
+    monkeypatch.setenv(ENV_MODULES_ROOT, str(tmp_path / "不存在"))
+    assert build_prompt_supplement(cfg) == ""
+
+
+def test_prompt_supplement_excludes_disabled_modules(tmp_path, monkeypatch, cfg):
+    """★ 全部禁用 → 空串：内核行为与无模块时一致（自证条件不被提示词破坏）。"""
+    monkeypatch.setenv(ENV_MODULES_ROOT, str(tmp_path))
+    _write_prompt_module(tmp_path, "demo", enabled=False)
+    assert build_prompt_supplement(cfg) == ""
+
+
+def test_prompt_supplement_skips_unreadable_file(tmp_path, monkeypatch, cfg):
+    """装配后被删的提示词 → 跳过并 warning，不让一个坏文件打断补充。"""
+    monkeypatch.setenv(ENV_MODULES_ROOT, str(tmp_path))
+    _write_prompt_module(tmp_path, "demo")
+    (tmp_path / "demo" / "prompts" / "p.md").unlink()
+    assert build_prompt_supplement(cfg) == ""
+
+
+def test_prompt_supplement_truncates_overlong_input(tmp_path, monkeypatch, cfg):
+    monkeypatch.setenv(ENV_MODULES_ROOT, str(tmp_path))
+    _write_prompt_module(tmp_path, "demo", text="长" * (PROMPT_SUPPLEMENT_LIMIT + 100))
+    out = build_prompt_supplement(cfg)
+    assert len(out) <= PROMPT_SUPPLEMENT_LIMIT + 100   # 正文截断 + 截断说明
+    assert "截断" in out

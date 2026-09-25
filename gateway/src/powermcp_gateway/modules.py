@@ -90,6 +90,7 @@ class Module:
     solvers: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
+    sample_cases: tuple[str, ...] = ()  # G-1：默认算例（算例库 id 或路径，运行时数据，不做存在性校验）
     entities: tuple[Declaration, ...] = ()
     result_tables: tuple[Declaration, ...] = ()
     prompts: tuple[Declaration, ...] = ()
@@ -285,6 +286,31 @@ def parse_manifest(path: Path, *, core_version: str = CORE_VERSION) -> Module:
                 "工具引用了它就说明它被需要）。请补进 `requires.servers`。"
             )
 
+    # ---- G-2：`result_tables[].columns_source` 必须是非空字符串 ----
+    # 语义（2026-09-25 张老师裁决）：声明后该表的列由**数据**决定（长表 → 内核 pivot 成宽表），
+    # 值是「哪一列作为展开维度」（如 `engine` → 每引擎一列）。渲染在内核，清单只声明意图。
+    for rt in result_tables:
+        cs = rt.detail.get("columns_source")
+        if cs is not None and (not isinstance(cs, str) or not cs.strip()):
+            raise ModuleError(
+                f"`result_tables.{rt.id}.columns_source` 必须是非空字符串"
+                f"（展开维度列名），收到 {cs!r}"
+            )
+
+    # ---- G-5：`checks[].result_table` 必须指向**本模块已声明**的 result_table ----
+    # 绑定键是 `result_table` 而不是提案里的 `on` —— ★ YAML 1.1 会把裸键 `on` 解析成
+    # 布尔值 True（本仓库在 `id: on` 上踩过并写进了诊断信息），`on: rt1` 实际拿到
+    # {True: 'rt1'}，绑定会**静默失效**。`result_table` 无此坑且自解释。
+    # 尺度：清单内部一致性 → **装配失败**（引用了不存在的表 = 清单错）。
+    table_ids = {rt.id for rt in result_tables}
+    for ck in checks:
+        on = ck.detail.get("result_table")
+        if on is not None and on not in table_ids:
+            raise ModuleError(
+                f"`checks.{ck.id}.result_table`（{on!r}）不是本模块已声明的 result_table id"
+                f"（已知：{sorted(table_ids) or '无'}）—— check 必须绑定到本模块的结果表"
+            )
+
     # ---- G-8：`maturity` 声明与实际内容不符 ----
     # 尺度同上：声明不准 = 清单错，故**装配失败**。
     if maturity == "L0" and (entities or result_tables or slots):
@@ -310,6 +336,7 @@ def parse_manifest(path: Path, *, core_version: str = CORE_VERSION) -> Module:
         solvers=_as_str_list(requires.get("solvers"), "requires.solvers"),
         tools=tools,
         skills=_as_str_list(raw.get("skills"), "skills"),
+        sample_cases=_as_str_list(raw.get("sample_cases"), "sample_cases"),
         entities=entities,
         result_tables=result_tables,
         prompts=prompts,
@@ -466,6 +493,64 @@ def _count_by(modules: tuple[Module, ...], attr: str) -> dict[str, int]:
     return out
 
 
+# ---------------------------------------------------------------- G-4：prompts 接线
+
+#: 模块提示词拼接的总字符上限 —— 超出即截断（防少数模块撑爆 LLM 上下文）。
+PROMPT_SUPPLEMENT_LIMIT = 8000
+
+
+def build_prompt_supplement(cfg: GatewayConfig) -> str:
+    """收集**启用模块**的 prompts 文件，拼成可并入 system 消息的文本。
+
+    ★ 这是 G-4 的最小闭环一半：此前「模块声明了 prompts 但 LLM 不读」——
+      装配成功 ≠ 能干活。现在 `/chat` 每轮把它并入 system 消息，
+      模块提示词才真正进入对话（仅限**启用**的模块；全禁用 → 返回空串，
+      内核行为与无模块时完全一致 —— 自证条件不被破坏）。
+
+    - 文件在装配期已校验存在（装配失败尺度），但读取仍可能失败（如装配后被删）：
+      **跳过该文件并 warning**，不让一个坏文件打断整个补充。
+    - 超过 `PROMPT_SUPPLEMENT_LIMIT` 字符即截断，并在文末注明「已截断」。
+    """
+    root = modules_root(cfg)
+    rep = load_modules(root)
+    sections: list[str] = []
+    total = 0
+    for mod in rep.modules:
+        if not mod.enabled or not mod.prompts:
+            continue
+        base = root / mod.path
+        for decl in mod.prompts:
+            ref = decl.detail.get("file")
+            if not isinstance(ref, str) or not ref.strip():
+                continue
+            target = base / ref
+            try:
+                text = target.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logger.warning("模块 %s 的提示词 %s 读取失败，已跳过：%s",
+                               mod.id, ref, exc)
+                continue
+            if not text:
+                continue
+            header = f"## 模块提示词：{mod.name}（{mod.id} / {decl.id}）"
+            section = f"{header}\n\n{text}\n"
+            sections.append(section)
+            total += len(section)
+            if total >= PROMPT_SUPPLEMENT_LIMIT:
+                break
+        if total >= PROMPT_SUPPLEMENT_LIMIT:
+            break
+    if not sections:
+        return ""
+    joined = "\n".join(sections)
+    if total >= PROMPT_SUPPLEMENT_LIMIT and len(joined) > PROMPT_SUPPLEMENT_LIMIT:
+        joined = joined[:PROMPT_SUPPLEMENT_LIMIT] + (
+            "\n\n（模块提示词超长，已在 "
+            f"{PROMPT_SUPPLEMENT_LIMIT} 字符处截断）"
+        )
+    return joined.strip()
+
+
 # ---------------------------------------------------------------- 脚手架
 
 _TEMPLATE_MANIFEST = """\
@@ -494,6 +579,11 @@ tools: []
 skills: []
 #   - contingency-mitigation
 
+# 默认算例（G-1，2026-09-25 裁决）：新用户「从这个算例开始」。
+# 指向算例库 id 或路径；运行时数据，装配期**不做**存在性校验。
+sample_cases: []
+#   - examples/data/case39.m
+
 # —— 以下为 L1+ 才需要填；填了就必须给出对应文件（否则装配失败）——
 # entities:
 #   - id: my_entity
@@ -502,6 +592,7 @@ skills: []
 #   - id: my_results
 #     columns: ./schema/my_columns.json
 #     metrics: [count]
+#     # columns_source: engine   # G-2（2026-09-25 裁决）：列由数据决定（每引擎一列），内核渲染时 pivot
 
 # prompts:
 #   - id: my-prompt
@@ -509,6 +600,8 @@ skills: []
 # checks:
 #   - id: my-check
 #     file: ./checks/my_check.py
+#     # result_table: my_results   # G-5：绑定到本模块的 result_table（未绑定的 check 会被引擎跳过并如实上报）
+#     #                             # ⚠️ 绑定键不叫 `on` —— YAML 1.1 把裸 `on` 解析成布尔值，绑定会静默失效
 # exports:
 #   - id: my-report
 #     template: ./templates/my_report.md

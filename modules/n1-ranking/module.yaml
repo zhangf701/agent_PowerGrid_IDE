@@ -33,6 +33,10 @@ skills:
   - thermal-overload-mitigation
 
 # —— L1：实体与结果表 ——
+# 默认算例（G-1，2026-09-25 裁决）：指向仓库内算例，新用户从这里开始
+sample_cases:
+  - examples/data/case39.m
+
 entities:
   - id: n1_contingency_set
     schema: ./schema/contingency_set.json
@@ -49,8 +53,10 @@ prompts:
 checks:
   - id: islanding-without-location
     file: ./checks/islanding_without_location.py
+    result_table: n1_results
   - id: unit-with-criterion
     file: ./checks/unit_with_criterion.py
+    result_table: n1_results
 
 exports:
   - id: n1-report

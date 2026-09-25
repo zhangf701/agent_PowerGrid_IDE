@@ -4,7 +4,9 @@
   实测缺陷 —— 字面键比对拿错物理元件，**首次误报 0.068 pu**；
   跨引擎编号约定不一致会把偏差**放大 3.1 亿倍**。
 
-⚠️ 契约尚未冻结（见 n1-ranking/checks 的同名说明）。
+★ **契约已冻结**（2026-09-25，G-5 最小闭环）：`check(ctx) -> list[str] | list[dict]`，
+  `ctx.rows` 为绑定结果表的数据行（清单 `checks[].result_table`）；空列表 = 通过。
+  执行引擎：`gateway/src/powermcp_gateway/checks.py`。
 
 自测：`python modules/cross-engine-consistency/checks/identifier_convention_shown.py`
 """
@@ -17,8 +19,12 @@ SEVERITY = "error"
 ALLOWED = ("0-based", "1-based")
 
 
-def check(rows: list[dict]) -> list[str]:
-    """含 `engine` 的行必须给出该引擎的编号约定，且取值合法。"""
+def check(ctx) -> list[str]:
+    """含 `engine` 的行必须给出该引擎的编号约定，且取值合法。
+
+    ctx：执行引擎提供的上下文（鸭子类型，本文件只读 `ctx.rows`，不 import 内核）。
+    """
+    rows: list[dict] = ctx.rows
     problems: list[str] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -43,6 +49,7 @@ def check(rows: list[dict]) -> list[str]:
 
 if __name__ == "__main__":
     import sys
+    import types
 
     cases = [
         ([{"engine": "pypsa", "identifier_convention": "1-based"}], 0, "合规"),
@@ -53,7 +60,9 @@ if __name__ == "__main__":
     ]
     bad = 0
     for rows, want, label in cases:
-        got = len(check(rows))
+        ctx = types.SimpleNamespace(rows=rows, result_table="delta_results",
+                                    module_id="cross-engine-consistency")
+        got = len(check(ctx))
         ok = got == want
         bad += not ok
         print(f"  {'✓' if ok else '✗'} {label}: 期望 {want} 实际 {got}")

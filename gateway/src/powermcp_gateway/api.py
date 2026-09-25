@@ -37,11 +37,13 @@ from .case_ir import (
     save_artifact,
 )
 from .config import GatewayConfig
+from .checks import run_checks as run_module_checks_engine
 from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
 from .events import format_sse
 from .inventory import build_inventory
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
+from .modules import build_prompt_supplement
 from .modules import build_report as build_modules_report
 from .proxy import CallOutcome, call_tool
 from .session import Channel, SessionStore
@@ -450,8 +452,30 @@ def register_session_routes(app: FastAPI) -> None:
                     get_schema=lambda s, t: schema_by.get((s, t), {}),
                 )
 
+            # ★ G-4（prompts 接线，2026-09-25）：把**启用模块**的提示词并入 system 消息 ——
+            #   此前「模块声明了 prompts 但 LLM 不读」，装配成功 ≠ 能干活。
+            #   全部模块禁用 → 空串 → 不注入，内核行为与无模块时一致（自证条件不被破坏）。
+            #   放在流内构建前、且**不回传给客户端**（客户端历史仍是它自己的，不混入内核内容）。
+            convo = list(messages)
+            try:
+                supplement = build_prompt_supplement(_cfg())
+            except Exception as exc:
+                # 提示词收集失败**不阻断对话**（fail-loud 到 notice），但必须说出来
+                supplement = ""
+                yield _chat_sse("notice", {
+                    "detail": f"模块提示词收集失败，本轮未注入：{exc}"[:400],
+                })
+            if supplement:
+                convo.insert(0, ChatMessage(
+                    role="system",
+                    content=(
+                        "以下是当前启用的选题模块提供的领域提示词"
+                        "（来自模块 prompts，非内核内置）：\n\n" + supplement
+                    ),
+                ))
+
             async for ev in run_turn(
-                provider, messages, specs=inv.tools,
+                provider, convo, specs=inv.tools,
                 execute=execute, max_rounds=max_rounds,
             ):
                 if ev.kind == "final":
@@ -746,6 +770,56 @@ def register_case_routes(app: FastAPI) -> None:
         }
 
 
+def register_check_routes(app: FastAPI) -> None:
+    """模块 checks 执行端点（G-4 最小闭环 + G-5 契约，见 `checks.py` 模块 docstring）。"""
+
+    @app.post("/checks/run")
+    async def checks_run(payload: dict):
+        """跑一个模块的全部 checks（G-5：`check(ctx) -> list[str|dict]`）。
+
+        请求体：
+          - `module_id`（必填，str）
+          - `rows`（必填，`{result_table_id: [行, ...]}`）—— 结果表存储尚未建成，
+            行由**调用方**提供（如对话工具结果的落表、将来的实验引擎）；
+          - `case` / `case_id`（可选）—— 原样进 ctx，供 check 做算例级判定。
+
+        错误映射：400 请求体非法 / 404 模块不存在或装配失败 / 409 模块已禁用 / 503 配置失败。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        if not isinstance(payload, dict):
+            return JSONResponse(status_code=400, content={"detail": "请求体必须是 JSON 对象"})
+        module_id = payload.get("module_id")
+        if not isinstance(module_id, str) or not module_id.strip():
+            return JSONResponse(status_code=400, content={"detail": "缺少非空 `module_id`"})
+        rows_by_table = payload.get("rows")
+        if not isinstance(rows_by_table, dict) or not all(
+            isinstance(k, str) and isinstance(v, list) for k, v in rows_by_table.items()
+        ):
+            return JSONResponse(status_code=400, content={
+                "detail": "`rows` 必须是 `{result_table_id: [行, ...]}`（键为表 id，值为行数组）",
+            })
+        case = payload.get("case")
+        if case is not None and not isinstance(case, dict):
+            return JSONResponse(status_code=400, content={"detail": "`case` 必须是对象或 null"})
+        case_id = payload.get("case_id")
+        if case_id is not None and not isinstance(case_id, str):
+            return JSONResponse(status_code=400, content={"detail": "`case_id` 必须是字符串或 null"})
+
+        try:
+            return run_module_checks_engine(
+                c, module_id=module_id.strip(), rows_by_table=rows_by_table,
+                case=case, case_id=case_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 def create_app(cfg: GatewayConfig | None = None, *,
                provider: OpenAICompatProvider | None = None) -> FastAPI:
     app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
@@ -839,6 +913,7 @@ def create_app(cfg: GatewayConfig | None = None, *,
 
     register_session_routes(app)
     register_case_routes(app)
+    register_check_routes(app)
     _mount_ui(app)
     return app
 

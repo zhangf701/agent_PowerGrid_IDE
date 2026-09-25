@@ -122,9 +122,20 @@ def _detail(resp) -> dict:
     return json.loads(resp.body.decode())
 
 
-async def _setup(monkeypatch, provider, tools=(), failures=(), servers=None):
+async def _setup(monkeypatch, provider, tools=(), failures=(), servers=None,
+                 modules_root=None):
     seen = _patch_inventory(monkeypatch, tools, failures)
     _patch_dispatch(monkeypatch)
+    # ★ 把模块根指到**空目录**，隔离本仓库真实 `modules/` 的泄漏 ——
+    #   否则"启用了模块 → 注入提示词"会改变所有 chat 测试的消息序列假设。
+    #   需要真实模块的测试用 `modules_root=` 显式传入。
+    import tempfile
+
+    from powermcp_gateway.modules import ENV_MODULES_ROOT
+
+    if modules_root is None:
+        modules_root = tempfile.mkdtemp(prefix="pwmods_empty_")
+    monkeypatch.setenv(ENV_MODULES_ROOT, modules_root)
     app = create_app(cfg=GatewayConfig.discover(), provider=provider)
     sid = await _new_session(app, servers)
     return app, sid, seen
@@ -343,3 +354,43 @@ async def test_multi_turn_history_is_accepted(monkeypatch):
     sent = provider.calls[0]["messages"]
     assert [m.role for m in sent] == ["system", "user", "assistant", "user"]
     assert sent[0].content == "你是电力系统助手"
+
+
+# ---------------------------------------------------------------- G-4：模块提示词注入
+
+
+def _write_prompt_module(root, text: str = "请始终检查单位与判据。") -> None:
+    d = root / "demo-mod"
+    (d / "prompts").mkdir(parents=True)
+    (d / "prompts" / "p.md").write_text(text, encoding="utf-8")
+    (d / "module.yaml").write_text(
+        "id: demo-mod\nname: 演示\nversion: 0.1.0\nkind: research\nmaturity: L0\n"
+        "prompts:\n  - id: p1\n    file: ./prompts/p.md\n",
+        encoding="utf-8",
+    )
+
+
+async def test_module_prompts_are_injected_as_system_message(monkeypatch, tmp_path):
+    """★ G-4 最小闭环：启用模块的 prompts 进入 LLM 的 system 消息。"""
+    from powermcp_gateway.modules import ENV_MODULES_ROOT
+
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    _write_prompt_module(mods)          # 助手内部会拼 `demo-mod` 目录名
+    provider = FakeProvider([[Chunk(text="好的")]])
+    app, sid, _ = await _setup(monkeypatch, provider, modules_root=str(mods))
+    events = _events(await _read(await _call(app, sid, {"message": "hi"})))
+    assert "final" in _kinds(events)
+    sent = provider.calls[0]["messages"]
+    assert sent[0].role == "system"
+    assert "请始终检查单位与判据。" in sent[0].content
+    assert sent[1].role == "user" and sent[1].content == "hi"
+
+
+async def test_no_modules_means_no_injection(monkeypatch, tmp_path):
+    """★ 自证条件：无模块时不注入任何 system 消息 —— 内核行为与无模块时一致。"""
+    provider = FakeProvider([[Chunk(text="好的")]])
+    app, sid, _ = await _setup(monkeypatch, provider)   # 默认空模块根
+    await _read(await _call(app, sid, {"message": "hi"}))
+    sent = provider.calls[0]["messages"]
+    assert [m.role for m in sent] == ["user"]

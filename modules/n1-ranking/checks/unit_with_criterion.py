@@ -4,7 +4,9 @@
   本选题的结果表里，负载率必须带单位与判据 —— 实测缺陷是
   **用 MW 判据会把 142% 看成 98%**。
 
-⚠️ 契约尚未冻结（见同目录 `islanding_without_location.py` 的说明）。
+★ **契约已冻结**（2026-09-25，G-5 最小闭环）：`check(ctx) -> list[str] | list[dict]`，
+  `ctx.rows` 为绑定结果表的数据行（清单 `checks[].result_table`）；空列表 = 通过。
+  执行引擎：`gateway/src/powermcp_gateway/checks.py`。
 
 自测：`python modules/n1-ranking/checks/unit_with_criterion.py`
 """
@@ -21,8 +23,12 @@ QUANTITY_KEYS = ("loading_percent", "flow_mw")
 CRITERION_REQUIRED = ("loading_percent",)
 
 
-def check(rows: list[dict]) -> list[str]:
-    """quantity 列必须带 `unit`，`loading_percent` 还必须带 `criterion`。"""
+def check(ctx) -> list[str]:
+    """quantity 列必须带 `unit`，`loading_percent` 还必须带 `criterion`。
+
+    ctx：执行引擎提供的上下文（鸭子类型，本文件只读 `ctx.rows`，不 import 内核）。
+    """
+    rows: list[dict] = ctx.rows
     problems: list[str] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -50,6 +56,7 @@ def check(rows: list[dict]) -> list[str]:
 
 if __name__ == "__main__":
     import sys
+    import types
 
     good = {"loading_percent": {"value": 161.84, "unit": "%", "criterion": "MVA 判据"}}
     no_unit = {"loading_percent": {"value": 161.84, "criterion": "MVA 判据"}}
@@ -58,7 +65,9 @@ if __name__ == "__main__":
     cases = [(good, 0), (no_unit, 1), (no_crit, 1), (bare, 1)]
     bad = 0
     for row, want in cases:
-        got = len(check([row]))
+        ctx = types.SimpleNamespace(rows=[row], result_table="n1_results",
+                                    module_id="n1-ranking")
+        got = len(check(ctx))
         ok = got == want
         bad += not ok
         print(f"  {'✓' if ok else '✗'} {str(row)[:56]:58s} 期望 {want} 实际 {got}")

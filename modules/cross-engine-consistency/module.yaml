@@ -45,6 +45,10 @@ skills:
   - pypsa
   - surge
 
+# 默认算例（G-1，2026-09-25 裁决）：指向仓库内算例，新用户从这里开始
+sample_cases:
+  - examples/data/case39.m
+
 entities:
   - id: consistency_run
     schema: ./schema/consistency_run.json
@@ -61,8 +65,10 @@ prompts:
 checks:
   - id: identifier-convention-shown
     file: ./checks/identifier_convention_shown.py
+    result_table: delta_results
   - id: delta-must-be-shown
     file: ./checks/delta_must_be_shown.py
+    result_table: delta_results
 
 exports:
   - id: consistency-report

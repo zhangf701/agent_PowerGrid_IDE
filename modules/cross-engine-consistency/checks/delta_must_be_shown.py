@@ -3,7 +3,9 @@
 ★ 与契约层无关，管**领域正确性**：跨引擎比对若只给「一致 / 不一致」而不给 Δ，
   读者无法判断"差多少算一致"。实测参考量级：Δ = 6.98e−11 pu（机器精度）。
 
-⚠️ 契约尚未冻结（见 n1-ranking/checks 的同名说明）。
+★ **契约已冻结**（2026-09-25，G-5 最小闭环）：`check(ctx) -> list[str] | list[dict]`，
+  `ctx.rows` 为绑定结果表的数据行（清单 `checks[].result_table`）；空列表 = 通过。
+  执行引擎：`gateway/src/powermcp_gateway/checks.py`。
 
 自测：`python modules/cross-engine-consistency/checks/delta_must_be_shown.py`
 """
@@ -14,8 +16,12 @@ RULE_ID = "delta-must-be-shown"
 SEVERITY = "error"
 
 
-def check(rows: list[dict]) -> list[str]:
-    """同一 `metric` 若出现在多个引擎行里，**每行都必须给 `delta`**。"""
+def check(ctx) -> list[str]:
+    """同一 `metric` 若出现在多个引擎行里，**每行都必须给 `delta`**。
+
+    ctx：执行引擎提供的上下文（鸭子类型，本文件只读 `ctx.rows`，不 import 内核）。
+    """
+    rows: list[dict] = ctx.rows
     seen: dict[str, list[int]] = {}
     for i, row in enumerate(rows):
         if isinstance(row, dict) and row.get("metric"):
@@ -36,6 +42,7 @@ def check(rows: list[dict]) -> list[str]:
 
 if __name__ == "__main__":
     import sys
+    import types
 
     ok_rows = [
         {"metric": "min_vm_pu", "engine": "pandapower", "delta": {"value": 7e-11, "unit": "pu"}},
@@ -50,7 +57,9 @@ if __name__ == "__main__":
              (single, 0, "单引擎，不适用")]
     bad = 0
     for rows, want, label in cases:
-        got = len(check(rows))
+        ctx = types.SimpleNamespace(rows=rows, result_table="delta_results",
+                                    module_id="cross-engine-consistency")
+        got = len(check(ctx))
         ok = got == want
         bad += not ok
         print(f"  {'✓' if ok else '✗'} {label}: 期望 {want} 实际 {got}")

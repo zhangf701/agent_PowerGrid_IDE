@@ -1,11 +1,8 @@
 """领域自检规则：Islanding 类型的越限必须单独标注。
 
-⚠️ **契约尚未冻结**：本模块声明了 `checks`，但网关**还没有执行引擎**
-（`modules.py` 只校验文件存在，不加载也不调用）。
-本文件按下面这个**提议的**契约书写，接线时若调整，需同步改这里：
-
-    check(rows: list[dict]) -> list[str]
-        返回问题描述列表；**空列表 = 通过**。
+★ **契约已冻结**（2026-09-25，G-5 最小闭环）：`check(ctx) -> list[str] | list[dict]`。
+  `ctx.rows` 是绑定结果表（清单 `checks[].result_table`）的数据行；**空列表 = 通过**，
+  也可返回 `{message, severity?}` 字典列表。执行引擎：`gateway/src/powermcp_gateway/checks.py`。
 
 之所以先写实：接线时能立刻发现契约是否够用（例如是否需要 ctx / severity / 定位信息）。
 
@@ -24,12 +21,15 @@ SEVERITY = "warning"
 ISLAND_FLAG = "is_islanding"
 
 
-def check(rows: list[dict]) -> list[str]:
+def check(ctx) -> list[str]:
     """孤岛行必须带标记 —— 否则会被误当成「元件越限」。
 
     规则：**既没有越限元件、又没有孤岛标记**的行即为问题。
     （有元件名 = 正常越限；无元件名 + 有孤岛标记 = 已知的孤岛情形。）
+
+    ctx：执行引擎提供的上下文（鸭子类型，本文件只读 `ctx.rows`，不 import 内核）。
     """
+    rows: list[dict] = ctx.rows
     problems: list[str] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -46,6 +46,7 @@ def check(rows: list[dict]) -> list[str]:
 
 if __name__ == "__main__":
     import sys
+    import types
 
     cases = [
         ([{"violating_element": "branch_26", "is_islanding": False}], 0, "正常越限"),
@@ -56,7 +57,9 @@ if __name__ == "__main__":
     ]
     bad = 0
     for rows, want, label in cases:
-        got = len(check(rows))
+        ctx = types.SimpleNamespace(rows=rows, result_table="n1_results",
+                                    module_id="n1-ranking")
+        got = len(check(ctx))
         ok = got == want
         bad += not ok
         print(f"  {'✓' if ok else '✗'} {label}: 期望 {want} 条问题，实际 {got}")
