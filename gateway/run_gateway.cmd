@@ -1,30 +1,28 @@
 @echo off
+setlocal
 rem ============================================================
- rem 网关启动脚本（自用，2026-09-25）
-rem ★ 路径围笼：POWERIO_MCP_ALLOWED_ROOTS 允许 powerio server 读项目内算例
-rem   （examples/data/ 与 GridData/MatpowerData/）。
-rem   实测证据：.superpowers/sdd/m20-allowed-roots.py
-rem     - 允许根=项目根 → case30.m 解析成功（51215 字符）
-rem     - 允许根不含算例 → is_error=True（围笼确实在拦）
-rem   注意：MCP SDK 只继承白名单环境变量，此变量必须**显式设置**才会传给子进程。
-rem
-rem LLM 配置：密钥不进代码 —— 请在系统环境变量里设 POWERMCP_LLM_API_KEY，
-rem 或运行前 set POWERMCP_LLM_API_KEY=sk-xxx（本脚本不会打印任何密钥）。
+rem PowerMCP gateway launcher (self-use, 2026-09-25).
+rem - POWERIO_MCP_ALLOWED_ROOTS: lets the powerio server read
+rem   cases under the project (examples/data + GridData).
+rem - POWERMCP_SESSION_POOL=1: persistent per-session server
+rem   connections (stateful workflows, T6-M5 fix).
+rem - LLM key is auto-mapped from DEEPSEEK_API_KEY if present.
+rem   Keys are never printed or written to disk.
+rem NOTE: keep this file ASCII + CRLF (cmd.exe parses UTF-8/LF badly).
 rem ============================================================
 setlocal
 for %%i in ("%~dp0..") do set "POWERMCP_ROOT=%%~fi"
 set "POWERIO_MCP_ALLOWED_ROOTS=%POWERMCP_ROOT%"
-rem ★ 子项目 4：会话级持久 server 连接池（有状态工作流的前提，T6-M5 根治）
 set "POWERMCP_SESSION_POOL=1"
-
 if not defined POWERMCP_LLM_BASE_URL set "POWERMCP_LLM_BASE_URL=https://api.deepseek.com"
 if not defined POWERMCP_LLM_MODEL set "POWERMCP_LLM_MODEL=deepseek-chat"
-rem 密钥回退映射：环境里已有 DEEPSEEK_API_KEY 时自动接上（值不打印、不落盘）
 if not defined POWERMCP_LLM_API_KEY if defined DEEPSEEK_API_KEY set "POWERMCP_LLM_API_KEY=%DEEPSEEK_API_KEY%"
 if not defined POWERMCP_LLM_API_KEY echo [WARN] POWERMCP_LLM_API_KEY not set - /chat will be unavailable
-
-echo [run_gateway] root   = %POWERMCP_ROOT%
-echo [run_gateway] fence  = %POWERIO_MCP_ALLOWED_ROOTS%
-echo [run_gateway] llm    = %POWERMCP_LLM_BASE_URL% (model: %POWERMCP_LLM_MODEL%)
+echo [run_gateway] root  = %POWERMCP_ROOT%
+echo [run_gateway] fence = %POWERIO_MCP_ALLOWED_ROOTS%
+echo [run_gateway] llm   = %POWERMCP_LLM_BASE_URL% (model: %POWERMCP_LLM_MODEL%)
 echo.
 "%POWERMCP_ROOT%\PowerMCP\.venv\Scripts\python.exe" -m uvicorn powermcp_gateway.api:create_app --factory --host 127.0.0.1 --port 8765
+echo.
+echo [run_gateway] gateway exited (code %errorlevel%). Press any key to close...
+pause >nul
