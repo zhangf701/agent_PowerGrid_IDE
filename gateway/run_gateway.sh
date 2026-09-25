@@ -17,6 +17,10 @@ export POWERIO_MCP_ALLOWED_ROOTS="$ROOT"
 
 : "${POWERMCP_LLM_BASE_URL:=https://api.deepseek.com}"
 : "${POWERMCP_LLM_MODEL:=deepseek-chat}"
+# 密钥回退映射：环境里已有 DEEPSEEK_API_KEY 时自动接上（值不打印、不落盘）
+if [ -z "$POWERMCP_LLM_API_KEY" ] && [ -n "$DEEPSEEK_API_KEY" ]; then
+  export POWERMCP_LLM_API_KEY="$DEEPSEEK_API_KEY"
+fi
 export POWERMCP_LLM_BASE_URL POWERMCP_LLM_MODEL
 if [ -z "$POWERMCP_LLM_API_KEY" ]; then
   echo "[WARN] POWERMCP_LLM_API_KEY not set — /chat 不可用"

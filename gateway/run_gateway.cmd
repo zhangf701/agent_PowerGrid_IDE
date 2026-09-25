@@ -17,7 +17,9 @@ set "POWERIO_MCP_ALLOWED_ROOTS=%POWERMCP_ROOT%"
 
 if not defined POWERMCP_LLM_BASE_URL set "POWERMCP_LLM_BASE_URL=https://api.deepseek.com"
 if not defined POWERMCP_LLM_MODEL set "POWERMCP_LLM_MODEL=deepseek-chat"
-if not defined POWERMCP_LLM_API_KEY echo [WARN] POWERMCP_LLM_API_KEY not set — /chat will be unavailable
+rem 密钥回退映射：环境里已有 DEEPSEEK_API_KEY 时自动接上（值不打印、不落盘）
+if not defined POWERMCP_LLM_API_KEY if defined DEEPSEEK_API_KEY set "POWERMCP_LLM_API_KEY=%DEEPSEEK_API_KEY%"
+if not defined POWERMCP_LLM_API_KEY echo [WARN] POWERMCP_LLM_API_KEY not set - /chat will be unavailable
 
 echo [run_gateway] root   = %POWERMCP_ROOT%
 echo [run_gateway] fence  = %POWERIO_MCP_ALLOWED_ROOTS%
