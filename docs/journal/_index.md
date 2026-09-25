@@ -8,7 +8,16 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-25 — JOURNAL（**opendss 根因定位，修复待完成**）★ 最新
+### 🚩 2026-09-25 — JOURNAL（**子项目 4：持久 server 连接池，T6-M5 根治**）★ 最新
+📄 [2026-09-25-serverpool-t6m5.md](2026-09-25-serverpool-t6m5.md)
+
+张老师真实测试把 T6-M5 从「慢」坐实为「**功能阻断**」→ 会话级持久连接池
+（`serverpool.py`，门控 `POWERMCP_SESSION_POOL=1`）。断裂自愈 + LRU + 如实上报状态丢失。
+测试 **487 → 498**；变异 3/3 全红；**真进程实测**：载入 case14 → 下次调用状态仍在。
+
+---
+
+### 🚩 2026-09-25 — JOURNAL（**opendss 根因定位，修复待完成**）
 📄 [2026-09-25-opendss-rootcause-pending.md](2026-09-25-opendss-rootcause-pending.md)
 
 **"唯一真阻塞"有了可复现的根因**：SDK 白名单环境 × `ctypes.LoadLibrary`（py_dss_interface）
