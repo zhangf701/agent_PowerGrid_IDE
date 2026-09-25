@@ -30,17 +30,21 @@
 - ✅ **P0-2b 已交付**：`case` 一级实体（v4 引入；v3 只有 session 粒度）+ `GET/POST /cases` ·
   `GET/DELETE /cases/{id}`。**按路径引用不复制**（登记 sha256 + 读取现算 drift）·
   **DELETE 只注销登记、绝不删除源文件** · 索引为可读 JSON + 原子替换。
+- ✅ **P0-2b-2 已交付**（**首个真实拉起 server 的单元**）：`POST /cases/{id}/parse` ·
+  `GET /cases/{id}/ir` · `GET /cases/{id}/diagnostics`。实测 **parse → IR → diagnostics 往返成功**；
+  **反事实对照**证明上一轮的 env 修复**必要**（不透传时 `is_error=True`）。
+  ⚠️ PowerIO 返回是**双层编码**（`powerio_ir` 字段本身是 JSON 字符串）—— 必须原样保存。
 - ★★ **修复一个阻塞级真缺陷**：**MCP SDK 只继承白名单环境变量** ——
   `POWERIO_MCP_ALLOWED_ROOTS` 与 `HIGHS_LIB_DIR` **都不在其中**，不显式传就等于"设了也不生效"。
   后果：**路径围笼形同虚设**（server 只认默认根，读不到算例目录）、surge 的 DC OPF 永远拿不到求解器。
   已改为显式透传，并新增 `server_env` 观测面。
-- 测试：**181 → 349 passed, 1 deselected**；变异探针累计 **45/45 全红**；
+- 测试：**181 → 368 passed, 2 deselected**；变异探针累计 **56/56 全红**；
   `PowerMCP/` 与 `PowerSkills/` 均 0 行改动。
-- ⚠️ **两轮变异探针共逼出 4 条「假护栏」**（1 条真 bug：escalation 子标题致假警报；
-  3 条测试缺陷：文件名巧合、时间分辨率、快路径无断言）—— 方法教训见下。
-- 下一步：**P0-2b-2 `/cases/{id}/parse`**（需真实拉起 server）→ P0-3 内核骨架与模块脚手架
-  → 设计系统落地（**前置：UI 规范同步至 v2**）。
-- 提交：`84cbb66`（文档重定位）· `8786495`（P0-1）· `1b87182`（P0-2a）· `6b0fc45`（journal）· `3dbb37d`（env 修复 + P0-2b）。
+- ⚠️ **三轮变异探针共逼出 5 条「假护栏」**（1 条真 bug：escalation 子标题致假警报；
+  4 条测试缺陷：文件名巧合 / 时间分辨率 / 快路径无断言 / 两条守卫混为一谈）。
+- 下一步：**P0-3 内核骨架 + 模块脚手架** → 设计系统落地（**前置：UI 规范同步至 v2**）。
+- 提交：`84cbb66`（文档重定位）· `8786495`（P0-1）· `1b87182`（P0-2a）· `6b0fc45`（journal）·
+  `3dbb37d`（env 修复 + P0-2b）· `369d6b3`（journal）· `578b3f4`（P0-2b-2）。
 
 ---
 

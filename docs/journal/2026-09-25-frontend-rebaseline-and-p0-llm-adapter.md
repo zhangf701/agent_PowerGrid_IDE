@@ -235,6 +235,76 @@ M4 / M5 / M8 起初未变红，逐条归因：
 
 **提交**：`3dbb37d`（env 修复 + 算例库）。
 
+## 五之四、P0-2b-2 算例解析为 PowerIO IR（**首个真实拉起 server 的单元**）
+
+> 这一单元顺带**实测验证了上一轮的 env 透传修复** —— 正是它让"算例可被 server 读到"成立。
+
+### ★ 实测：修复有效**且必要**（`m11-live-parse.py`）
+
+| 情形 | 结果 |
+|---|---|
+| **修复后**（显式透传 env） | `powerio.parse` **成功**，返回 **59773 字符** |
+| **反事实**（模拟修复前，`server_env()` 返回空） | `is_error=True: Error executing tool parse` |
+| `parse` → IR → `diagnostics` 往返 | 成功（case39.m 诊断 0 条） |
+
+**反事实那一行是关键**：它证明那次修复是**必要**的，而不是"恰好能跑"。
+单测能证明"我们传了 env"，只有实测能证明"不传就会失败"。
+
+### ★ PowerIO 返回值是**双层编码**（踩坑点，已写入代码注释）
+
+```
+parse 的文本 = {"value_type": "powerio.BalancedNetwork",
+               "powerio_ir": "{\n  \"schema\": \"pio-ir\", ... }"}   ← 又一层 JSON 字符串
+```
+
+故产物**原样保存该字符串**；缺 `powerio_ir` 即 502 并指明"上游形态可能已变"。
+任何"顺手解析一下"都会让 `diagnostics` 拿到错的东西。
+
+### 交付物
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `gateway/src/powermcp_gateway/case_ir.py` | 195 | 解析 + 产物落盘（`<cid>/parse.json`，记 `source_sha256`） |
+| `api.py`（附加式 +164） | — | `POST /cases/{id}/parse` · `GET /cases/{id}/ir` · `GET /cases/{id}/diagnostics` |
+| `tests/test_api_case_ir.py` | 399 | **19 单元 + 1 集成**（集成需 `-m integration`） |
+
+**关键设计**：
+- `parse` **会真实拉起 powerio**（秒级），故为 POST 且**每次重新解析**；响应**不内联 IR**（约 60KB），IR 走 `GET /ir`。
+- `GET /ir` 解析失败时 `ir_parsed=false` 并**原样给字符串** —— 不假装成功。
+- `GET /diagnostics` 的 `stale` **现算**：产物记的是解析时的哈希，源文件改了即报。
+- **前置条件显式检查**：源文件不在 `POWERIO_MCP_ALLOWED_ROOTS` 内 → 409 且
+  **指出该把哪个目录加进去**，而不是让用户看一个看不懂的沙箱错误。
+- 错误映射：400 请求非法 / 404 未知 id / **409 状态不允许**（文件没了、不在允许根、未解析）/
+  **502 引擎侧失败** / 500 索引损坏 / 503 配置失败。
+
+### ★ mock 的经典坑（值得记住）
+
+单元测试初次跑用了 **36 秒** —— 因为 `case_ir` 是 `from .inventory import build_inventory`，
+而我只 patch 了 `api_mod.build_inventory`。**必须打在使用它的模块命名空间里**，
+否则"单元测试"其实在真实拉起 server（慢且依赖环境）。
+已修，并在测试里写明原因。修后默认套件 **2.15s**。
+
+### ★ 变异探针又发现 1 条假护栏（M4）
+
+M4 未变红：它瞄的是「合法 JSON 但**不是对象**」这条守卫，
+而我的测试走的是「**根本不是** JSON」那条 —— **两条是不同守卫**。
+补测试 `test_parse_reports_502_when_output_is_not_an_object` 后 M4 变红。
+
+> 另外有两条断言是**提前**加固的（推理而非探针发现）：引擎失败若被后续字段校验掩盖，
+> 错误信息会变成"缺少 powerio_ir"——上报的原因就不对了。故用**合法 JSON 的错误正文**
+> 让两条路径的错误信息可区分。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 测试 | **349 → 368 passed, 2 deselected**（+19 单元 + 1 集成），无回归 |
+| 变异探针 | **11/11 全红**（`m12-caseir-mutation.py`） |
+| 集成实测 | `-m integration` 真实拉起 powerio：parse → IR → diagnostics 往返通过（6.66s） |
+| 上游 | `PowerMCP/` 与 `PowerSkills/` 均 **0 行改动** ✓ |
+
+**提交**：`578b3f4`。
+
 ## 六、仍未做 / 下一步
 
 1. **《UI 设计规范》未同步至 v2** —— 已在 v4 §十四-1 声明「同步完成前，v1.2 与 v4 冲突处以 v4 为准」。
