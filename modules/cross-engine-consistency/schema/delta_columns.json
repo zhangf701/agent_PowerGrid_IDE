@@ -1,0 +1,31 @@
+{
+  "$comment": "结果表列定义（**长表 / long format**）。⚠️ 见文件末尾的「已知限制」。type 取值与《UI 设计规范》v2 §4.7.4 的 ResultColumn 一致。",
+  "columns": [
+    { "key": "metric", "title": "指标", "type": "text" },
+    { "key": "engine", "title": "引擎", "type": "text" },
+    {
+      "key": "value",
+      "title": "数值",
+      "type": "quantity",
+      "unit": "见 unit 列"
+    },
+    { "key": "unit", "title": "单位", "type": "text" },
+    {
+      "key": "delta",
+      "title": "Δ",
+      "type": "quantity",
+      "unit": "同 value"
+    },
+    { "key": "consistent", "title": "一致性", "type": "state" }
+  ],
+  "$known_limitation": [
+    "本表用**长格式**（每行 = 一个指标 × 一个引擎），因为 `result_tables[].columns` 是**静态列表**，",
+    "无法表达「每个引擎一列」的**动态列**。",
+    "",
+    "而《UI 设计规范》v2 §5.2 的跨引擎一致性视图是**宽格式**（pandapower | PyPSA | surge | 一致性）。",
+    "长表能承载同样的数据，但**并排比对的可读性差**，且界面层要自己 pivot。",
+    "",
+    "→ 记为扩展点缺口 G-2（见 modules/README.md）。未自行发明 `dynamic_columns` 字段：",
+    "  按「先验证、后冻结」的约定，缺口应先被记录与裁决，而不是由实现者顺手补上。"
+  ]
+}

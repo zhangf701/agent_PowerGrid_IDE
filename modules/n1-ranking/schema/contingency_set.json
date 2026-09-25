@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "n1-ranking/contingency_set",
+  "title": "N-1 故障集定义",
+  "description": "本选题的领域实体：一次 N-1 扫描要跑哪些开断、按什么限值判定越限。",
+  "type": "object",
+  "required": ["case_id", "kind", "elements"],
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "description": "算例库中的 case id（见 GET /cases）"
+    },
+    "kind": {
+      "enum": ["n1_branch", "n1_generator", "n2_branch"],
+      "description": "故障类型；与 surge 的工具一一对应"
+    },
+    "elements": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "被开断元件名；**空数组 = 全元件扫描**"
+    },
+    "monitor": {
+      "type": "object",
+      "description": "越限判定限值；缺省用下列默认值",
+      "properties": {
+        "max_loading_percent": { "type": "number", "default": 100 },
+        "vm_pu_min": { "type": "number", "default": 0.95 },
+        "vm_pu_max": { "type": "number", "default": 1.05 }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

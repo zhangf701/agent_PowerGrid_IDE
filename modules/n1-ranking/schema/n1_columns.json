@@ -1,0 +1,27 @@
+{
+  "$comment": "结果表列定义。type 取值与《UI 设计规范》v2 §4.7.4 的 ResultColumn 一致：text | number | quantity | identifier | state。quantity 必须给 unit（+ 可选 criterion），identifier 必须给 engine —— 这两条是规范里对 ResultTable 的硬规则，在数据层就把它们写死，界面层就没有机会漏。",
+  "columns": [
+    { "key": "contingency", "title": "场景", "type": "text" },
+    { "key": "kind", "title": "类型", "type": "text" },
+    {
+      "key": "violating_element",
+      "title": "越限元件",
+      "type": "identifier",
+      "engine": "surge"
+    },
+    {
+      "key": "loading_percent",
+      "title": "负载率",
+      "type": "quantity",
+      "unit": "%",
+      "criterion": "MVA 判据"
+    },
+    {
+      "key": "flow_mw",
+      "title": "有功",
+      "type": "quantity",
+      "unit": "MW"
+    },
+    { "key": "is_islanding", "title": "孤岛", "type": "text" }
+  ]
+}
