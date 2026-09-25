@@ -27,3 +27,8 @@ gateway/.cache/
 
 # SDD 进度台账（临时脚手架，不入库）
 .superpowers/
+
+# AI 助手的本机会话数据（记忆 / 技能 / 缓存）—— 不属于仓库内容
+.claude/
+.workbuddy/
+.workbuddy-ai/

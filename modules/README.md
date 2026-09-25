@@ -42,18 +42,18 @@ PY
 
 | 扩展点 | 清单支持 | 校验 | **已接线（有行为）** |
 |---|:--:|---|:--:|
-| `id` / `name` / `version` / `kind` / `maturity` / `enabled` | ✅ | ✅ id 须与目录名一致；kind/maturity 取值合法 | ✅ `/modules` 展示 |
+| `id` / `name` / `version` / `kind` / `maturity` / `enabled` | ✅ | ✅ id 须与目录名一致；kind/maturity 取值合法；**maturity 与实际内容一致（G-8）** | ✅ `/modules` 展示 |
 | `requires.core` | ✅ | ✅ 版本判定（无法解析的 spec 一律不满足） | ❌ |
-| `requires.servers` | ✅ | ⚠️ 仅「是否在已知清单」 | ❌ |
+| `requires.servers` | ✅ | ⚠️ 已知清单告警 + **与 `tools` 前缀的一致性（G-7）** | ❌ |
 | `requires.solvers` | ✅ | ❌ 无校验 | ❌ |
-| `tools` | ✅ | ⚠️ 无校验（见 G-9） | ❌ 软收窄**未实装** |
+| `tools` | ✅ | ✅ **前缀须被 `requires.servers` 覆盖（G-7）**；未知 server 告警（G-9） | ❌ 软收窄**未实装** |
 | `skills` | ✅ | ⚠️ 仅「是否存在」 | ❌ 技能手册未按模块过滤 |
 | `entities` | ✅ | ✅ 文件必须存在 + 跨模块同名禁止 | ❌ 无实体存储 |
 | `result_tables` | ✅ | ✅ 同上 | ❌ 无结果表存储 / 渲染 |
 | `prompts` | ✅ | ✅ 文件必须存在 | ❌ **LLM 不读模块提示词** |
 | `checks` | ✅ | ✅ 文件必须存在 | ❌ **无执行引擎** |
 | `exports` | ✅ | ✅ 文件必须存在 | ❌ **无渲染器** |
-| `slots` | ✅ | ❌ 无校验（G-10） | ❌ 前端未起步 |
+| `slots` | ✅ | ⚠️ 未知槽位名告警（G-10；清单未冻结故不拒绝） | ❌ 前端未起步 |
 
 **一句话**：**清单层完备，校验层部分，行为层全部未做。**
 `/modules` 的 `summary` 会显示 `enabled: 2` —— **那不等于"这两个模块已经能干活了"**。
@@ -71,14 +71,19 @@ PY
 | **G-2** | `result_tables[].columns` 是**静态列**，表达不了「每引擎一列」的**动态列** | 跨引擎对比只能用**长格式**，界面要自己 pivot，并排比对可读性差（与 UI 规范 §5.2 的宽表视图不符） | 二选一：加 `columns_source`（列由数据决定）或**明确只支持长格式**并在 §5.2 改口径 |
 | **G-1** | **没有「默认算例」字段** | 新用户打开一个模块，不知道该从哪个算例开始；只能写在 README 里（界面读不到） | 加 `sample_cases: [...]`（指向算例库 id 或路径） |
 
-### 🟡 校验缺口（4 条已实测确认"拦不住"）
+### ✅ 校验缺口（4 条曾实测确认"拦不住"，**已于 2026-09-25 修复**）
 
-| # | 缺口 | 实测 |
+> 实测复现保留（`.superpowers/sdd/m15-module-gaps.py`），作为"修复前确实拦不住"的证据链。
+
+| # | 缺口（修复前实测） | 修复后行为 |
 |---|---|---|
-| **G-7** | `requires.servers` 与 `tools` 前缀**可自相矛盾** | `servers: [surge]` + `tools: [pypsa.optimize_network]` → **装配成功，无提示** |
-| **G-8** | `maturity` 声明与实际内容不符**不报错** | `maturity: L0` 却填了 `entities` → **装配成功** |
-| **G-9** | `tools` 前缀的 server **未知不校验**（只校验 `requires.servers`） | `tools: [不存在的server.某工具]` → **无警告** |
-| **G-10** | `slots` 的**槽位名合法性不校验** | 写任意槽位名都通过（前端注入时会静默失效） |
+| **G-7** | `servers: [surge]` + `tools: [pypsa.optimize_network]` → **装配成功，无提示** | 清单**自相矛盾 → 装配失败**；有 `tools` 却未声明 `requires.servers` → 警告提示补声明 |
+| **G-8** | `maturity: L0` 却填了 `entities` → **装配成功** | `L0` 含 `entities`/`result_tables`/`slots` → **装配失败**；`L2` 无 `slots` → **装配失败** |
+| **G-9** | `tools: [不存在的server.某工具]` → **无警告** | `tools` 前缀引用未知 server → **警告** |
+| **G-10** | 写任意槽位名都通过（前端注入时会静默失效） | 未知槽位名 → **警告**（槽位清单尚未冻结，暂不拒绝；已知槽位 = `SLOT_NAMES` 五个） |
+
+**修复**：提交 `95c849d`（+14 条测试）；变异探针 `.superpowers/sdd/m19-g710-mutation.py` **5/5 全红**；
+护栏测试 `test_real_modules_pass_the_new_rules` 保证两个真实模块不被新规则判死。
 
 ### 🔵 记录即可（不阻塞）
 
@@ -101,4 +106,4 @@ PY
 1. **先裁决 G-1 / G-2 / G-4 / G-5**（4 条影响 P1 设计）—— 其余可并行。
 2. **不要现在冻结清单 schema** —— G-4/G-5 一旦动手，`checks` / `prompts` / `exports`
    的形状很可能要改，届时已写的 4 个 check 需要同步。
-3. **G-7/G-8/G-9/G-10 是低成本的校验补强**，可以独立成一个单元（加 4 条装配规则 + 测试）。
+3. ~~G-7/G-8/G-9/G-10 是低成本的校验补强~~ → **✅ 已完成**（2026-09-25，提交 `95c849d`）。
