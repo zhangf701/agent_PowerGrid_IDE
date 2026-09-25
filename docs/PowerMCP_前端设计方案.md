@@ -372,7 +372,16 @@ server 挂载状态与依赖缺失由 `GET /contracts/t0` 给出，该分工写�
 
 **数据来源**：**`GET /cases` · `POST /cases` · `GET /cases/{id}` · `DELETE /cases/{id}`**
 （✅ 2026-09-25 交付 —— 登记 / 列举 / 详情 / 注销；**索引为可读 JSON + 原子替换**，见 §11.4）。
-⏳ 待做：`POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics`（需真实拉起 server，P0-2b-2）。
+**`POST /cases/{id}/parse` · `GET /cases/{id}/ir` · `GET /cases/{id}/diagnostics`**
+（✅ 2026-09-25 交付 —— 解析为 PowerIO IR 并落盘；产物记 `source_sha256`，源文件改动即报 `stale`）。
+
+> ★ **PowerIO 的返回值是双层编码**（实测）：`parse` 的文本是 JSON，其 `powerio_ir` 字段
+> **又是一个 JSON 字符串**。故产物**原样保存该字符串**，任何"顺手解析一下"都会让
+> `diagnostics` 拿到错的东西。缺该字段即报 502 并指明"上游形态可能已变"。
+> ⚠️ `POST .../parse` **会真实拉起 powerio**（秒级）且**每次重新解析**；
+> 响应**不内联 IR**（约 60KB），IR 走 `GET .../ir`。
+> ⚠️ **前置条件显式检查**：源文件不在 `POWERIO_MCP_ALLOWED_ROOTS` 内时返回 409
+> 并**指出该把哪个目录加进去** —— 而不是让用户看一个看不懂的沙箱错误。
 
 **三个关键设计决定**：
 1. **按路径引用，不复制文件** —— 算例就是你的那个文件；复制会在数据旁悄悄多出一份，
@@ -563,6 +572,10 @@ server 挂载状态与依赖缺失由 `GET /contracts/t0` 给出，该分工写�
 | `fidelity` | 徽章：`exact_same_format`（回显原始字节）/ `canonical`（新生成） |
 | `edits` | ★ **编辑轨迹时间线**（12 种 typed ops；连续同类更新作为**原子批**） |
 | `warnings` | 折叠列表 |
+
+**数据来源**：`GET /cases/{id}/ir`（✅ 2026-09-25 交付）—— 返回 `ir`（已解析对象）、
+`ir_parsed`（解析失败时为 `false` 并**原样给字符串**，不假装成功）、`value_type`、
+`parsed_at`、`ir_bytes`。
 
 > ⚠️ **危险 edits 需影响面预评估**，不能直接执行。见 §11.5
 

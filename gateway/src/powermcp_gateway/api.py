@@ -23,9 +23,18 @@ from .cases import (
     CaseError,
     CaseIndexError,
     CaseStore,
+    allowed_root_paths,
     cases_root,
 )
 from .cases import build_report as build_cases_report
+from .case_ir import (
+    CaseIrError,
+    artifact_to_payload,
+    load_artifact,
+    parse_case,
+    run_diagnostics,
+    save_artifact,
+)
 from .config import GatewayConfig
 from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
@@ -577,6 +586,161 @@ def register_case_routes(app: FastAPI) -> None:
             "label": removed.label,
             "source_path": removed.source_path,
             "source_file_kept": True,
+        }
+
+    def _require_case(cfg, cid: str):
+        """取算例并校验「可解析」的前置条件。
+
+        Returns:
+            `(case, view, error_response)` —— 出错时前两者为 `None`。
+
+        ★ **前置条件必须显式检查并给出可执行指引**，而不是把请求放过去让 server 报一个
+          看不懂的沙箱错误。这正是本会话实测到的坑：`POWERIO_MCP_ALLOWED_ROOTS`
+          若不透传，server 只认默认根，表现为"读不到文件"。
+        """
+        store = _store()
+        try:
+            case = store.get(cid)
+        except KeyError:
+            return None, None, JSONResponse(status_code=404, content={"detail": "算例不存在"})
+        except CaseIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        view = store.view(case)
+        if not view.available:
+            # 409：当前状态不允许该操作（源文件没了），但**可修复**
+            return case, view, JSONResponse(status_code=409, content={
+                "detail": f"算例源文件不存在或不可读：{case.source_path}",
+            })
+        if not view.within_allowed_roots:
+            roots = [str(r) for r in allowed_root_paths()]
+            return case, view, JSONResponse(status_code=409, content={
+                "detail": (
+                    "算例所在目录不在 `POWERIO_MCP_ALLOWED_ROOTS` 内 —— server 子进程读不到它。"
+                    f"请把 `{Path(case.source_path).parent}` 加入该变量后重启网关"
+                    f"（当前允许根：{roots}；见 `GET /environment` 的 `server_env` 段）。"
+                ),
+            })
+        return case, view, None
+
+    def _load_artifact_or_409(cfg, cid: str):
+        art = load_artifact(cases_root(cfg), cid)
+        if art is None:
+            return None, JSONResponse(status_code=409, content={
+                "detail": "该算例尚未解析 —— 先 `POST /cases/{id}/parse`",
+            })
+        return art, None
+
+    @app.post("/cases/{cid}/parse")
+    async def parse_case_route(cid: str):
+        """把算例解析为 PowerIO IR 并落盘。
+
+        ⚠️ **会真实拉起 powerio 进程**（秒级），属显式动作，故为 POST。
+        ⚠️ 每次 POST **都重新解析**（不复用产物）—— 想要已有产物请用 `GET /cases/{id}/ir`。
+        ★ 响应**不返回 IR 本身**（约 60KB），只返回元数据；IR 走 `GET /cases/{id}/ir`。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        case, _view, err = _require_case(c, cid)
+        if err is not None:
+            return err
+
+        try:
+            artifact = await parse_case(c, case)
+        except CaseIrError as exc:
+            # 502：**上游（引擎）失败**，不是本网关或客户端的错
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        payload = artifact_to_payload(artifact)
+        path = save_artifact(cases_root(c), payload)
+        payload.pop("ir", None)
+        payload["artifact"] = str(path)
+        payload["has_ir"] = True
+        return payload
+
+    @app.get("/cases/{cid}/ir")
+    async def get_case_ir(cid: str):
+        """取已解析的 PowerIO IR（供 IR 检查器视图用）。"""
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        store = _store()
+        try:
+            case = store.get(cid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "算例不存在"})
+        except CaseIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        art, err = _load_artifact_or_409(c, cid)
+        if err is not None:
+            return err
+
+        raw = art.get("ir", "")
+        parsed: object = raw
+        ir_parsed = False
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                ir_parsed = True
+            except json.JSONDecodeError:
+                parsed = raw      # 解析不了就原样给（不假装成功）
+
+        return {
+            "case_id": cid,
+            "value_type": art.get("value_type"),
+            "parsed_at": art.get("parsed_at"),
+            "source_path": art.get("source_path"),
+            "ir_parsed": ir_parsed,
+            "ir_bytes": art.get("ir_bytes"),
+            "ir": parsed,
+        }
+
+    @app.get("/cases/{cid}/diagnostics")
+    async def case_diagnostics(cid: str):
+        """用已解析的 IR 跑 `powerio.diagnostics`。
+
+        ★ **陈旧检测**：产物记录了**解析时**的源文件哈希；若源文件此后变了，
+          `stale=true` —— 诊断结论来自旧数据。存下来的"最新"标记会过期，
+          故每次现算比对。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        case, view, err = _require_case(c, cid)
+        if err is not None:
+            return err
+
+        art, err = _load_artifact_or_409(c, cid)
+        if err is not None:
+            return err
+
+        ir = art.get("ir")
+        if not isinstance(ir, str) or not ir:
+            raise HTTPException(status_code=500, detail="算例产物缺少 `ir` 字段，请重新解析")
+
+        stale = (
+            view.current_sha256 is not None
+            and art.get("source_sha256") != view.current_sha256
+        )
+        try:
+            result = await run_diagnostics(c, ir)
+        except CaseIrError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        return {
+            "case_id": cid,
+            "value_type": art.get("value_type"),
+            "parsed_at": art.get("parsed_at"),
+            "stale": stale,
+            "result": result,
         }
 
 

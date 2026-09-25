@@ -103,6 +103,7 @@ class CaseView:
     drift: bool                     # 文件仍在，但内容与登记时不同
     within_allowed_roots: bool      # server 子进程能否读到它
     current_size: int | None = None
+    current_sha256: str | None = None   # 现算哈希 —— 用于判断已解析产物是否**陈旧**
 
     def to_dict(self) -> dict:
         d = asdict(self.case)
@@ -111,6 +112,7 @@ class CaseView:
             drift=self.drift,
             within_allowed_roots=self.within_allowed_roots,
             current_size=self.current_size,
+            current_sha256=self.current_sha256,
         )
         return d
 
@@ -233,6 +235,7 @@ class CaseStore:
             drift=digest != case.sha256,
             within_allowed_roots=_is_within(source, roots),
             current_size=size,
+            current_sha256=digest,
         )
 
     # ------------------------------------------------------------ 写

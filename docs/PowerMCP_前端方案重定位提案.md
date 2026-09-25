@@ -166,7 +166,7 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 |---|---|---|---|
 | `GET /environment` | ① 环境就绪 | P1 | ✅ **2026-09-25 交付**（廉价检查，不拉起 server） |
 | `GET /skills` | ⑤ 技能手册 | P1 | ✅ **2026-09-25 交付**（22 技能 + escalation triggers） |
-| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | 🔄 **P0-2b 进行中**：登记/列举/详情/注销 **✅ 2026-09-25 交付**；parse / diagnostics ⏳ 待做（需真实拉起 server） |
+| `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | ✅ **2026-09-25 全部交付**（另加 `GET /cases/{id}/ir`）。parse 会真实拉起 powerio；产物落盘并记 `source_sha256`，源文件改动即报 `stale` |
 | `POST /experiments` · `GET /experiments/{id}` · `/results` · `/export` | ④ 实验矩阵 | P2 | ⏳ 待做 |
 | `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
