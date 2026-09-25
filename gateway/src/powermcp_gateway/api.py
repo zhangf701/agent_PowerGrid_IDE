@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,13 +17,15 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .agent import DEFAULT_MAX_ROUNDS, AgentEvent, run_turn
 from .audit import AuditLog
 from .config import GatewayConfig
 from .contracts.engine import T0Cache, evaluate_t0
 from .events import format_sse
 from .inventory import build_inventory
+from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .proxy import CallOutcome, call_tool
-from .session import SessionStore
+from .session import Channel, SessionStore
 
 # P1 只挂开源引擎（方案 v3 已移除全部商业引擎）
 OPEN_SOURCE_SERVERS: tuple[str, ...] = (
@@ -64,6 +67,7 @@ _cache = T0Cache()
 _STORE = SessionStore()
 _AUDIT = AuditLog(Path.home() / ".powermcp" / "audit")
 _CONFIG: GatewayConfig | None = None
+_PROVIDER: OpenAICompatProvider | None = None
 
 
 def _cfg() -> GatewayConfig:
@@ -71,6 +75,133 @@ def _cfg() -> GatewayConfig:
     if _CONFIG is None:
         _CONFIG = GatewayConfig.discover()
     return _CONFIG
+
+
+def _provider() -> OpenAICompatProvider:
+    """惰性创建 LLM 适配器。
+
+    ★ **不在这里捕获 `LlmConfigError`** —— 配置缺失必须由端点显式映射为 HTTP 503
+      （与 `/contracts/t0` 的配置失败语义一致），而不是退化成一个通用 500。
+    """
+    global _PROVIDER
+    if _PROVIDER is None:
+        _PROVIDER = OpenAICompatProvider(LlmConfig.from_env())
+    return _PROVIDER
+
+
+#: 对话流里允许的 SSE 事件名（与 `agent.AgentEvent.kind` 一一对应）。
+#: 白名单而非直通 —— 防止将来 agent 新增 kind 时把未定义事件名泄漏给前端。
+_CHAT_EVENT_KINDS = frozenset({"text", "notice", "tool_call", "tool_error", "final", "error"})
+
+
+def _chat_sse(kind: str, payload: dict) -> str:
+    """对话流的 SSE 帧。
+
+    ⚠️ 与 `events.format_sse` **有意不同**：后者序列化的是**总线事件**
+    （带 `seq` / `channel`，供断线重连全量重放）；本流是**本轮对话**的
+    瞬时视图，不带 seq、不可重放 —— 可重放的部分（工具调用、最终回答）
+    由 `_publish_evidence` 单独写进总线与审计。
+    """
+    return f"event: {kind}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _event_payload(ev: AgentEvent) -> dict:
+    """`AgentEvent` → SSE payload。只带该 kind 有意义的字段，避免噪声。"""
+    if ev.kind == "text" or ev.kind == "final":
+        return {"text": ev.text}
+    if ev.kind == "tool_call":
+        return {"server": ev.server, "tool": ev.tool, "args": ev.args}
+    if ev.kind == "tool_error":
+        return {"server": ev.server, "tool": ev.tool, "detail": ev.detail}
+    return {"detail": ev.detail}
+
+
+def _publish_evidence(bus, session_id: str, kind: str, payload: dict) -> None:
+    """把一条事件写进总线 + 审计（**尽力而为，失败不得打断对话流**）。
+
+    与 `proxy._emit` 同一取舍：`publish` 在总线已关闭时抛 `RuntimeError`，
+    `audit.append` 失败时返回 False —— 两者都**不许**让正在进行的对话流断掉。
+    """
+    try:
+        event = bus.publish(Channel.EVIDENCE, kind, payload)
+    except Exception:
+        logger.warning("对话事件发布失败（kind=%s, session=%s）", kind, session_id, exc_info=True)
+        return
+    if not _AUDIT.append(session_id, event):
+        logger.warning(
+            "对话事件未持久化（kind=%s, session=%s）—— 仅在内存历史中；"
+            "详见 GET /health 的 audit.append_failures", kind, session_id,
+        )
+
+
+def _parse_chat_request(payload: dict) -> tuple[list[ChatMessage], str | None]:
+    """解析对话请求体。
+
+    接受两种形式：
+      - `{"message": "..."}` —— 便捷形式，等价于单条 user 消息；
+      - `{"messages": [{"role": ..., "content": ...}, ...]}` —— 完整历史。
+
+    ★ **服务端不持久化对话历史**：会话（`Session`）只承载 server 组合与事件总线。
+      客户端传完整历史是 LLM API 的通行做法，也让"刷新后恢复"这件事
+      明确地落在**会话持久化**这个独立单元里，而不是藏在端点里做半套。
+    ★ 只接受 `system` / `user` / `assistant` 三种角色 —— `tool` 与
+      `assistant.tool_calls` 由服务端在**本轮内**自行管理，客户端不得注入，
+      否则可以伪造工具结果污染审计。
+    """
+    raw = payload.get("messages")
+    if raw is None:
+        single = payload.get("message")
+        if not isinstance(single, str) or not single.strip():
+            return [], "请求体需提供 `message`（非空字符串）或 `messages`（消息数组）"
+        raw = [{"role": "user", "content": single}]
+    if not isinstance(raw, list) or not raw:
+        return [], "`messages` 必须是非空数组"
+
+    out: list[ChatMessage] = []
+    for i, m in enumerate(raw):
+        if not isinstance(m, dict):
+            return [], f"messages[{i}] 必须是对象"
+        role = m.get("role")
+        if role not in ("system", "user", "assistant"):
+            return [], f"messages[{i}].role 必须是 system / user / assistant"
+        content = m.get("content")
+        if not isinstance(content, str):
+            return [], f"messages[{i}].content 必须是字符串"
+        out.append(ChatMessage(role=role, content=content))
+
+    if out[-1].role != "user":
+        return [], "最后一条消息必须是 user"
+    return out, None
+
+
+def _parse_max_rounds(payload: dict) -> tuple[int, str | None]:
+    """解析 `max_rounds`（可选）。上界 32 —— 防止客户端把单轮请求变成长时间占用。"""
+    raw = payload.get("max_rounds")
+    if raw is None:
+        return DEFAULT_MAX_ROUNDS, None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0, "`max_rounds` 必须是整数"
+    if not 1 <= raw <= 32:
+        return 0, "`max_rounds` 必须在 1–32 之间"
+    return raw, None
+
+
+def _parse_servers(payload: dict, session_servers: tuple[str, ...]) -> tuple[list[str], str | None]:
+    """解析可选的 `servers`（本轮要挂载的 server 子集）。
+
+    ★ 为什么要这个字段：`build_inventory` 会**真实拉起**每个 server 进程
+      （秒级/个，见 T6-M5）。允许按轮收窄子集，是当前唯一不需要引入
+      清单缓存的实用优化 —— 也正是"选题模块声明工具白名单"的雏形。
+    """
+    raw = payload.get("servers")
+    if raw is None:
+        return list(session_servers), None
+    if not isinstance(raw, list) or not raw:
+        return [], "`servers` 必须是非空数组"
+    unknown = [s for s in raw if s not in session_servers]
+    if unknown:
+        return [], f"`servers` 含会话未启用的项：{unknown}（本会话：{list(session_servers)}）"
+    return list(dict.fromkeys(raw)), None
 
 
 async def call_with_contracts(
@@ -213,12 +344,121 @@ def register_session_routes(app: FastAPI) -> None:
         )
         return dataclasses.asdict(outcome)
 
+    @app.post("/sessions/{sid}/chat")
+    async def chat(sid: str, payload: dict):
+        """一轮对话：自然语言 → 多轮工具调用 → 回答（SSE 流）。
 
-def create_app(cfg: GatewayConfig | None = None) -> FastAPI:
+        ★ Agent 循环在**网关侧**（2026-09-25 张老师裁决）：工具执行经
+          `call_with_contracts` → `proxy.call_tool`，因此契约 3 的 fail-closed 校验、
+          契约 finding 的 EVIDENCE 发布、NDJSON 审计**全部天然在环内**。
+
+        流的形态（`event:` 名即事件 kind）：
+          - `text`       文本增量
+          - `notice`     非致命降级（如部分 server 未拉起 → 本轮工具面不完整）
+          - `tool_call`  一次工具调用已成功执行
+          - `tool_error` 工具失败 / 参数非法 / 工具不存在
+          - `final`      本轮最终回答
+          - `error`      本轮整体失败（LLM 错误 / 轮次超限）
+
+        ★ **可重放的部分**（用户消息、工具调用、最终回答、本轮失败）**同时**
+          写进会话总线与 NDJSON 审计；`text` 增量**只**在本流里（瞬时视图），
+          断线重连靠总线历史拿到完整回答，而不是逐 token 重放。
+
+        ⚠️ **HTTP 状态码只覆盖"请求能不能开始"**：配置缺失 503、会话不存在 404、
+          请求体非法 400。**开始之后的失败一律走 `error` 事件** ——
+          `StreamingResponse` 一旦发出响应头，状态码就不可能再改。
+        """
+        try:
+            session = _STORE.get(sid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "会话不存在"})
+
+        messages, err = _parse_chat_request(payload)
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+
+        max_rounds, err = _parse_max_rounds(payload)
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+
+        servers, err = _parse_servers(payload, session.servers)
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+
+        try:
+            provider = _provider()
+        except LlmConfigError as exc:
+            # 配置缺失是**系统性失败** —— 与 `/contracts/t0` 一致映射为 503，不是 500。
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        async def gen():
+            bus = _STORE.bus(sid)
+            _publish_evidence(bus, sid, "user_message", {
+                "content": messages[-1].content, "servers": servers,
+            })
+
+            # ★ 清单在**流内**构建：`build_inventory` 会真实拉起 server 进程
+            #   （秒级/个，见 T6-M5）。放在流外会把 TTFT 拖到秒级且无法提前结束；
+            #   失败则以 `error` 事件如实报出，而不是静默退化。
+            try:
+                inv = await build_inventory(_cfg(), servers)
+            except Exception as exc:
+                yield _chat_sse("error", {"detail": f"工具清单构建失败：{exc}"})
+                _publish_evidence(bus, sid, "turn_error",
+                                  {"detail": f"工具清单构建失败：{exc}"})
+                return
+
+            # ★ 部分 server 拉不起来**必须说出来**（方案 §4.1「装得上 ≠ 跑得动」）：
+            #   否则用户会以为"这个工具不存在"，而事实是"这个 server 没起来"。
+            if inv.failures:
+                _publish_evidence(bus, sid, "inventory_degraded", {
+                    "servers": servers,
+                    "failures": [dataclasses.asdict(f) for f in inv.failures],
+                })
+                detail = "；".join(f"{f.server}: {f.error}" for f in inv.failures)
+                yield _chat_sse("notice", {
+                    "detail": (
+                        f"{len(inv.failures)} 个 server 未拉起，本轮工具面不完整：{detail}"
+                    )[:400],
+                })
+
+            schema_by = {(t.server, t.name): t.input_schema for t in inv.tools}
+
+            async def execute(server: str, tool: str, args: dict) -> CallOutcome:
+                return await call_with_contracts(
+                    sid, server, tool, args,
+                    get_schema=lambda s, t: schema_by.get((s, t), {}),
+                )
+
+            async for ev in run_turn(
+                provider, messages, specs=inv.tools,
+                execute=execute, max_rounds=max_rounds,
+            ):
+                if ev.kind == "final":
+                    _publish_evidence(bus, sid, "assistant_message",
+                                      {"content": ev.text, "servers": servers})
+                elif ev.kind == "error":
+                    # 本轮失败也要留痕 —— 否则审计里只有"问了"，看不出"为什么没答"
+                    _publish_evidence(bus, sid, "turn_error", {"detail": ev.detail})
+                if ev.kind in _CHAT_EVENT_KINDS:
+                    yield _chat_sse(ev.kind, _event_payload(ev))
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+
+def create_app(cfg: GatewayConfig | None = None, *,
+               provider: OpenAICompatProvider | None = None) -> FastAPI:
     app = FastAPI(title="PowerMCP Gateway", version="0.1.0", lifespan=_lifespan)
     if cfg is not None:
         global _CONFIG
         _CONFIG = cfg
+    if provider is not None:
+        global _PROVIDER
+        _PROVIDER = provider
 
     @app.get("/health")
     async def health() -> dict:
