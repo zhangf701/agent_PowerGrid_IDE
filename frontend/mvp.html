@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PowerMCP 研究工作台（MVP）</title>
+<link rel="stylesheet" href="src/styles/tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--c-surface-base); color: var(--c-text-primary);
+    font-family: var(--p-font-sans); font-size: var(--p-font-size-body);
+    line-height: 1.6;
+  }
+  code, .mono { font-family: var(--p-font-mono); font-size: var(--p-font-size-mono); }
+
+  /* ── 头部 ─────────────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: var(--p-space-3);
+    padding: var(--p-space-3) var(--p-space-4);
+    border-bottom: 1px solid var(--c-border-subtle);
+    background: var(--c-surface-raised); z-index: var(--p-z-sticky);
+  }
+  header h1 { font-size: var(--p-font-size-h2); font-weight: 500; margin: 0; }
+  header .spacer { margin-left: auto; }
+  .dot { width: 8px; height: 8px; border-radius: var(--p-radius-full);
+         background: var(--c-text-muted); display: inline-block; }
+  .dot.ok { background: var(--c-contract-satisfied-fg); }
+  .dot.bad { background: var(--c-contract-violated-fg); }
+
+  button {
+    font: inherit; height: 32px; padding: 0 var(--p-space-3); cursor: pointer;
+    background: var(--c-interactive-primary-bg); color: var(--c-interactive-primary-fg);
+    border: 1px solid transparent; border-radius: var(--p-radius-md);
+  }
+  button.ghost {
+    background: transparent; color: var(--c-text-primary);
+    border-color: var(--c-border-subtle);
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, select, textarea {
+    font: inherit; padding: var(--p-space-2) var(--p-space-3);
+    background: var(--c-surface-raised); color: var(--c-text-primary);
+    border: 1px solid var(--c-border-subtle); border-radius: var(--p-radius-md);
+  }
+  input:focus, textarea:focus { outline: 2px solid var(--c-interactive-focus); outline-offset: -1px; }
+
+  /* ── 校验层状态条（默认折叠但**始终可见**）──────── */
+  #verifybar {
+    display: flex; align-items: center; gap: var(--p-space-3);
+    padding: var(--p-space-2) var(--p-space-4);
+    border-bottom: 1px solid var(--c-border-subtle);
+    background: var(--c-surface-sunken); font-size: var(--p-font-size-bodySm);
+    flex-wrap: wrap;
+  }
+  .sig { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+         border-radius: var(--p-radius-sm); border: 1px solid; font-weight: 500; }
+  .sig.satisfied { background: var(--c-contract-satisfied-bg);
+                   border-color: var(--c-contract-satisfied-border);
+                   color: var(--c-contract-satisfied-fg); }
+  .sig.violated  { background: var(--c-contract-violated-bg);
+                   border-color: var(--c-contract-violated-border);
+                   color: var(--c-contract-violated-fg); }
+  .sig.unknown   { background: var(--c-contract-unknown-bg);
+                   border-color: var(--c-contract-unknown-border);
+                   color: var(--c-contract-unknown-fg); }
+  .sig.incident  { background: var(--c-contract-incident-bg);
+                   border-color: var(--c-contract-incident-border);
+                   color: var(--c-contract-incident-fg); }
+  #verifybar .hint { color: var(--c-text-muted); }
+  #verifydetail { display: none; padding: var(--p-space-3) var(--p-space-4);
+                  border-bottom: 1px solid var(--c-border-subtle);
+                  background: var(--c-surface-sunken); max-height: 30vh; overflow: auto; }
+  #verifydetail.open { display: block; }
+
+  /* ── 主体 ─────────────────────────────────────── */
+  main { flex: 1; display: flex; min-height: 0; }
+  aside {
+    width: 300px; flex: none; overflow: auto;
+    border-right: 1px solid var(--c-border-subtle);
+    padding: var(--p-space-4); background: var(--c-surface-raised);
+  }
+  section.chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  h2 { font-size: var(--p-font-size-h2); font-weight: 500;
+       margin: var(--p-space-4) 0 var(--p-space-2); }
+  aside h2:first-child { margin-top: 0; }
+  .muted { color: var(--c-text-muted); font-size: var(--p-font-size-bodySm); }
+
+  /* 环境项 */
+  .envrow { display: flex; gap: var(--p-space-2); align-items: flex-start;
+            padding: var(--p-space-1) 0; }
+  .envrow .k { flex: none; width: 96px; color: var(--c-text-secondary); }
+  .fix { background: var(--c-contract-degraded-bg);
+         border: 1px solid var(--c-contract-degraded-border);
+         color: var(--c-contract-degraded-fg);
+         border-radius: var(--p-radius-md); padding: var(--p-space-2);
+         margin: var(--p-space-2) 0; font-size: var(--p-font-size-bodySm); }
+
+  /* 算例 */
+  .case { border: 1px solid var(--c-border-subtle); border-radius: var(--p-radius-lg);
+          padding: var(--p-space-2) var(--p-space-3); margin-bottom: var(--p-space-2); }
+  .case.sel { border-color: var(--c-interactive-primary-bg); }
+  .case .name { font-weight: 500; }
+  .case .row { display: flex; gap: var(--p-space-2); align-items: center;
+               font-size: var(--p-font-size-caption); color: var(--c-text-muted); }
+  .case .acts { margin-top: var(--p-space-2); display: flex; gap: var(--p-space-2); }
+  .case button { height: 26px; font-size: var(--p-font-size-caption); padding: 0 var(--p-space-2); }
+
+  /* 对话 */
+  #stream { flex: 1; overflow: auto; padding: var(--p-space-4); }
+  .msg { margin-bottom: var(--p-space-4); max-width: 900px; }
+  .msg .who { font-size: var(--p-font-size-caption); color: var(--c-text-muted);
+              margin-bottom: var(--p-space-1); }
+  .msg.user .body { background: var(--c-surface-raised);
+                    border: 1px solid var(--c-border-subtle);
+                    border-radius: var(--p-radius-lg); padding: var(--p-space-3); }
+  .msg.assistant .body { white-space: pre-wrap; }
+  .tools { margin: var(--p-space-2) 0; border-left: 2px solid var(--c-border-subtle);
+           padding-left: var(--p-space-3); }
+  .tool { font-size: var(--p-font-size-bodySm); display: flex; gap: var(--p-space-2);
+          align-items: baseline; }
+  .tool .nm { font-family: var(--p-font-mono); font-size: var(--p-font-size-mono); }
+  .badge { border-radius: var(--p-radius-sm); padding: 0 6px; font-size: var(--p-font-size-caption); }
+  .badge.ok   { background: var(--c-contract-satisfied-bg); color: var(--c-contract-satisfied-fg); }
+  .badge.warn { background: var(--c-contract-degraded-bg); color: var(--c-contract-degraded-fg); }
+  .badge.bad  { background: var(--c-contract-violated-bg); color: var(--c-contract-violated-fg); }
+  .notice { background: var(--c-contract-degraded-bg); color: var(--c-contract-degraded-fg);
+            border: 1px solid var(--c-contract-degraded-border);
+            border-radius: var(--p-radius-md); padding: var(--p-space-2);
+            margin: var(--p-space-2) 0; font-size: var(--p-font-size-bodySm); }
+
+  #composer { border-top: 1px solid var(--c-border-subtle); padding: var(--p-space-3);
+              display: flex; gap: var(--p-space-2); background: var(--c-surface-raised); }
+  #composer textarea { flex: 1; resize: none; height: 44px; }
+  #err { display: none; margin: var(--p-space-2) var(--p-space-4) 0;
+         background: var(--c-contract-violated-bg); color: var(--c-contract-violated-fg);
+         border: 1px solid var(--c-contract-violated-border);
+         border-radius: var(--p-radius-md); padding: var(--p-space-2); }
+  #err.open { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PowerMCP 研究工作台</h1>
+  <span class="muted">MVP</span>
+  <span class="spacer"></span>
+  <span class="dot" id="conn"></span><span class="muted" id="connText">未连接</span>
+  <button class="ghost" id="theme">深色</button>
+</header>
+
+<div id="err"></div>
+
+<div id="verifybar">
+  <strong>校验层</strong>
+  <span class="sig satisfied">✔ <span id="cOk">0</span> 通过</span>
+  <span class="sig violated">✖ <span id="cBad">0</span> 违规</span>
+  <span class="sig unknown">? <span id="cUnk">0</span> 未判定</span>
+  <span class="hint" id="cHint">尚无工具调用</span>
+  <span class="spacer"></span>
+  <button class="ghost" id="vToggle">展开 ▾</button>
+</div>
+<div id="verifydetail">
+  <div class="muted">
+    <strong>契约 3（逐调用）</strong>由代理层产出：✔ 表示该次调用<strong>通过了参数校验并成功执行</strong>；
+    ✖ / ? 见下表。契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，不在事件流里 —— 看
+    <code>GET /contracts/t0</code>。
+    <br>⚠️ 「未出现告警」<strong>不等于</strong>「已校验」：本栏只统计<strong>确实发生</strong>的事件。
+  </div>
+  <div id="findings"></div>
+</div>
+
+<main>
+  <aside>
+    <h2>环境就绪</h2>
+    <div id="env"><div class="muted">加载中…</div></div>
+
+    <h2>算例库</h2>
+    <div id="cases"><div class="muted">加载中…</div></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="casePath" placeholder="算例文件的绝对路径" style="flex:1;min-width:0">
+      <button id="caseAdd">登记</button>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      登记只记路径与哈希，<strong>不复制文件</strong>；注销也<strong>不会删你的文件</strong>。
+    </div>
+  </aside>
+
+  <section class="chat">
+    <div id="stream"></div>
+    <div id="composer">
+      <textarea id="input" placeholder="问点什么……（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="send">发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const API = '';
+
+/* 调试/诊断参数（都在 URL query 上，不影响正常使用）：
+     ?nosse=1     轻量模式：不订阅事件流（省一条长连接；也让无头测试能跑通 ——
+                  EventSource 是**永不结束的请求**，会让 Chrome 的 --dump-dom 永远等不到网络空闲）
+     ?fullbody=1  读完整个 /chat 响应再解析（而非流式）—— 让**同一份帧解析代码**
+                  可被无头 `--dump-dom` 验证（虚拟时间不把响应体当作 pending，流式测不到）
+     ?selftest=1  自检模式：不订阅、不发请求，直接喂一组**合成事件**给渲染逻辑
+     ?ask=<问题>  打开即自动发一轮对话
+     ?dark        深色主题                                                */
+const QS = new URLSearchParams(location.search);
+const NOSSE = QS.get('nosse') === '1' || QS.get('selftest') === '1';
+const SELFTEST = QS.get('selftest') === '1';
+const FULLBODY = QS.get('fullbody') === '1';
+
+/* ══════════ 错误必须**在界面上**可见（验收判据：不需要开控制台） ══════════ */
+function showError(msg) {
+  const box = $('err');
+  box.textContent = msg;
+  box.classList.add('open');
+  console.error(msg);
+}
+function clearError() { $('err').classList.remove('open'); }
+
+async function api(path, opts) {
+  let r;
+  try {
+    r = await fetch(API + path, opts);
+  } catch (e) {
+    throw new Error(`无法连接网关（${path}）：${e.message}。网关起了吗？`);
+  }
+  const text = await r.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
+  if (!r.ok) {
+    const detail = (body && body.detail) ? body.detail : text.slice(0, 300);
+    throw new Error(`${path} → HTTP ${r.status}：${detail}`);
+  }
+  return body;
+}
+
+/* ══════════ ① 环境就绪 ══════════ */
+async function loadEnvironment() {
+  const e = await api('/environment');
+  const rows = [];
+  const fixes = [];
+  const add = (k, ok, v) => rows.push(
+    `<div class="envrow"><span class="k">${k}</span>` +
+    `<span>${ok ? '✅' : '⚠️'} ${md(v)}</span></div>`);
+
+  add('网关', e.gateway.python_ok, `Python ${e.gateway.python}`);
+  add('PowerMCP', e.powermcp.root_ok, e.powermcp.root_ok ? '仓库根已找到' : '**未找到仓库根**');
+
+  const llm = e.llm;
+  add('LLM', !!llm.configured,
+      llm.configured ? `${llm.model}（${llm.endpoint}）` : '**未配置**');
+  if (!llm.configured) {
+    fixes.push(
+      `<strong>LLM 未配置</strong> —— 对话功能不可用。设置这三个环境变量后重启网关：<br>` +
+      llm.required_env.map((k) => `<code>${esc(k)}</code>`).join(' · ') +
+      `<br>例如 DeepSeek：<code>POWERMCP_LLM_BASE_URL=https://api.deepseek.com</code>、` +
+      `<code>POWERMCP_LLM_MODEL=deepseek-v4-pro</code>`);
+  }
+
+  const p = e.paths;
+  add('路径围笼', p.set,
+      p.set ? `${p.roots.length} 个根` : '**未设置**');
+  if (!p.set) {
+    fixes.push(
+      `<strong>路径围笼未设</strong> —— server 子进程<strong>读不到你的算例目录</strong>。<br>` +
+      `把它所在目录加进 <code>${esc(p.env_var)}</code>（多个用 <code>;</code> 分隔）后重启网关。<br>` +
+      `<span class="muted">${md(p.note)}</span>`);
+  }
+
+  const m = e.modules;
+  add('选题模块', m.failed.length === 0,
+      `${m.enabled.length} 个启用` + (m.failed.length ? ` · **${m.failed.length} 个装配失败**` : ''));
+
+  $('env').innerHTML =
+    rows.join('') +
+    fixes.map((f) => `<div class="fix">${f}</div>`).join('') +
+    `<div class="muted" style="margin-top:8px">` +
+    `server 挂载状态见 <code>GET /contracts/t0</code>（本面板刻意不拉起 server，故秒回）。</div>`;
+}
+
+/* ══════════ ② 算例库 ══════════ */
+let selectedCase = null;
+
+async function loadCases() {
+  const body = await api('/cases');
+  const box = $('cases');
+  if (!body.cases.length) {
+    box.innerHTML = `<div class="muted">还没有算例。在下面填路径登记一个。</div>`;
+    return;
+  }
+  box.innerHTML = body.cases.map((c) => {
+    const tags = [];
+    if (!c.available) tags.push('<span class="badge bad">文件不在了</span>');
+    if (c.drift) tags.push('<span class="badge warn">内容已变</span>');
+    if (!c.within_allowed_roots) tags.push('<span class="badge warn">server 读不到</span>');
+    return `<div class="case ${selectedCase === c.id ? 'sel' : ''}" data-id="${c.id}">
+      <div class="name">${esc(c.label)}</div>
+      <div class="row"><span class="mono">${c.format}</span>
+        <span>${fmtBytes(c.size)}</span>${tags.join('')}</div>
+      <div class="acts">
+        <button data-act="select" data-id="${c.id}">选中</button>
+        <button data-act="parse" data-id="${c.id}">解析</button>
+        <button data-act="del" data-id="${c.id}" class="ghost">注销</button>
+      </div></div>`;
+  }).join('');
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* ★ 网关的 `notes` 字段里带 markdown（`**粗体**` / `` `代码` ``）——
+   它们本是给"读日志的人"写的。界面若当纯文本注入，用户会看到字面的 `**`。
+   故先 esc（防 XSS）再做最小渲染：只认 `**粗体**` 与 `` `代码` `` 两种。 */
+function md(s) {
+  return esc(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+?)`/g, '<code>$1</code>');
+}
+
+$('cases').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  const id = btn.dataset.id, act = btn.dataset.act;
+  clearError();
+  try {
+    if (act === 'select') {
+      selectedCase = (selectedCase === id) ? null : id;
+      await loadCases();
+    } else if (act === 'parse') {
+      btn.disabled = true; btn.textContent = '解析中…';
+      const r = await api(`/cases/${id}/parse`, { method: 'POST' });
+      const ir = await api(`/cases/${id}/ir`);
+      addSystemNote(
+        `已解析 <strong>${esc(ir.value_type || '')}</strong>（${fmtBytes(ir.ir_bytes)}，` +
+        `IR 可读：${ir.ir_parsed ? '是' : '否'}）`);
+      await loadCases();
+    } else if (act === 'del') {
+      await api(`/cases/${id}`, { method: 'DELETE' });
+      if (selectedCase === id) selectedCase = null;
+      addSystemNote(md('已注销登记（**源文件未删除**）'));
+      await loadCases();
+    }
+  } catch (e) {
+    showError(e.message);
+    if (act === 'parse') { btn.disabled = false; btn.textContent = '解析'; }
+  }
+});
+
+$('caseAdd').addEventListener('click', async () => {
+  const path = $('casePath').value.trim();
+  if (!path) { showError('请先填算例文件的绝对路径'); return; }
+  clearError();
+  try {
+    const r = await api('/cases', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    $('casePath').value = '';
+    addSystemNote(r.created ? '已登记算例' : '该路径已登记过，已更新');
+    await loadCases();
+  } catch (e) { showError(e.message); }
+});
+
+/* ══════════ ③ 会话 + 对话 ══════════ */
+let sessionId = null;
+let events = null;
+const findings = [];
+let nOk = 0, nBad = 0, nUnk = 0;
+
+async function ensureSession() {
+  if (sessionId) return sessionId;
+  const body = await api('/sessions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ servers: ['surge', 'powerio'] }),
+  });
+  sessionId = body.id;
+  if (!NOSSE) subscribeEvents(sessionId);
+  setConn(true, NOSSE ? '已连接（轻量模式：未订阅事件流）' : '已连接');
+  return sessionId;
+}
+
+function setConn(ok, text) {
+  $('conn').className = 'dot ' + (ok ? 'ok' : 'bad');
+  $('connText').textContent = text;
+}
+
+function subscribeEvents(sid) {
+  if (events) events.close();
+  events = new EventSource(`${API}/sessions/${sid}/events`);
+  events.addEventListener('evidence', (ev) => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (_) { return; }
+    handleEvidence(d);
+  });
+  events.onerror = () => setConn(false, '事件流断开（会自动重连）');
+  events.onopen = () => setConn(true, '已连接');
+}
+
+function handleEvidence(d) {
+  const kind = d.kind, p = d.payload || {};
+  if (kind === 'tool_call') {
+    nOk += 1;
+    addTool(p.server, p.tool, 'ok', p.args);
+  } else if (kind === 'tool_error') {
+    nBad += 1;
+    addTool(p.server, p.tool, 'bad', null, p.error);
+  } else if (kind === 'contract_violation' || kind === 'contract_unknown') {
+    findings.push({ kind, payload: p });
+    if (kind === 'contract_violation') nBad += 1; else nUnk += 1;
+    renderVerify();
+  } else if (kind === 'inventory_degraded') {
+    addSystemNote(md(`有 server 未拉起，本轮工具面不完整：` +
+      (p.failures || []).map((f) => `${f.server}: ${f.error}`).join('；')));
+  }
+  renderCounts();
+}
+
+function renderCounts() {
+  $('cOk').textContent = nOk;
+  $('cBad').textContent = nBad;
+  $('cUnk').textContent = nUnk;
+  $('cHint').textContent = nOk + nBad + nUnk === 0
+    ? '尚无工具调用' : `${nOk + nBad + nUnk} 次工具调用`;
+}
+
+function renderVerify() {
+  const box = $('findings');
+  if (!findings.length) {
+    box.innerHTML = `<div class="muted" style="margin-top:8px">本次会话还没有契约事件。</div>`;
+    return;
+  }
+  box.innerHTML = `<div style="margin-top:8px">` + findings.map((f) => {
+    const p = f.payload;
+    const state = f.kind === 'contract_violation' ? 'violated' : 'unknown';
+    const icon = state === 'violated' ? '✖' : '?';
+    const label = state === 'violated' ? '违规' : '未判定';
+    const extra = p.reason ? `（${p.reason}）` : '';
+    return `<div style="margin:6px 0">
+      <span class="sig ${state}">${icon} ${label}${extra}</span>
+      <span class="mono"> 契约 ${p.contract} · ${esc(p.subject || '')}</span>
+      <div class="muted" style="margin-left:4px">${esc(p.detail || '')}</div></div>`;
+  }).join('') + `</div>`;
+}
+
+/* ⚠️ `addSystemNote` 接收**已渲染的 HTML** —— 调用方必须自己 `md()` 或 `esc()`。 */
+function addSystemNote(html) {
+  const div = document.createElement('div');
+  div.className = 'notice';
+  div.innerHTML = html;
+  $('stream').appendChild(div);
+  $('stream').scrollTop = $('stream').scrollHeight;
+}
+
+/* ── 工具轨迹：按轮聚合 ── */
+let currentToolsBox = null;
+function newTurn() { currentToolsBox = null; }
+
+function addTool(server, tool, status, args, err) {
+  if (!currentToolsBox) {
+    currentToolsBox = document.createElement('div');
+    currentToolsBox.className = 'tools';
+    $('stream').appendChild(currentToolsBox);
+  }
+  const cls = status === 'ok' ? 'ok' : 'bad';
+  const tag = status === 'ok' ? '已执行' : '失败';
+  const div = document.createElement('div');
+  div.className = 'tool';
+  div.innerHTML = `<span class="badge ${cls}">${tag}</span>` +
+    `<span class="nm">${esc(server)}.${esc(tool)}</span>` +
+    (args ? `<span class="muted">${esc(JSON.stringify(args))}</span>` : '') +
+    (err ? `<span class="muted">${esc(err)}</span>` : '');
+  currentToolsBox.appendChild(div);
+  $('stream').scrollTop = $('stream').scrollHeight;
+}
+
+function addMessage(who, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + who;
+  div.innerHTML = `<div class="who">${who === 'user' ? '我' : '助手'}</div>` +
+    `<div class="body">${esc(text)}</div>`;
+  $('stream').appendChild(div);
+  $('stream').scrollTop = $('stream').scrollHeight;
+  return div.querySelector('.body');
+}
+
+/* ── SSE over POST：EventSource 只能 GET，故 /chat 必须自己解析流 ──
+   ★ 把「单帧解析」与「帧处理」抽成纯函数，让**流式**与**全量**两条路径共用同一份代码。
+     为什么需要全量路径：无头 `--dump-dom` 的虚拟时间**不把响应体当作 pending**，
+     所以流式响应永远测不到（预算会在流中途耗尽）。全量路径（`?fullbody=1`）让
+     **同一份帧解析代码**可被无头验证 —— 否则那段代码就成了没有护栏的盲区。 */
+function parseFrameBlock(block) {
+  let kind = null, data = null;
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event: ')) kind = line.slice(7);
+    else if (line.startsWith('data: ')) {
+      try { data = JSON.parse(line.slice(6)); } catch (_) { /* 坏帧跳过 */ }
+    }
+  }
+  return (kind && data) ? { kind, data } : null;
+}
+
+function handleChatFrame(kind, data, body) {
+  if (kind === 'text') {
+    body.textContent += data.text;
+    $('stream').scrollTop = $('stream').scrollHeight;
+  } else if (kind === 'final') {
+    body.textContent = data.text;
+  } else if (kind === 'notice') {
+    addSystemNote(md(data.detail));
+  } else if (kind === 'error') {
+    body.textContent = body.textContent || '（本轮未得出回答）';
+    showError('本轮失败：' + data.detail);
+  }
+}
+
+async function sendChat(text) {
+  const sid = await ensureSession();
+  addMessage('user', text);
+  newTurn();
+  const body = addMessage('assistant', '');
+  $('send').disabled = true;
+  /* ★ 把进度写进连接状态栏 —— 既是给用户的反馈，也让**无头测试**能看出"卡在哪一步"
+     （没有它时，一次失败的对话与"虚拟时间被提前掐断"在 DOM 上无法区分）。 */
+  const prog = (s) => { $('connText').textContent = s; };
+
+  prog('对话：正在建立请求…');
+  let resp;
+  try {
+    resp = await fetch(`${API}/sessions/${sid}/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+  } catch (e) {
+    $('send').disabled = false;
+    throw new Error(`无法连接网关：${e.message}`);
+  }
+  if (!resp.ok) {
+    $('send').disabled = false;
+    const t = await resp.text();
+    let d = t; try { d = JSON.parse(t).detail; } catch (_) {}
+    throw new Error(`对话失败 HTTP ${resp.status}：${d}`);
+  }
+  /* ⚠️ 首字节被服务端的 `build_inventory` 阻塞（挂载 server，秒级）——
+     用户会**盯着空白气泡等**。故立刻给出可解释的提示，而不是让界面看起来卡住。
+     （这正是 MVP 暴露的第一个真实可用性问题；根因是 T6-M5。） */
+  prog('对话：正在准备工具面（首次挂载 server 需数秒）…');
+
+  let nFrames = 0, nText = 0;
+
+  if (FULLBODY) {
+    /* 全量路径：读完整个响应再解析（无头可测；见上方说明） */
+    const text = await resp.text();
+    const frames = text.split('\n\n').map(parseFrameBlock).filter(Boolean);
+    for (const f of frames) {
+      nFrames += 1;
+      if (f.kind === 'text') nText += 1;
+      handleChatFrame(f.kind, f.data, body);
+    }
+  } else {
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const f = parseFrameBlock(buf.slice(0, i));
+        buf = buf.slice(i + 2);
+        if (!f) continue;
+        nFrames += 1;
+        if (f.kind === 'text') nText += 1;
+        handleChatFrame(f.kind, f.data, body);
+        prog(`对话：已收 ${nFrames} 帧（text ${nText}）`);
+      }
+    }
+  }
+  prog(`对话完成：${nFrames} 帧 / text ${nText}`);
+  $('send').disabled = false;
+}
+
+$('send').addEventListener('click', async () => {
+  const t = $('input').value.trim();
+  if (!t) return;
+  $('input').value = '';
+  clearError();
+  try { await sendChat(t); }
+  catch (e) { showError(e.message); $('send').disabled = false; }
+});
+
+$('input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('send').click(); }
+});
+
+/* ══════════ 顶部状态条与主题 ══════════ */
+$('vToggle').addEventListener('click', () => {
+  const d = $('verifydetail');
+  d.classList.toggle('open');
+  $('vToggle').textContent = d.classList.contains('open') ? '收起 ▴' : '展开 ▾';
+});
+
+$('theme').addEventListener('click', () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+  $('theme').textContent = dark ? '深色' : '浅色';
+});
+if (location.hash === '#dark') {
+  document.documentElement.setAttribute('data-theme', 'dark');
+  $('theme').textContent = '浅色';
+}
+
+/* ══════════ 自检模式（?selftest=1）══════════
+   把一组**合成事件**喂给渲染逻辑，用于无头验证：工具轨迹、契约计数、告警列表、降级提示。
+   预期结果：✔1 通过 · ✖2 违规（1 次工具失败 + 1 条契约违规）· ?1 未判定。 */
+function runSelftest() {
+  const seq = [
+    { kind: 'user_message', payload: { content: '（自检）对 case39 做 N-1' } },
+    { kind: 'tool_call', payload: { server: 'surge', tool: 'run_n1_branch_contingency',
+                                    args: { case_id: 'case39' } } },
+    { kind: 'tool_error', payload: { server: 'surge', tool: 'load_network',
+                                     error: 'PathNotAllowed: 路径不在允许根内' } },
+    { kind: 'contract_violation', payload: { contract: 3, state: 'violated', subject: 'pypsa',
+                                             detail: '入参 `linearized` 未被引擎接受，且无报错' } },
+    { kind: 'contract_unknown', payload: { contract: 3, state: 'unknown', reason: 'structural',
+                                           subject: 'genx',
+                                           detail: '该工具声明的 input_schema 含无法判定的字段' } },
+    { kind: 'inventory_degraded', payload: { failures: [{ server: 'opendss', error: '握手超时' }] } },
+  ];
+  seq.forEach((e, i) => handleEvidence({ seq: i + 1, kind: e.kind, payload: e.payload, at: '' }));
+}
+
+/* ══════════ 启动 ══════════ */
+(async function boot() {
+  renderCounts();
+  renderVerify();
+  if (SELFTEST) {
+    setConn(true, '自检模式');
+    runSelftest();
+    $('env').innerHTML = '<div class="muted">自检模式：不请求 /environment</div>';
+    $('cases').innerHTML = '<div class="muted">自检模式：不请求 /cases</div>';
+    return;
+  }
+  try {
+    await loadEnvironment();
+    await loadCases();
+    setConn(true, '就绪（尚未建会话）');
+    // ★ `?ask=<问题>` 自动发一轮 —— 无头端到端测试用；也方便把"某个问题"做成可分享的链接。
+    const ask = QS.get('ask');
+    if (ask) await sendChat(ask);
+  } catch (e) {
+    setConn(false, '网关不可达');
+    showError(e.message);
+  }
+})();
+</script>
+</body>
+</html>

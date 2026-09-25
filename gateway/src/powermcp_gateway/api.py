@@ -16,6 +16,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .agent import DEFAULT_MAX_ROUNDS, AgentEvent, run_turn
 from .audit import AuditLog
@@ -838,4 +839,22 @@ def create_app(cfg: GatewayConfig | None = None, *,
 
     register_session_routes(app)
     register_case_routes(app)
+    _mount_ui(app)
     return app
+
+
+def _mount_ui(app: FastAPI) -> None:
+    """把前端静态产物挂在 `/ui`（方案 v4 §九：静态文件由 FastAPI 单进程 serve）。
+
+    ★ **为什么必须同源**：前端若用 `file://` 打开，调 `http://127.0.0.1:...` 属**跨源**请求，
+      浏览器会直接拦掉 —— 表现为"界面打开了但什么都加载不出来"。
+      挂在同一进程下就绕开了 CORS，也不需要给网关加 CORS 中间件（少一个安全面）。
+
+    ⚠️ 目录不存在时**静默跳过** —— 网关要能独立使用，不能因为前端没构建就起不来。
+    """
+    try:
+        ui_dir = _cfg().powermcp_root.parent / "frontend"
+    except Exception:  # 配置无法解析时不影响 app 组装（端点自己会报 503）
+        return
+    if ui_dir.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
