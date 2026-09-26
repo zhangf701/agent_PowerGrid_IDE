@@ -11,7 +11,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import pfFx from "./__fixtures__/gateway/result-power-flow.json";
 import n1Fx from "./__fixtures__/gateway/result-n1.json";
 import { ResultSummary, ToolCallRow } from "./components";
-import { BUS_CONVENTION, extractResults, unwrapMcpResult } from "./results";
+import { extractResults, unwrapMcpResult } from "./results";
 
 afterEach(cleanup);
 
@@ -44,9 +44,19 @@ describe("extractResults —— 潮流（真实夹具）", () => {
     expect(min.ref!.id).toBe(76); // ★ 不是 78
   });
 
-  it("★ 编号约定标 **1-based**（不是 byEngine 里写的 0-based）", () => {
-    expect(BUS_CONVENTION).toBe("1-based");
+  it("★ 编号约定 = **1-based**，来自 byOutput 查表（不是硬编码，也不是 byEngine 的 0-based）", () => {
+    // F-5：约定按「输出」标注 —— 真源是 tokens.json#identifierConvention.byOutput
     expect(items.find((i) => i.label === "最低电压")!.ref!.convention).toBe("1-based");
+  });
+
+  it("★ 未实测的输出 → 约定 unknown（宁可未知，不可猜错 —— F-5 的反例：pandapower 是 0-based）", () => {
+    // pandapower.run_power_flow 不在 byOutput 表里，且 byEngine.pandapower = 0-based ≠ 1-based
+    const sample = {
+      is_error: false,
+      inner: { results: { converged: true, vm: [0.95, 1.01], bus_numbers: [1, 2] } },
+    };
+    const items = extractResults("pandapower", "run_power_flow", sample);
+    expect(items.find((i) => i.label === "最低电压")!.ref!.convention).toBe("unknown");
   });
 
   it("最高电压 = 1.05 pu @ 母线 10", () => {

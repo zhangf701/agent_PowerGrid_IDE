@@ -116,6 +116,20 @@ describe("Identifier —— 约定不得猜测", () => {
     expect(deriveConvention(undefined)).toBe("unknown");
   });
 
+  it("★ F-5：带输出键 → 只查 byOutput（约定按「输出」标注，不按「引擎」）", () => {
+    // 实测条目（case118，2026-09-26）：surge 母线号输出是 1-based，
+    // 而 byEngine.surge = 0-based（矩阵索引）—— 同引擎、不同输出、不同约定
+    expect(deriveConvention("surge", "surge.run_ac_power_flow.bus_numbers")).toBe("1-based");
+    expect(deriveConvention(undefined, "surge.run_n1_branch_contingency.bus_number")).toBe("1-based");
+  });
+
+  it("★ F-5：输出键未命中 → unknown，**不回退 byEngine**（两表语义不同，混用正是错因）", () => {
+    // surge.run_dc_power_flow 未实测 —— 若回退 byEngine 会拿到 0-based（矩阵索引语义），
+    // 对母线号输出是错的 ⇒ 必须如实 unknown
+    expect(deriveConvention("surge", "surge.run_dc_power_flow.bus_numbers")).toBe("unknown");
+    expect(deriveConvention(undefined, "不存在.的输出")).toBe("unknown");
+  });
+
   it("渲染出约定后缀", () => {
     const { container: a } = render(<Identifier id={13} engine="pypsa" />);
     expect(a.textContent).toContain("13");

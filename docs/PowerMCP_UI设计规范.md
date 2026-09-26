@@ -922,7 +922,8 @@ measure("142.47%", ...)
 
 ### 功能说明
 
-渲染一个**元件标识符**，并标注其**编号约定**。约定缺省时由 `engine` 查表推导（见「引擎与约定的绑定」）——
+渲染一个**元件标识符**，并标注其**编号约定**。约定缺省时查表推导（提供 `outputKey` → 查 `byOutput`；
+否则由 `engine` 查 `byEngine`，见「引擎与约定的绑定」）——
 **查不到就显示「约定未知」，绝不猜一个值**。
 
 ### 为什么需要
@@ -949,8 +950,9 @@ export type Convention = '0-based' | '1-based' | 'unknown';
 | 属性 | 类型 | 必填 | 默认 | 说明 |
 |---|---|:--:|---|---|
 | `id` | `number \| string` | ✅ | — | 元件编号。PyPSA 的元件名可为字符串（如 `"line_0"`） |
-| `convention` | `Convention` | — | **由 `engine` 查表推导；查不到 → `'unknown'`** | 编号约定。**不得猜测** |
-| `engine` | `EngineId` | — | — | 引擎名（**小写 server id**）。参与推导，并在显式传 `convention` 时校验冲突 |
+| `convention` | `Convention` | — | **查表推导；查不到 → `'unknown'`** | 编号约定。**不得猜测** |
+| `engine` | `EngineId` | — | — | 引擎名（**小写 server id**）。无输出键时参与推导，并在显式传 `convention` 时校验冲突 |
+| `outputKey` | `string` | — | — | ★ 输出键 `server.tool.field`（F-5）。提供时**优先查 `byOutput` 表**；未命中 → `'unknown'`（**不回退** `byEngine`） |
 | `kind` | `string` | — | — | 元件类型。**不作封闭枚举** —— 引擎实际类型含 `line`/`trafo`/`trafo3w`/`ext_grid`/`sgen`/`shunt`/`storage` 等，封闭枚举会逼出 `as any` 强转 |
 
 ### 引擎与约定的绑定
@@ -959,12 +961,26 @@ export type Convention = '0-based' | '1-based' | 'unknown';
 > 若绑定表写 `PyPSA` 而真源键是 `pypsa`，运行时查表未命中 → 落到兜底分支 →
 > **静默标错约定**。这恰是本组件要防的那个缺陷（偏差放大 3.1 亿倍）在实现层的重演。
 
-| server id | 约定 | 渲染后缀 | 实测依据 |
-|---|---|---|---|
-| `pandapower` | 0-based | `(0-based)` | case30 跨引擎比对实测 |
-| `surge` | 0-based | `(0-based)` | case30 PTDF/LODF 实测（索引 12/15/33 与 pandapower 一致） |
-| `pypsa` | 1-based | `(1-based)` | case30 跨引擎比对实测 |
-| `andes` · `egret` · `opendss` · `hope` · `genx` · `powerio` | **`unknown`** | `(约定未知)` | ⚠️ **未实测** |
+**★ F-5（2026-09-26 实测裁定）：约定是「输出」的属性，不是「引擎」的属性。**
+同一引擎的不同输出约定可以不同 —— surge 的**矩阵索引**是 0-based（case30 PTDF/LODF 实测），
+但其**母线号输出**是 1-based（case118 实测：`bus_numbers` = 1…118；N-1 的 `bus_number` 出现 118，
+而 0-based 最大只能是 117 —— 决定性）。单张按引擎的表表达不了这件事。
+
+**第一优先：`byOutput` 表**（`tokens.json#identifierConvention.byOutput`，键 `server.tool.field`，**只收实测条目**）：
+
+| 输出键 | 约定 | 实测依据 |
+|---|---|---|
+| `surge.run_ac_power_flow.bus_numbers` | **1-based** | case118：`bus_numbers` = 1…118（源文件编号） |
+| `surge.run_n1_branch_contingency.bus_number` | **1-based** | case118 N-1：`bus_number` 出现 118 —— 0-based 最大只能是 117 |
+
+**回退：`byEngine` 表**（仅在调用**未提供**输出键时使用；语义 = 该引擎**数据模型下标**的约定）：
+
+| server id | 约定 | 实测依据 |
+|---|---|---|
+| `pandapower` | 0-based | case30 跨引擎比对实测（数据模型下标） |
+| `surge` | 0-based | case30 PTDF/LODF 实测 —— ⚠️ **只对「矩阵索引」成立**，母线号见 byOutput |
+| `pypsa` | 1-based | case30 跨引擎比对实测 |
+| `andes` · `egret` · `opendss` · `hope` · `genx` · `powerio` | **`unknown`** | ⚠️ **未实测** |
 
 > **为什么后 6 个标 `unknown` 而不是猜一个**：本项目只实测过 pandapower / PyPSA / surge 三者。
 > 给未实测的引擎编一个约定值，等于把「**确定语气下的假声明**」重演一遍 —— 而那是这条规则当初要消灭的东西。
@@ -973,8 +989,11 @@ export type Convention = '0-based' | '1-based' | 'unknown';
 **推导规则**（`convention` 未显式传入时）：
 
 ```
-convention = BY_ENGINE[engine]     // 查 tokens.json#identifierConvention.byEngine
-           = 'unknown'             // engine 缺省 或 查表未命中
+带输出键：  convention = BY_OUTPUT[server.tool.field]   // 查 tokens.json#identifierConvention.byOutput
+                       = 'unknown'                      // ★ 未命中 → unknown，**不回退 byEngine**
+                                                        //   （两表语义不同：输出字段 vs 数据模型下标，混用正是 F-5 的错因）
+仅引擎：    convention = BY_ENGINE[engine]              // 查 tokens.json#identifierConvention.byEngine
+                       = 'unknown'                      // engine 缺省 或 查表未命中
 ```
 
 > ⚠️ **兜底是 `unknown`，不是 `0-based`。** 本规范草案曾兜底为 `0-based` ——
@@ -985,8 +1004,8 @@ convention = BY_ENGINE[engine]     // 查 tokens.json#identifierConvention.byEng
 | # | 机制 | 生效时机 | 防的是 |
 |---|---|---|---|
 | 1 | `engine` 的类型是 9 个 server id 的**字面量联合** | **编译期** | 写 `engine="PyPSA"` 直接编译错误 |
-| 2 | 查表未命中 → `unknown` | 运行时 | 接入新引擎时不会静默标错 |
-| 3 | 显式传 `convention` 且与 `engine` 矛盾 → 抛错 | 运行时 | 人工断言与引擎事实冲突 |
+| 2 | 查表未命中 → `unknown`（byOutput 未命中**不回退** byEngine） | 运行时 | 接入新引擎/新输出时不会静默标错 |
+| 3 | 显式传 `convention` 且与（输出/引擎）查表结果矛盾 → 抛错 | 运行时 | 人工断言与事实冲突 |
 
 第 1 条把「大小写写错」从**运行时静默错误**提前成了**编译错误** —— 这是本组件防线的关键一环。
 

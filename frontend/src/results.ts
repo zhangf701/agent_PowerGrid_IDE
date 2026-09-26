@@ -14,7 +14,7 @@
  *    ② **不猜编号约定**（§4.5）：未实测的输出标 `unknown`（渲染成「约定未知」），
  *       而不是套用引擎级默认值 —— 那是「语气确定的假声明」。
  */
-import { measure, type Convention, type ResultItem } from "./components";
+import { deriveConvention, measure, type Convention, type ResultItem } from "./components";
 
 /** 结果摘要的形状（由网关 `_result_excerpt()` 产出）。
  *
@@ -48,23 +48,21 @@ export function unwrapMcpResult(result: unknown): unknown | null {
   return null;
 }
 
-/** ★ `bus_numbers` / `bus_number` 的编号约定 = **1-based**（源文件编号）。
+/** ★ 母线标识符的约定 = **按「输出」查表**（`tokens.json#identifierConvention.byOutput`）。
  *
- *  **实测证据（2026-09-26）**：
- *  - `case118` 的 `run_ac_power_flow` → `bus_numbers` = 1…118（118 条）；
- *  - `case118` 的 `run_n1_branch_contingency` → `bus_number` **出现 118**
- *    （0-based 的最大值只能是 117，故 118 是决定性证据）。
+ *  **F-5（2026-09-26 实测裁定）**：约定是「输出」的属性，不是「引擎」的属性 ——
+ *  - `surge.run_ac_power_flow.bus_numbers` = **1-based**（case118 实测：1…118，源文件编号）；
+ *  - `surge.run_n1_branch_contingency.bus_number` = **1-based**（case118 N-1 出现 118，
+ *    0-based 最大只能是 117 —— 决定性）；
+ *  - 而 surge 的**矩阵索引**是 0-based（case30 PTDF/LODF）—— 同引擎、不同输出、不同约定。
  *
- *  ⚠️⚠️ **这**不是** tokens 里写的 `byEngine.surge = "0-based"`** ——
- *    spec 的依据是「case30 PTDF/LODF 实测（索引 12/15/33 与 pandapower 一致）」，
- *    那说的是**矩阵索引**；而母线号是**源文件编号**。⇒ **约定是按「输出」的，不是按「引擎」的**
- *    （见 F-5）。冻结的 `byEngine` 表表达不了这件事，故此处**显式传 convention 且不传 engine**
- *    （传 engine 会因与 `byEngine` 冲突而按 §4.5 抛错 —— 那正是该守卫在起作用）。
- *
- *  ⚠️ **边界**：只对 **MATPOWER 源**实测过。其他源格式（PSS/E `.raw` 等）需另行实测，
- *    未实测前不应套用此值。
+ *  故此处**不再硬编码**（首版曾硬编码 `BUS_CONVENTION="1-based"`，会把 pandapower
+ *  这类 0-based 引擎的潮流结果也标错），而是按 `server.tool.field` 查真源表；
+ *  未实测的输出 → `unknown` → 界面渲染「(约定未知)」—— 宁可未知，不可猜错。
  */
-export const BUS_CONVENTION: Convention = "1-based";
+function busConvention(server: string, tool: string, field: string): Convention {
+  return deriveConvention(undefined, `${server}.${tool}.${field}`);
+}
 
 /** 潮流结果里电压的判据单位（有量纲量：单位即判据，无需 criterion）。 */
 const PF_SHAPES = new Set(["run_ac_power_flow", "run_power_flow", "run_dc_power_flow"]);
@@ -84,14 +82,16 @@ function extremeIndex(values: unknown[], mode: "min" | "max"): number {
   return best;
 }
 
-/** 潮流结果 → 收敛 / 最低电压 / 最高电压（后两者带**母线标识符**）。 */
-function extractPowerFlow(inner: unknown, source: string): ResultItem[] {
+/** 潮流结果 → 收敛 / 最低电压 / 最高电压（后两者带**母线标识符**，约定按输出查表）。 */
+function extractPowerFlow(inner: unknown, server: string, tool: string): ResultItem[] {
+  const source = `${server}.${tool}`;
   const r = (inner as { results?: Record<string, unknown> } | null)?.results;
   if (!r) return [];
   const vm = r.vm;
   const buses = r.bus_numbers;
   if (!Array.isArray(vm) || !Array.isArray(buses) || vm.length !== buses.length) return [];
 
+  const conv = busConvention(server, tool, "bus_numbers");
   const items: ResultItem[] = [];
   if (typeof r.converged === "boolean") {
     items.push({
@@ -105,14 +105,14 @@ function extractPowerFlow(inner: unknown, source: string): ResultItem[] {
     items.push({
       label: "最低电压",
       value: measure(vm[iMin], { unit: "pu" }, source),
-      ref: { id: buses[iMin] as number, convention: BUS_CONVENTION, kind: "bus" },
+      ref: { id: buses[iMin] as number, convention: conv, kind: "bus" },
     });
   }
   if (iMax >= 0) {
     items.push({
       label: "最高电压",
       value: measure(vm[iMax], { unit: "pu" }, source),
-      ref: { id: buses[iMax] as number, convention: BUS_CONVENTION, kind: "bus" },
+      ref: { id: buses[iMax] as number, convention: conv, kind: "bus" },
     });
   }
   return items;
@@ -158,7 +158,7 @@ export function extractResults(
   const inner = unwrapMcpResult(resultExcerpt);
   if (inner === null) return [];
   const source = `${server}.${tool}`;
-  if (PF_SHAPES.has(tool)) return extractPowerFlow(inner, source);
+  if (PF_SHAPES.has(tool)) return extractPowerFlow(inner, server, tool);
   if (tool === "run_n1_branch_contingency") return extractN1(inner, source);
   return [];
 }

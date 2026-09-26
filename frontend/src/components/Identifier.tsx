@@ -39,8 +39,23 @@ function asConvention(v: unknown): Convention {
   return CONVENTIONS.includes(v as Convention) ? (v as Convention) : "unknown";
 }
 
-/** 由 engine 查表推导约定。**engine 缺省或查表未命中 → `unknown`**（兜底不是 `0-based`）。 */
-export function deriveConvention(engine?: EngineId): Convention {
+/** 由约定表推导。
+ *
+ *  ★ F-5（2026-09-26 实测裁定）：**约定是「输出」的属性，不是「引擎」的属性** ——
+ *    同一引擎的不同输出约定不同（surge 的矩阵索引 0-based，其母线号输出 1-based：
+ *    case118 的 `bus_numbers` = 1…118）。
+ *
+ *  - 带 `outputKey`（`server.tool.field`）→ **只查 `byOutput`**，未命中 → `unknown`。
+ *    ★ **不回退 `byEngine`** —— 两张表语义不同（输出字段 vs 数据模型下标），
+ *    混用回退正是 F-5 的错因。
+ *  - 只带 `engine` → 查 `byEngine`（数据模型下标约定的旧语义，向后兼容）。
+ *    engine 缺省或查表未命中 → `unknown`（兜底不是 `0-based`）。
+ */
+export function deriveConvention(engine?: EngineId, outputKey?: string): Convention {
+  if (outputKey) {
+    const byOutput = identifierConvention.byOutput as Record<string, unknown> | undefined;
+    return asConvention(byOutput?.[outputKey]);
+  }
   if (!engine) return "unknown";
   const table = identifierConvention.byEngine as Record<string, unknown>;
   return asConvention(table[engine]);
@@ -60,6 +75,9 @@ export function Identifier({
   id,
   convention,
   engine,
+  /** 输出键 `server.tool.field` —— 查 `byOutput`（F-5：约定按「输出」标注）。
+   *  提供时**优先于 engine 查表**，且未命中如实落 `unknown`（不回退 byEngine）。 */
+  outputKey,
   /** 元件类型。**不作封闭枚举** —— 引擎实际类型含 line/trafo/trafo3w/ext_grid/... ，
    *  封闭枚举会逼出 `as any` 强转。 */
   kind,
@@ -67,14 +85,16 @@ export function Identifier({
   id: number | string;
   convention?: Convention;
   engine?: EngineId;
+  outputKey?: string;
   kind?: string;
 }) {
-  const derived = deriveConvention(engine);
+  const derived = deriveConvention(engine, outputKey);
 
-  // ③ 人工断言与引擎事实冲突 → 抛错，不静默采信任何一方
-  if (convention && engine && convention !== derived) {
+  // ③ 人工断言与（输出/引擎）事实冲突 → 抛错，不静默采信任何一方
+  if (convention && (engine || outputKey) && convention !== derived) {
     throw new Error(
-      `Identifier: 显式约定 \`${convention}\` 与引擎 \`${engine}\` 的约定 \`${derived}\` 冲突 —— ` +
+      `Identifier: 显式约定 \`${convention}\` 与查表结果 \`${derived}\` 冲突` +
+        `${outputKey ? `（输出 ${outputKey}）` : engine ? `（引擎 ${engine}）` : ""} —— ` +
         "两者必有一个错，不能都信（§4.5 三重防护 ③）。",
     );
   }
@@ -83,7 +103,7 @@ export function Identifier({
   return (
     <span
       className="whitespace-nowrap"
-      title={`${kind ? `${kind} · ` : ""}约定来源：${engine ?? "未指定引擎"}`}
+      title={`${kind ? `${kind} · ` : ""}约定来源：${outputKey ?? engine ?? "未指定"}`}
     >
       <span className={MONO}>{id}</span>{" "}
       <span className="text-text-muted">{conventionSuffix(conv)}</span>
