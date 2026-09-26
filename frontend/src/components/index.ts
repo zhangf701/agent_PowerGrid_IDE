@@ -44,5 +44,5 @@ export { ContractCard } from "./ContractCard";
 export { VerificationLayer, summarizeFindings } from "./VerificationLayer";
 export type { ContractSummary } from "./VerificationLayer";
 
-export { ToolCallRow } from "./ToolCallRow";
+export { ToolCallRow, declaredOutputs, OUTPUT_ARG_KEYS } from "./ToolCallRow";
 export type { ToolCallRowProps } from "./ToolCallRow";

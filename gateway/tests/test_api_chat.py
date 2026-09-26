@@ -458,3 +458,39 @@ async def test_case_context_reports_parsed_state(monkeypatch, tmp_path):
     sent = provider.calls[0]["messages"]
     assert sent[0].role == "system"
     assert "已解析：是" in sent[0].content
+
+
+async def test_case_context_forbids_reparsing(monkeypatch, tmp_path):
+    """★ 判据 #1 验收暴露：模型在后续步骤里**重新调了 `powerio.parse`**，
+    而附录 A 步骤 4 明确要求「复用同一份 IR，不要重新解析」。
+
+    故上下文必须显式禁止重复 parse，并给出**可执行**的替代路径
+    （各引擎的 `*_from_any(file_path=…)` 是引擎自身导入，不算重新解析）。
+    """
+    import json as _json
+    from powermcp_gateway.cases import ENV_CASES_ROOT
+
+    cases = tmp_path / "cases"; cases.mkdir()
+    case_file = tmp_path / "case14.m"
+    case_file.write_text("% dummy\n", encoding="utf-8")
+    monkeypatch.setenv(ENV_CASES_ROOT, str(cases))
+
+    provider = FakeProvider([[Chunk(text="好的")]])
+    app, sid, _ = await _setup(monkeypatch, provider, cases_root=str(cases))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        cid = (await c.post("/cases", json={"path": str(case_file)})).json()["case"]["id"]
+        d = cases / cid; d.mkdir()
+        (d / "parse.json").write_text(_json.dumps({
+            "case_id": cid, "source_path": str(case_file),
+            "source_sha256": "x", "value_type": "powerio.BalancedNetwork",
+            "ir": "{}", "ir_parsed": True, "parsed_at": "2026-09-25T00:00:00",
+        }, ensure_ascii=False), encoding="utf-8")
+
+    await _read(await _call(app, sid, {"message": "hi"}))
+    ctx = provider.calls[0]["messages"][0].content
+
+    assert "powerio.parse" in ctx, "必须点名要禁的那个工具"
+    assert "不要" in ctx and "重新解析" in ctx
+    # ★ 不能只说"禁止" —— 还得给出**可执行**的替代（否则模型无从下手，只能照旧重复 parse）
+    assert "_from_any" in ctx
+    assert "load_network_from_any" in ctx and "import_case_from_any" in ctx

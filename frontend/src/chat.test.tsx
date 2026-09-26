@@ -20,6 +20,7 @@ import {
   ContractBadge,
   ToolCallRow,
   VerificationLayer,
+  declaredOutputs,
   summarizeFindings,
 } from "./components";
 import { drainFrames, parseAllFrames, parseFrameBlock } from "./sse";
@@ -280,6 +281,60 @@ describe("ToolCallRow", () => {
     expect(details).not.toBeNull();
     expect(details!.open).toBe(false); // 默认折叠
     expect(container.textContent).toContain("契约标注");
+  });
+});
+
+/* ── ★ 输出文件知情（判据 #1 验收暴露：pypsa 往用户数据目录写了 .nc） ── */
+
+describe("ToolCallRow —— 输出文件必须让用户知情", () => {
+  it("declaredOutputs 认 output_path / out_path / output_dir", () => {
+    expect(declaredOutputs({ output_path: "a.nc" })).toEqual(["a.nc"]);
+    expect(declaredOutputs({ out_path: "b.m" })).toEqual(["b.m"]);
+    expect(declaredOutputs({ output_dir: "d/" })).toEqual(["d/"]);
+  });
+
+  it("★ 有意**排除** `dest`（电力语境里可能是「目标母线」，非路径）", () => {
+    expect(declaredOutputs({ dest: "bus_5" })).toEqual([]);
+  });
+
+  it("非字符串 / 空串 / 无参数 → 不产出", () => {
+    expect(declaredOutputs({ output_path: 123 })).toEqual([]);
+    expect(declaredOutputs({ output_path: "   " })).toEqual([]);
+    expect(declaredOutputs(null)).toEqual([]);
+    expect(declaredOutputs(undefined)).toEqual([]);
+  });
+
+  it("渲染出输出路径，且措辞守住「参数声明 ≠ 确实写入」的边界", () => {
+    const { container } = render(
+      <ToolCallRow
+        server="pypsa"
+        tool="import_case_from_any"
+        status="ok"
+        args={{ file_path: "case118.m", output_path: "D:/x/case118_pypsa.nc" }}
+      />,
+    );
+    expect(container.textContent).toContain("输出文件（按参数声明）");
+    expect(container.textContent).toContain("case118_pypsa.nc");
+  });
+
+  it("调用失败时明说「未确认写入」（不谎报已写）", () => {
+    const { container } = render(
+      <ToolCallRow
+        server="pypsa"
+        tool="import_case_from_any"
+        status="bad"
+        args={{ output_path: "D:/x/a.nc" }}
+        error="boom"
+      />,
+    );
+    expect(container.textContent).toContain("未确认写入");
+  });
+
+  it("没有输出类参数 → 不渲染该行（避免噪声）", () => {
+    const { container } = render(
+      <ToolCallRow server="surge" tool="run_power_flow" status="ok" args={{ algorithm: "nr" }} />,
+    );
+    expect(container.textContent).not.toContain("输出文件");
   });
 });
 

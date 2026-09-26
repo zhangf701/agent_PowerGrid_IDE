@@ -9,6 +9,27 @@
  */
 import { Signature } from "./Signature";
 
+/** 由**参数声明**的输出目标参数名。
+ *
+ *  ★ 白名单来自 PowerMCP **真实 server 代码**（2026-09-26 核实，已排除 `.venv` 与 `tests`）：
+ *    `output_path` 14 处 · `output_dir` 10 处 · `out_path` 5 处。
+ *  ★ **有意排除 `dest`**：它在电力语境里可能是「目标母线」，且实测只出现在测试代码里。
+ *  ⚠️ **局限**：工具若用别的参数名声明输出，本组件标不出来（白名单制）。
+ *     根治办法是让工具 schema 显式标注「写入目标」，那是上游改动，非本层能解决。
+ */
+export const OUTPUT_ARG_KEYS = ["output_path", "output_dir", "out_path"] as const;
+
+/** 从参数里取出**声明的**输出路径。
+ *  ⚠️ 这是**参数**而非**结果** —— 只说明「这次调用被要求写到哪」，
+ *  **不等于**「确实写成功了」。渲染措辞必须守住这条边界。 */
+export function declaredOutputs(args?: Record<string, unknown> | null): string[] {
+  if (!args) return [];
+  return OUTPUT_ARG_KEYS.flatMap((k) => {
+    const v = args[k];
+    return typeof v === "string" && v.trim() ? [v] : [];
+  });
+}
+
 export interface ToolCallRowProps {
   server: string;
   tool: string;
@@ -22,6 +43,8 @@ export interface ToolCallRowProps {
 }
 
 export function ToolCallRow({ server, tool, status, args, error, contract }: ToolCallRowProps) {
+  const outputs = declaredOutputs(args);
+
   return (
     <div data-testid="tool-call-row" className="py-0.5 text-caption">
       <div className="flex flex-wrap items-baseline gap-2">
@@ -34,6 +57,16 @@ export function ToolCallRow({ server, tool, status, args, error, contract }: Too
         )}
         {error && <span className="text-text-muted">{error}</span>}
       </div>
+
+      {/* ★ 工具会往**用户的数据目录**写文件 —— 必须让用户看见（判据 #1 验收暴露）。
+          措辞严格守住「参数声明 ≠ 确实写入」这条边界。 */}
+      {outputs.length > 0 && (
+        <div className="mt-0.5 text-text-muted">
+          输出文件（按参数声明）：
+          <span className="font-mono">{outputs.join("、")}</span>
+          {status !== "ok" && <span>（本次调用失败，未确认写入）</span>}
+        </div>
+      )}
 
       {/* ★ 契约标注：默认折叠的旁路标注，不阻断结果呈现 */}
       {contract && (
