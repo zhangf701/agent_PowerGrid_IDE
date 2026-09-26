@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -586,3 +587,90 @@ def test_violation_takes_precedence_over_unusable_schema(monkeypatch):
     assert "contract_unknown" not in kinds, (
         f"已被拒发的调用不得再报『无法判定』（会带出与事实相反的声明），实际 {kinds}"
     )
+
+
+# ---------------------------------------------------------------- 结果摘要（F-4 接线）
+
+from powermcp_gateway.proxy import (  # noqa: E402
+    RESULT_EXCERPT_MAX_BYTES,
+    _json_safe,
+    _result_excerpt,
+)
+
+
+def test_json_safe_replaces_nan_and_infinity():
+    """★ 必须有：surge 的 N-1 结果里含 NaN（如 min_vm_pu），
+    而 Python 的 json.dumps 默认放行 NaN/Infinity，**JS 的 JSON.parse 会直接抛错**。"""
+    assert _json_safe(float("nan")) is None
+    assert _json_safe(float("inf")) is None
+    assert _json_safe(float("-inf")) is None
+    assert _json_safe(1.5) == 1.5
+    assert _json_safe([1.0, float("nan")]) == [1.0, None]
+    assert _json_safe({"a": {"b": float("nan")}}) == {"a": {"b": None}}
+
+
+def test_result_excerpt_is_json_parseable_with_nan():
+    """摘要序列化后必须是**严格 JSON**（含 NaN 时也是）。"""
+    import json as _json
+
+    text = _json.dumps(_result_excerpt({"vm": [1.0, float("nan")]}), ensure_ascii=False)
+    assert "NaN" not in text and "Infinity" not in text
+    # 严格模式解析（allow_nan=False 等价于 JS 的 JSON.parse 不接受 NaN）
+    assert _json.loads(text, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+
+
+def test_result_excerpt_wraps_non_mcp_as_raw():
+    r = {"status": "success", "results": {"converged": True, "iterations": 3}}
+    assert _result_excerpt(r) == {"raw": r}
+    assert _result_excerpt([1, 2, 3]) == {"raw": [1, 2, 3]}
+
+
+def test_result_excerpt_parses_mcp_inner_json():
+    """★ 必须在网关侧解析内层 —— 否则 JSON 被**二次转义**，
+    实测膨胀 ~59%（23 KB 的 N-1 结果 → 36.5 KB 摘要，直接顶破上限）。"""
+    inner = {"status": "success", "results": {"vm": [0.9, 1.0], "bus_numbers": [1, 2]}}
+    r = {"is_error": False, "content": [{"type": "text", "text": json.dumps(inner)}]}
+    out = _result_excerpt(r)
+    assert out["is_error"] is False
+    assert out["inner"] == inner, "内层必须已解析成对象，而不是转义过的字符串"
+
+
+def test_result_excerpt_keeps_non_json_text_as_text():
+    r = {"is_error": False, "content": [{"type": "text", "text": "纯文本结果"}]}
+    assert _result_excerpt(r) == {"is_error": False, "text": "纯文本结果"}
+
+
+def test_result_excerpt_over_cap_gives_shape_not_half_array():
+    """★ 超限时**不截断数组**（半截数组比没有更危险），只给形状摘要。"""
+    inner = {"vm": [0.9] * (RESULT_EXCERPT_MAX_BYTES // 4), "bus_numbers": [1] * 100}
+    r = {"is_error": False, "content": [{"type": "text", "text": json.dumps(inner)}]}
+    out = _result_excerpt(r)
+    assert out["__truncated__"] is True
+    assert out["bytes"] > RESULT_EXCERPT_MAX_BYTES
+    # 形状摘要报的是**语义层**的键，不是包装层的 raw/inner
+    assert out["keys"] == ["bus_numbers", "vm"]
+    assert "vm" not in out, "不得给半截数组"
+
+
+def test_tool_call_event_carries_result_excerpt(monkeypatch):
+    """tool_call 事件必须带结果摘要 —— 否则界面只能转述模型自述（实测会标错母线编号）。"""
+    import powermcp_gateway.proxy as proxy
+    from powermcp_gateway.session import EventBus
+
+    async def fake_dispatch(cfg, server, tool, args):
+        inner = {"status": "success", "results": {"converged": True, "vm": [1.0, float("nan")]}}
+        return {"is_error": False, "content": [{"type": "text", "text": json.dumps(inner)}]}
+
+    monkeypatch.setattr(proxy, "_dispatch", fake_dispatch)
+    bus = EventBus()
+
+    outcome = asyncio.run(call_tool(
+        cfg=None, server="surge", tool="run_ac_power_flow", args={},
+        schema={"type": "object", "properties": {}}, bus=bus, session_id="s1",
+    ))
+
+    assert outcome.ok is True
+    ev = [e for e in bus.events() if e.kind == "tool_call"][0]
+    assert "result_excerpt" in ev.payload
+    # 内层已解析，且 NaN 已被消毒
+    assert ev.payload["result_excerpt"]["inner"]["results"]["vm"] == [1.0, None]

@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -104,6 +106,87 @@ async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> d
                 f"进程可能已启动但不响应，需单独排查该 server 的 stdio 管道"
             ) from exc
         raise
+
+
+#: 工具结果摘要的**字节上限**。实测两种真实结果：潮流 7 KB · N-1 23 KB —— 32 KB 覆盖两者。
+#: ⚠️ 超限时**不截断数组**（半截数组比没有更危险），只给形状摘要，让界面如实说「结果过大未随事件下发」。
+RESULT_EXCERPT_MAX_BYTES = 32 * 1024
+
+
+def _json_safe(value: Any) -> Any:
+    """把 **JSON 不安全**的值替换掉（`NaN` / `Infinity` / `-Infinity` → `None`）。
+
+    ★ 必须有，否则前端会整条流解析失败：`surge` 的 N-1 结果里含 **`NaN`**
+      （如 `min_vm_pu: NaN`）。Python 的 `json.dumps` 默认放行 `NaN`/`Infinity`，
+      但 **JS 的 `JSON.parse` 会直接抛错** —— 一旦把结果放进 SSE，前端连帧都读不出来。
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _result_excerpt(result: Any) -> dict:
+    """工具结果的**有界**摘要，随 `tool_call` 事件一起下发。
+
+    ★ 为什么放进事件里：③ 对话分析的「结果呈现」（§4.3）要求数值与标识符由
+      `Quantity` / `Identifier` **组件**承载，而不是模型自述 —— 实测模型会把
+      **数组位置当成母线编号**（报「母线 78」，而直接读数组是 `bus_numbers[75] = 76`），
+      且语气确定、只在被提示时才做对。前端需要**原始结果**才能做结构化呈现。
+
+    ★ **必须先在网关侧解析 MCP 的内层 JSON**：MCP 结果的 `content[0].text` 是
+      **JSON 字符串**，直接塞进摘要会被**二次转义** —— 实测膨胀 ~59%
+      （23 KB 的 N-1 结果 → 36.5 KB 摘要，直接顶破上限）。解析后既小又免去前端再解一层。
+
+    形状（前端按此分派）：
+      - `{"is_error": bool, "inner": <已解析的内层 JSON>}` —— MCP 且内层是 JSON
+      - `{"is_error": bool, "text": "<非 JSON 文本>"}`        —— MCP 且内层是纯文本
+      - `{"raw": <原结果>}`                                    —— 不是 MCP 包装
+      - `{"__truncated__": true, "bytes": N, "keys": [...]}`   —— 超上限（**不给半截数组**）
+    """
+    safe = _json_safe(result)
+
+    if isinstance(safe, dict) and isinstance(safe.get("content"), list):
+        text = next(
+            (c.get("text") for c in safe["content"]
+             if isinstance(c, dict) and isinstance(c.get("text"), str)),
+            None,
+        )
+        if text is not None:
+            try:
+                # ⚠️ **解析后必须再消毒一次**：`NaN` 藏在 text 字符串里，
+                #    包装层消毒看不到它；`json.loads` 一解析它就又冒出来了。
+                safe = {
+                    "is_error": bool(safe.get("is_error")),
+                    "inner": _json_safe(json.loads(text)),
+                }
+            except (ValueError, TypeError):
+                safe = {"is_error": bool(safe.get("is_error")), "text": text}
+        else:
+            safe = {"raw": safe}
+    else:
+        # 不是 MCP 包装 → 显式放进 `raw`，避免与 MCP 形状混淆
+        safe = {"raw": safe}
+
+    try:
+        size = len(json.dumps(safe, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return {"__unserializable__": True}
+
+    if size > RESULT_EXCERPT_MAX_BYTES:
+        # 形状摘要要报**语义层**的键（而不是包装层的 raw/inner），否则对排查没用
+        probe: Any = safe
+        if isinstance(safe, dict):
+            probe = safe.get("inner", safe.get("raw", safe))
+        return {
+            "__truncated__": True,
+            "bytes": size,
+            "keys": sorted(probe) if isinstance(probe, dict) else [],
+        }
+    return safe if isinstance(safe, dict) else {"raw": safe}
 
 
 def _emit(bus: EventBus | None, audit: AuditLog | None, session_id: str | None,
@@ -317,6 +400,9 @@ async def call_tool(
 
     _emit(bus, audit, session_id, "tool_call", {
         "server": server, "tool": tool, "args": args,
+        # ★ 结果摘要随事件下发 —— 供前端做结构化结果呈现（§4.3「结果呈现」）。
+        #   没有它，界面只能转述模型的自述，而实测模型会标错母线编号。
+        "result_excerpt": _result_excerpt(result),
     })
     return CallOutcome(ok=True, server=server, tool=tool, result=result,
                        remounted=remounted)
