@@ -46,3 +46,6 @@ export type { ContractSummary } from "./VerificationLayer";
 
 export { ToolCallRow, declaredOutputs, OUTPUT_ARG_KEYS } from "./ToolCallRow";
 export type { ToolCallRowProps } from "./ToolCallRow";
+
+export { ResultSummary } from "./ResultSummary";
+export type { ResultItem, ResultId } from "./ResultSummary";

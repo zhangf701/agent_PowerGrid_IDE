@@ -7,6 +7,7 @@
  *    S2 先留好位置（**可选**，未传则不渲染标注行）。
  *  ★ 状态徽标用 `Signature`（图标 + 文字），不靠颜色单独承载信息（P2）。
  */
+import { ResultSummary, type ResultItem } from "./ResultSummary";
 import { Signature } from "./Signature";
 
 /** 由**参数声明**的输出目标参数名。
@@ -40,9 +41,12 @@ export interface ToolCallRowProps {
   error?: string | null;
   /** 契约标注（S3 由校验层注入）—— 默认折叠 */
   contract?: { label: string; sig: "degraded" | "incident" | "satisfied" } | null;
+  /** ★ 结构化结果（由数据适配层 `extractResults()` 产出）——
+   *  数值与标识符走 `Quantity` / `Identifier`，不转述模型的自述（F-4） */
+  results?: ResultItem[];
 }
 
-export function ToolCallRow({ server, tool, status, args, error, contract }: ToolCallRowProps) {
+export function ToolCallRow({ server, tool, status, args, error, contract, results }: ToolCallRowProps) {
   const outputs = declaredOutputs(args);
 
   return (
@@ -57,6 +61,9 @@ export function ToolCallRow({ server, tool, status, args, error, contract }: Too
         )}
         {error && <span className="text-text-muted">{error}</span>}
       </div>
+
+      {/* ★ 结构化结果：数值带单位与判据、标识符带编号约定 —— 由代码计算，非模型转述 */}
+      {!!results?.length && <ResultSummary items={results} />}
 
       {/* ★ 工具会往**用户的数据目录**写文件 —— 必须让用户看见（判据 #1 验收暴露）。
           措辞严格守住「参数声明 ≠ 确实写入」这条边界。 */}

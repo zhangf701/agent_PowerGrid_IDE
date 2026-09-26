@@ -164,6 +164,7 @@ export function ChatView({ session }: { session: SessionStream }) {
                       status={r.status}
                       args={r.args}
                       error={r.error}
+                      results={r.results}
                     />
                   ))}
                 </div>

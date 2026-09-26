@@ -19,6 +19,8 @@ import {
   apiParsed,
   type ContractFinding,
 } from "./api";
+import type { ResultItem } from "./components";
+import { extractResults } from "./results";
 
 /** 与 MVP 同口径的默认 server 清单 —— 少了 ANDES 会让模型以为「没有 ANDES 工具」。 */
 export const DEFAULT_SERVERS = ["surge", "powerio", "pandapower", "pypsa", "andes"];
@@ -36,6 +38,9 @@ export interface ToolRowWithTurn extends ToolRow {
   turnId: number | null;
   /** 事件序号 —— 排序与去重依据 */
   seq: number;
+  /** ★ 结构化结果（F-4）：由数据适配层从**结果摘要**里算出，
+   *  数值走 `Quantity`（单位+判据）、标识符走 `Identifier`（编号约定） */
+  results?: ResultItem[];
 }
 
 export function useSession() {
@@ -92,9 +97,20 @@ export function useSession() {
 
       const turnId = activeTurn.current;
       if (parsed.kind === "tool_call") {
+        // ★ 结构化结果：从结果摘要算出可展示的数值/标识符（F-4）。
+        //   认不出的形状 → []（不猜）；界面只渲染认得的部分。
+        const results = extractResults(parsed.server, parsed.tool, parsed.resultExcerpt);
         setRows((rs) => [
           ...rs,
-          { server: parsed.server, tool: parsed.tool, status: "ok", args: parsed.args, turnId, seq: parsed.seq },
+          {
+            server: parsed.server,
+            tool: parsed.tool,
+            status: "ok",
+            args: parsed.args,
+            turnId,
+            seq: parsed.seq,
+            ...(results.length ? { results } : {}),
+          },
         ]);
       } else if (parsed.kind === "tool_error") {
         setRows((rs) => [

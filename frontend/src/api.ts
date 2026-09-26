@@ -335,6 +335,10 @@ const ToolCallPayload = z.object({
   server: z.string(),
   tool: z.string(),
   args: z.record(z.string(), z.unknown()),
+  /** ★ 结果摘要（F-4 接线）—— 供前端做**结构化结果呈现**。
+   *  ⚠️ 必须**显式声明**：`z.object` 默认**剥掉**未知键，漏了它摘要会被静默丢弃，
+   *     界面就退回到「转述模型自述」，而实测模型会标错母线编号。 */
+  result_excerpt: z.unknown().optional(),
 });
 const ToolErrorPayload = z.object({
   server: z.string(),
@@ -346,7 +350,15 @@ const InventoryDegradedPayload = z.object({
 });
 
 export type Evidence =
-  | { kind: "tool_call"; seq: number; server: string; tool: string; args: Record<string, unknown> }
+  | {
+      kind: "tool_call";
+      seq: number;
+      server: string;
+      tool: string;
+      args: Record<string, unknown>;
+      /** 结果摘要（供结构化结果呈现；可能缺省或为截断标记） */
+      resultExcerpt?: unknown;
+    }
   | { kind: "tool_error"; seq: number; server: string; tool: string; error: string }
   | { kind: "contract_violation"; seq: number; finding: ContractFinding }
   | { kind: "contract_unknown"; seq: number; finding: ContractFinding }
@@ -366,7 +378,16 @@ export function parseEvidence(ev: EvidenceEvent): Evidence {
   switch (ev.kind) {
     case "tool_call": {
       const r = ToolCallPayload.safeParse(ev.payload);
-      return r.success ? { kind: "tool_call", seq: ev.seq, ...r.data } : bad(issuesOf(r.error));
+      return r.success
+        ? {
+            kind: "tool_call",
+            seq: ev.seq,
+            server: r.data.server,
+            tool: r.data.tool,
+            args: r.data.args,
+            resultExcerpt: r.data.result_excerpt,
+          }
+        : bad(issuesOf(r.error));
     }
     case "tool_error": {
       const r = ToolErrorPayload.safeParse(ev.payload);
