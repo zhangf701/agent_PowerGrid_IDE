@@ -12,7 +12,9 @@ rem NOTE: keep this file ASCII + CRLF (cmd.exe parses UTF-8/LF badly).
 rem ============================================================
 setlocal
 for %%i in ("%~dp0..") do set "POWERMCP_ROOT=%%~fi"
-set "POWERIO_MCP_ALLOWED_ROOTS=%POWERMCP_ROOT%"
+rem Allowed roots = project root (cases) + %%USERPROFILE%%\.powermcp (standard
+rem server artifact home; ANDES output root lives there - else PathNotAllowed)
+set "POWERIO_MCP_ALLOWED_ROOTS=%POWERMCP_ROOT%;%USERPROFILE%\.powermcp"
 set "POWERMCP_SESSION_POOL=1"
 if not defined POWERMCP_LLM_BASE_URL set "POWERMCP_LLM_BASE_URL=https://api.deepseek.com"
 if not defined POWERMCP_LLM_MODEL set "POWERMCP_LLM_MODEL=deepseek-chat"

@@ -12,8 +12,16 @@
 # 或运行前临时设置。本脚本不会打印任何密钥。
 # ============================================================
 set -e
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export POWERIO_MCP_ALLOWED_ROOTS="$ROOT"
+# ★ 路径形态：Git Bash 的 `pwd` 给 POSIX 形态（`/d/coding/...`），而 Windows Python
+#   会把前导 `/` 当成**当前盘根** → 解析成 `D:\d\coding\...`（多一层盘符目录，
+#   该根根本不存在）→ `_is_within` 恒 False → **项目内算例也被判"不在允许根内"，
+#   任何算例解析都 409**（2026-09-26 实测 F-1）。
+#   `pwd -W` 给原生形态（`D:/coding/...`，`Path.resolve()` 正确）；它是 MSYS 专有，
+#   故带回退以保真 Linux 可用。
+ROOT="$(cd "$(dirname "$0")/.." && (pwd -W 2>/dev/null || pwd))"
+# 允许根 = 项目根（算例）+ ~/.powermcp（各 server 的标准运行产物目录，
+# ANDES 的输出根就在此 —— 不加会被沙箱判 PathNotAllowed）
+export POWERIO_MCP_ALLOWED_ROOTS="$ROOT;$USERPROFILE\\.powermcp"
 # ★ 子项目 4：会话级持久 server 连接池（有状态工作流的前提，T6-M5 根治）
 export POWERMCP_SESSION_POOL=1
 
