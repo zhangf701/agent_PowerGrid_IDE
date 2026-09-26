@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局骨架样式：只用语义层（--c-*）与 pragmas（--p-*）—— UI 规范 v2 硬约束 */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--c-surface-base);
+  color: var(--c-text-primary);
+  font-family: var(--p-font-sans);
+  font-size: var(--p-font-size-body);
+  line-height: 1.6;
+}

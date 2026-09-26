@@ -1,0 +1,8 @@
+event: text
+data: {"text": "收到"}
+
+event: final
+data: {"text": "收到"}
+
+
+[HTTP 200]

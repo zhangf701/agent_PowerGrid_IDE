@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.local
+
+# 工具临时产物（2026-09-26）—— Vite 打包配置时的中间文件，正常会自动清理，
+# 中断的运行会留下它们；无头 A/B 用的独立 Chrome profile 同理。
+*.timestamp-*.mjs
+.chrome-ab/

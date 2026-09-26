@@ -1,0 +1,156 @@
+/** 入站结构校验（UI 规范 v2 §8.4）的测试。
+ *
+ *  ★ 最重要的一条：**真实网关响应必须通过 schema** ——
+ *    夹具是从运行中的网关抓的，不是手写的想象字段。schema 写错会在这里先红。
+ *  ★ 反向断言：结构漂移必须抛 `SchemaDriftError` 并**指出路径**（否则用户只看到"失败"）。
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import envFx from "./__fixtures__/gateway/environment.json";
+import skillsFx from "./__fixtures__/gateway/skills.json";
+import casesFx from "./__fixtures__/gateway/cases.json";
+import parseFx from "./__fixtures__/gateway/case-parse.json";
+import {
+  CaseParseResponseSchema,
+  CaseRegisterResponseSchema,
+  CasesResponseSchema,
+  EnvironmentSchema,
+  SchemaDriftError,
+  SkillsResponseSchema,
+  apiParsed,
+} from "./api";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("真实响应能通过 schema（夹具取自运行中的网关）", () => {
+  it("/environment 通过；且 llm.required_env 缺失时**不得**判为漂移", () => {
+    const r = EnvironmentSchema.safeParse(envFx);
+    expect(r.success).toBe(true);
+    // ★ 回归：先前该字段被写成必填 → LLM 未配置时那一栏 .join() 抛 TypeError（白屏）
+    expect(envFx.llm).not.toHaveProperty("required_env");
+    if (r.success) expect(r.data.llm.required_env).toBeUndefined();
+  });
+
+  it("/skills 通过，22 个技能 / 10 个带触发表", () => {
+    const r = SkillsResponseSchema.safeParse(skillsFx);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.skills).toHaveLength(22);
+      expect(r.data.summary?.with_escalation).toBe(10);
+      // ★ 健康度如实为 unknown —— 界面不得把它渲染成"正常"
+      expect(r.data.health?.level).toBe("unknown");
+    }
+  });
+
+  it("/cases 通过；含一个**围笼外**算例（within_allowed_roots=false）", () => {
+    const r = CasesResponseSchema.safeParse(casesFx);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.cases).toHaveLength(2);
+      // ★ 这两条是 ② 算例库要呈现的核心事实，夹具必须真的覆盖到
+      expect(r.data.cases.filter((c) => !c.within_allowed_roots)).toHaveLength(1);
+      expect(r.data.summary.unreadable_by_servers).toBe(1);
+    }
+  });
+
+  it("/cases/{id}/parse 通过（一次调用即含提示所需全部字段）", () => {
+    const r = CaseParseResponseSchema.safeParse(parseFx);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.has_ir).toBe(true);
+      expect(r.data.ir_bytes).toBeGreaterThan(0);
+    }
+  });
+
+  it("/cases 的坏元素能被定位到具体算例", () => {
+    const drifted = {
+      ...casesFx,
+      cases: [{ ...casesFx.cases[0], within_allowed_roots: "no" }],
+    };
+    const r = CasesResponseSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0].path.join(".")).toBe("cases.0.within_allowed_roots");
+    }
+  });
+
+  it("登记响应：`path_normalized` 可缺省（干净路径不得报已归一化）", () => {
+    const clean = { created: true, case: casesFx.cases[0] };
+    expect(CaseRegisterResponseSchema.safeParse(clean).success).toBe(true);
+    const normalized = { ...clean, path_normalized: ["剥离首尾引号"] };
+    const r = CaseRegisterResponseSchema.safeParse(normalized);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.path_normalized).toEqual(["剥离首尾引号"]);
+  });
+});
+
+describe("结构漂移必须响亮且可定位", () => {
+  it("缺字段 → SchemaDriftError，issues 指出字段路径", () => {
+    const drifted = { ...envFx, gateway: { python: "3.12.6" } };
+    const r = EnvironmentSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const paths = r.error.issues.map((i) => i.path.join("."));
+      expect(paths).toContain("gateway.python_ok");
+    }
+  });
+
+  it("类型错 → 不通过（字符串冒充布尔）", () => {
+    const drifted = { ...envFx, gateway: { python: "3.12.6", python_ok: "yes" } };
+    expect(EnvironmentSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  it("非对象（null / 字符串）→ 不通过，且定位到根", () => {
+    for (const bad of [null, "boom", 42]) {
+      const r = EnvironmentSchema.safeParse(bad);
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0].path).toHaveLength(0);
+    }
+  });
+
+  it("skills 数组里的单个坏元素能被定位", () => {
+    const drifted = {
+      ...skillsFx,
+      skills: [{ id: "a", name: "a", kind: "tool" }, { id: 1, name: "b", kind: "tool" }],
+    };
+    const r = SkillsResponseSchema.safeParse(drifted);
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0].path.join(".")).toBe("skills.1.id");
+  });
+});
+
+describe("apiParsed 的失败语义", () => {
+  const okResponse = (body: unknown) =>
+    Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+  it("HTTP 200 但结构漂移 → SchemaDriftError（不能静默进状态树）", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => okResponse({ gateway: {} })));
+    await expect(apiParsed("/environment", EnvironmentSchema)).rejects.toBeInstanceOf(
+      SchemaDriftError,
+    );
+  });
+
+  it("HTTP 错误 → 普通 Error，**不是** SchemaDriftError（两类失败用户动作不同）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response("boom", { status: 500 }))),
+    );
+    const err = await apiParsed("/environment", EnvironmentSchema).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SchemaDriftError);
+    expect(String(err.message)).toContain("/environment");
+  });
+
+  it("结构正确 → 返回解析后的数据", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => okResponse(envFx)));
+    const env = await apiParsed("/environment", EnvironmentSchema);
+    expect(env.gateway.python_ok).toBe(true);
+  });
+});
