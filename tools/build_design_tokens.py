@@ -243,11 +243,18 @@ def _tailwind_theme(root: dict) -> dict:
             node = node.setdefault(seg, {})
         node[parts[-1]] = var(name)
 
-    def by_prefix(prefix: str) -> dict:
+    def by_prefix(prefix: str, *, exclude: tuple[str, ...] = ()) -> dict:
+        """按前缀取原始层令牌 → `{短名: var(--全名)}`。
+
+        ⚠️ **返回的值已经是 `var(...)`** —— 调用方**不得**再包一层。
+           （曾因再包一层产出 `var(var(--p-font-sans))`：无效 CSS，浏览器直接丢弃。）
+        ⚠️ `exclude`：**更长的前缀会同时匹配**（`--p-font-` 会吃掉 `--p-font-size-*`），
+           必须显式排除 —— 曾因此把 7 个 `size-*` 键混进 `fontFamily`。
+        """
         return {
             n[len(prefix):]: var(n)
             for n in prim
-            if n.startswith(prefix)
+            if n.startswith(prefix) and not any(n.startswith(p) for p in exclude)
         }
 
     return {
@@ -255,7 +262,12 @@ def _tailwind_theme(root: dict) -> dict:
         "spacing": by_prefix("--p-space-"),
         "borderRadius": by_prefix("--p-radius-"),
         "borderWidth": by_prefix("--p-border-"),
-        "fontFamily": {k: [var(v)] for k, v in by_prefix("--p-font-").items()},
+        # ★ fontFamily：只取真正的字族（排除 --p-font-size-*），且值已是 var(...)
+        #   2026-09-26 修复（F-2）：此前过度匹配 + 二次包裹 → font-sans/font-mono 失效。
+        "fontFamily": {
+            k: [v]
+            for k, v in by_prefix("--p-font-", exclude=("--p-font-size-",)).items()
+        },
         "fontSize": by_prefix("--p-font-size-"),
         "boxShadow": by_prefix("--p-shadow-"),
         "zIndex": by_prefix("--p-z-"),
@@ -503,6 +515,43 @@ def build_preview(root: dict) -> str:
 # ---------------------------------------------------------------- 入口
 
 
+def validate_artifacts(artifacts: tuple[tuple[Path, str], ...]) -> list[str]:
+    """产物**内容合法性**校验（2026-09-26 新增，F-2）。
+
+    ★ 为什么需要单独一道：既有的两道护栏只比对「名字与值的一致性」——
+      `--check` 防产物与真源漂移，`check_design_tokens.py` 防命名映射表漂移。
+      **没有一道校验生成的 CSS 值本身是否合法**，所以 `var(var(--p-font-sans))`
+      这种无效 CSS 能长期通过全部护栏（实际发生过：Tailwind 的 `font-sans` / `font-mono`
+      产出被浏览器丢弃，而两道护栏都是绿的 —— 见 journal F-2）。
+    """
+    problems: list[str] = []
+
+    for path, text in artifacts:
+        if "var(var(" in text:
+            problems.append(
+                f"{path.relative_to(ROOT)} 出现嵌套 `var(var(...)` —— "
+                "无效 CSS（`by_prefix` 的值已是 `var(...)`，不得再包一层）"
+            )
+
+    js = next((t for p, t in artifacts if p == OUT_JS), "")
+    block = re.search(r'"fontFamily": \{(.*?)\},', js, re.S)
+    if not block:
+        problems.append(f"{OUT_JS.relative_to(ROOT)} 找不到 fontFamily 段")
+    else:
+        body = block.group(1)
+        if "--p-font-size-" in body:
+            problems.append(
+                f"{OUT_JS.relative_to(ROOT)} 的 fontFamily 混入 `--p-font-size-*`"
+                "（前缀过度匹配 —— 必须用 exclude 排除）"
+            )
+        if "var(--p-font-sans)" not in body:
+            problems.append(
+                f"{OUT_JS.relative_to(ROOT)} 的 fontFamily 缺少字族（`--p-font-sans`）"
+            )
+
+    return problems
+
+
 def main(argv: list[str]) -> int:
     check = "--check" in argv
     root = load()
@@ -511,6 +560,15 @@ def main(argv: list[str]) -> int:
         (OUT_JS, build_js(root)),
         (OUT_PREVIEW, build_preview(root)),
     )
+
+    # ★ 先校验产物**内容合法性** —— 与「产物是否与真源漂移」是**两类**问题：
+    #   生成器稳定地吐垃圾时，漂移检查照样是绿的。
+    problems = validate_artifacts(artifacts)
+    if problems:
+        print("[FAIL] 设计令牌产物内容非法：")
+        for p in problems:
+            print(f"   - {p}")
+        return 1
 
     if check:
         drift = []

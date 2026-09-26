@@ -188,15 +188,8 @@ export const tailwindTheme = {
     "thick": "var(--p-border-thick)",
   },
   "fontFamily": {
-    "size-display": ["var(var(--p-font-size-display))"],
-    "size-h1": ["var(var(--p-font-size-h1))"],
-    "size-h2": ["var(var(--p-font-size-h2))"],
-    "size-body": ["var(var(--p-font-size-body))"],
-    "size-bodySm": ["var(var(--p-font-size-bodySm))"],
-    "size-caption": ["var(var(--p-font-size-caption))"],
-    "size-mono": ["var(var(--p-font-size-mono))"],
-    "sans": ["var(var(--p-font-sans))"],
-    "mono": ["var(var(--p-font-mono))"],
+    "sans": ["var(--p-font-sans)"],
+    "mono": ["var(--p-font-mono)"],
   },
   "fontSize": {
     "display": "var(--p-font-size-display)",
