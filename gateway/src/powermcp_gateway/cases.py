@@ -152,6 +152,85 @@ def allowed_root_paths(env: dict[str, str] | None = None) -> tuple[Path, ...]:
     )
 
 
+# ------------------------------------------------------------ 输入规范化
+
+#: 零宽 / 格式类字符 —— 粘贴时**不可见**，但会让 `Path.exists()` 为假。
+_ZERO_WIDTH = "\u200b\u200c\u200d\u2060\ufeff"
+
+#: 全角 → 半角。仅收录在 Windows 路径里**不可能合法出现**的标点，
+#: 故映射是无损的（不会把一个合法路径改坏）。
+_FULLWIDTH_TO_ASCII = {
+    "\uff3c": "\\",   # ＼ 全角反斜杠
+    "\uff0f": "/",    # ／ 全角斜杠
+    "\uff1a": ":",    # ： 全角冒号（盘符）
+    "\uff0e": ".",    # ． 全角句点（扩展名）
+}
+
+#: 成对引号：`"` `'` 以及中文弯引号。只在**首尾成对**时剥离。
+_QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u2018", "\u2019"))
+
+#: 仍可疑的字符类别 → 用于 400 文案给出**可操作**提示（而不是只说"不存在"）。
+_SUSPICIOUS: tuple[tuple[str, str], ...] = (
+    ("零宽字符", _ZERO_WIDTH),
+    ("引号", "\"'\u201c\u201d\u2018\u2019"),
+    ("全角标点", "".join(_FULLWIDTH_TO_ASCII)),
+)
+
+
+def normalize_case_path(raw: str) -> tuple[str, list[str]]:
+    """把「粘贴污染」的算例路径归一到可用于文件系统检查的形态。
+
+    ★ 为什么需要（2026-09-26 实测 #6）：用户从别处粘贴路径时极易带入
+      **引号 / 零宽字符 / 全角标点**，而 `Path(src).exists()` 对它们一律返回
+      False，报出的却是「算例文件不存在」—— 用户看到的现象是
+      **「文件明明在，系统说没有」**，且**无法自助恢复**（错误里没有任何线索）。
+
+    ★ 归一化**不做静默修正**：`notes` 非空即表示确实改动过，调用方**必须**把它
+      如实回给用户（响应里的 `path_normalized` 字段 / 400 文案）。
+
+    Args:
+        raw: 客户端原样送来的路径字符串。
+
+    Returns:
+        `(normalized, notes)`。`notes` 为空 ⇒ 原样未改。
+    """
+    notes: list[str] = []
+    s = raw
+
+    stripped = s.strip()
+    if stripped != s:
+        notes.append("去除首尾空白")
+        s = stripped
+
+    # 引号可能成对嵌套（Explorer 复制后再手打一层），故循环两次。
+    for _ in range(2):
+        pair = next((p for p in _QUOTE_PAIRS if len(s) >= 2 and s[0] == p[0] and s[-1] == p[1]), None)
+        if pair is None:
+            break
+        s = s[1:-1].strip()
+        notes.append("剥离首尾引号")
+
+    cleaned = "".join(ch for ch in s if ch not in _ZERO_WIDTH)
+    if cleaned != s:
+        notes.append("剔除零宽字符")
+        s = cleaned
+
+    mapped = "".join(_FULLWIDTH_TO_ASCII.get(ch, ch) for ch in s)
+    if mapped != s:
+        notes.append("全角标点归一为半角")
+        s = mapped
+
+    return s, notes
+
+
+def suspicious_case_path(raw: str) -> list[str]:
+    """报出路径里**仍然可疑**的字符类别 —— 用于把 400 文案变得可操作。
+
+    ★ 只报类别名，**不回显**原字符（不可见字符回显了也看不见）。
+    """
+    return [name for name, chars in _SUSPICIOUS if any(ch in raw for ch in chars)]
+
+
 def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
     if not roots:
         return False

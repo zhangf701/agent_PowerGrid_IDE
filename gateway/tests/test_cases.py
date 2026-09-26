@@ -22,6 +22,8 @@ from powermcp_gateway.cases import (
     allowed_root_paths,
     build_report,
     cases_root,
+    normalize_case_path,
+    suspicious_case_path,
 )
 from powermcp_gateway.config import GatewayConfig
 
@@ -312,3 +314,71 @@ def test_build_report_on_empty_store(cfg, tmp_path, monkeypatch):
     assert r["summary"]["total"] == 0
     assert r["cases"] == [] and r["index_exists"] is False
     assert r["root"].endswith("空")
+
+
+# ---------------------------------------------------------------- 输入规范化
+#
+# ★ 背景（2026-09-26 实测 #6）：用户粘贴路径时带入**引号 / 零宽字符 / 全角标点**，
+#   `Path(src).exists()` 一律返回 False，报出的却是「算例文件不存在」——
+#   现象是「文件明明在，系统说没有」，且错误里**没有任何线索**可供自助恢复。
+# ★ 归一化**不做静默修正**：`notes` 非空即表示改动过，调用方必须如实回给用户。
+
+#: 含中文目录名的干净路径 —— 中文是**合法**的，绝不能被当成可疑字符。
+_CLEAN = "C:\\Users\\Z\\Downloads\\_科研项目\\case5.m"
+
+
+def test_normalize_leaves_clean_path_untouched():
+    """★ 基线：干净路径必须**逐字符不变**、`notes` 为空（否则会误报"已归一化"）。"""
+    assert normalize_case_path(_CLEAN) == (_CLEAN, [])
+
+
+def test_normalize_strips_surrounding_quotes():
+    for opening, closing in (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u2018", "\u2019")):
+        got, notes = normalize_case_path(f"{opening}{_CLEAN}{closing}")
+        assert got == _CLEAN, opening
+        assert "剥离首尾引号" in notes
+
+
+def test_normalize_strips_nested_quotes():
+    """Explorer 复制后手打一层引号 → 成对嵌套，须一并剥离。"""
+    got, notes = normalize_case_path('"\'%s\'"' % _CLEAN)
+    assert got == _CLEAN
+    assert notes.count("剥离首尾引号") == 2
+
+
+def test_normalize_removes_zero_width():
+    got, notes = normalize_case_path("\u200b" + _CLEAN + "\ufeff")
+    assert got == _CLEAN
+    assert "剔除零宽字符" in notes
+
+
+def test_normalize_maps_fullwidth_punctuation():
+    got, notes = normalize_case_path(_CLEAN.replace("\\", "\uff3c"))
+    assert got == _CLEAN
+    assert "全角标点归一为半角" in notes
+
+
+def test_normalize_keeps_forward_slashes():
+    """正斜杠在 Windows 上合法 —— 归一化**不得**多手改它。"""
+    s = "C:/Users/Z/Downloads/_科研项目/case5.m"
+    assert normalize_case_path(s) == (s, [])
+
+
+def test_normalize_reports_whitespace_trim():
+    got, notes = normalize_case_path("  %s  " % _CLEAN)
+    assert got == _CLEAN
+    assert "去除首尾空白" in notes
+
+
+def test_suspicious_names_categories_without_echoing_chars():
+    """★ 只报类别名 —— 不可见字符回显了用户也看不见。"""
+    assert suspicious_case_path(_CLEAN) == []
+    assert suspicious_case_path('"%s"' % _CLEAN) == ["引号"]
+    assert suspicious_case_path("\u200b" + _CLEAN) == ["零宽字符"]
+    assert suspicious_case_path(_CLEAN.replace("\\", "\uff3c")) == ["全角标点"]
+
+
+def test_suspicious_does_not_flag_cjk_path_components():
+    """★ 中文目录名是**合法**的，绝不能被当成可疑字符（否则 #6 会大面积误报）。"""
+    assert suspicious_case_path(_CLEAN) == []
+

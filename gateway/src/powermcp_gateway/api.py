@@ -27,6 +27,8 @@ from .cases import (
     CaseStore,
     allowed_root_paths,
     cases_root,
+    normalize_case_path,
+    suspicious_case_path,
 )
 from .cases import build_report as build_cases_report
 from .case_ir import (
@@ -587,6 +589,9 @@ def _parse_case_request(payload: dict) -> tuple[dict, str | None]:
 
     ★ `path` 必填且非空；`label` / `tags` / `notes` 可选。
       类型错误一律 400 并指明字段 —— 不把畸形请求送进文件系统。
+    ★ `path` 经 `normalize_case_path` 归一（剥离粘贴带入的引号 / 零宽字符 /
+      全角标点）—— 归一结果与所施改动经 `path_notes` 如实回给调用方，
+      **不做静默修正**（2026-09-26 实测 #6）。
     """
     raw = payload.get("path")
     if not isinstance(raw, str) or not raw.strip():
@@ -608,12 +613,36 @@ def _parse_case_request(payload: dict) -> tuple[dict, str | None]:
     else:
         return {}, "`tags` 必须是字符串数组"
 
+    normalized, path_notes = normalize_case_path(raw)
+
     return {
-        "path": raw.strip(),
+        "path": normalized,
+        "path_notes": path_notes,
         "label": (label or "").strip() or None,
         "tags": tags,
         "notes": notes or "",
     }, None
+
+
+def _case_error_detail(detail: str, payload: dict, parsed: dict) -> str:
+    """给「算例文件不存在」类 400 补上**可操作**线索（2026-09-26 实测 #6）。
+
+    ★ 现象是「文件明明在，系统说没有」—— 只说"不存在"用户**无法自助恢复**。
+      这里补两件事：① 路径含哪类可疑字符；② 归一化实际改动了什么、检查的是哪条路径。
+    """
+    raw = payload.get("path")
+    hints = suspicious_case_path(raw) if isinstance(raw, str) else []
+    if hints:
+        detail += (
+            f"（路径含可疑字符：{'、'.join(hints)} —— 常见于从聊天/文档粘贴。"
+            "请改用纯文本粘贴，或清掉路径外层的引号）"
+        )
+    if parsed.get("path_notes"):
+        detail += (
+            f"（已自动归一化：{'、'.join(parsed['path_notes'])}；"
+            f"实际检查的是 `{parsed.get('path')}`）"
+        )
+    return detail
 
 
 def register_case_routes(app: FastAPI) -> None:
@@ -663,12 +692,17 @@ def register_case_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except CaseError as exc:
             # 路径不存在 / 是目录 / 超限 —— 都是**客户端输入问题**
-            return JSONResponse(status_code=400, content={"detail": str(exc)})
+            return JSONResponse(
+                status_code=400,
+                content={"detail": _case_error_detail(str(exc), payload, parsed)},
+            )
 
-        return JSONResponse(
-            status_code=201 if created else 200,
-            content={"created": created, "case": view.to_dict()},
-        )
+        body: dict = {"created": created, "case": view.to_dict()}
+        if parsed["path_notes"]:
+            # ★ 归一化**不静默**：如实告诉调用方路径被改成了什么
+            body["path_normalized"] = parsed["path_notes"]
+            body["path_used"] = parsed["path"]
+        return JSONResponse(status_code=201 if created else 200, content=body)
 
     @app.get("/cases/{cid}")
     async def get_case(cid: str):

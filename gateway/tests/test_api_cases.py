@@ -211,3 +211,53 @@ async def test_report_carries_notes_and_allowed_roots(app, case_file, monkeypatc
     assert any("绝不删除源文件" in n for n in body["notes"])
     assert any("within_allowed_roots" in n for n in body["notes"])
     assert json.dumps(body, ensure_ascii=False)  # 可序列化
+
+
+# ---------------------------------------------------------------- 输入规范化（#6）
+
+
+async def test_register_quoted_path_succeeds_and_reports_normalization(app, case_file):
+    """★ #6 的回归：带引号的**已存在**文件必须登记成功，且**如实**报出归一化。"""
+    r = await _req(app, "POST", "/cases", json={"path": '"%s"' % case_file})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["case"]["available"] is True
+    assert "剥离首尾引号" in body["path_normalized"]
+    assert body["path_used"] == str(case_file)
+
+
+async def test_register_zero_width_path_succeeds(app, case_file):
+    r = await _req(app, "POST", "/cases", json={"path": "\u200b" + str(case_file)})
+    assert r.status_code == 201
+    assert "剔除零宽字符" in r.json()["path_normalized"]
+
+
+async def test_register_clean_path_reports_no_normalization(app, case_file):
+    """★ 反向断言：干净路径**不得**出现 `path_normalized` ——
+    否则字段恒真，等于给"已归一化"发假证书。"""
+    body = (await _req(app, "POST", "/cases", json={"path": str(case_file)})).json()
+    assert "path_normalized" not in body
+    assert "path_used" not in body
+
+
+async def test_register_dirty_nonexistent_path_400_is_actionable(app, tmp_path):
+    """★ #6 的核心诉求：400 必须给出**可操作**线索，而不是只说"不存在"。"""
+    ghost = tmp_path / "nope.m"
+    r = await _req(app, "POST", "/cases", json={"path": '"%s"' % ghost})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "算例文件不存在" in detail
+    assert "可疑字符" in detail and "引号" in detail
+    assert "已自动归一化" in detail
+    assert str(ghost) in detail          # 报出**实际检查**的是哪条路径
+
+
+async def test_register_clean_nonexistent_path_400_has_no_false_hint(app, tmp_path):
+    """★ 反向断言：干净路径的 400 **不得**出现可疑字符提示（防误报）。"""
+    r = await _req(app, "POST", "/cases", json={"path": str(tmp_path / "nope.m")})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "算例文件不存在" in detail
+    assert "可疑字符" not in detail
+    assert "已自动归一化" not in detail
+

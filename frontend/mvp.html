@@ -417,7 +417,13 @@ $('caseAdd').addEventListener('click', async () => {
       body: JSON.stringify({ path }),
     });
     $('casePath').value = '';
-    addSystemNote(r.created ? '已登记算例' : '该路径已登记过，已更新');
+    /* ★ 归一化**不静默**：路径被自动改动时必须让用户看见（2026-09-26 #6）——
+       否则用户以为系统登记的是他原样粘的那串。 */
+    let note = r.created ? '已登记算例' : '该路径已登记过，已更新';
+    if (r.path_normalized) {
+      note += `（路径已自动归一化：${esc(r.path_normalized.join('、'))}）`;
+    }
+    addSystemNote(note);
     await loadCases();
   } catch (e) { showError(e.message); }
 });
