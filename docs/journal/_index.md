@@ -8,7 +8,84 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-25 — JOURNAL（**子项目 4：持久 server 连接池，T6-M5 根治**）★ 最新
+### 🚩 2026-09-26 — JOURNAL（**S2 视图迁移：③ 对话分析（含 ⑥ 校验层状态条）**）★ 最新
+📄 [2026-09-26-view3-chat-migration.md](2026-09-26-view3-chat-migration.md)
+
+**范围**：③ 的全部 + ⑥ 的「契约面板/状态条」部分（§4.3 的轨迹块头带契约告警计数、§4.7.1 要求状态条**所有视图共有**，故切不干净）。⑥ 其余三块（跨视图一致性 §5.2 / 能力矩阵 §5.3 / IR 检查器 §5.4）留下一步。
+**交付**：`sse.ts`（帧解析纯函数，两条流共用）· `api.ts` 的 `parseChatFrame`/`parseEvidence`（按 kind 分派）· `session.ts`（`useSession` 提到 App 层 + **按 `seq` 去重**）· `ToolCallRow` §4.3 · `ContractBadge` §4.1 · `ContractCard` §4.2 · `VerificationLayer` §4.7.1（含 `summarizeFindings` 双轨汇总）· `ChatView` · App 主区**标签页**（对话默认 / 技能手册，`#skills` 深链）· 真实 `chat.sse` / `evidence.sse` 夹具。
+★ **§8.4 三条同时落地**：safeParse · **不 throw**（坏帧降级、流继续）· **不静默**（`malformed` → 渲染成 `incident` 横幅）。★ **`seq` 去重是必须的**：服务端不解析 `Last-Event-ID`，重连全量重放。
+★ **顺带修掉 MVP 一个假绿灯**：MVP 初始状态条是 `✔ 0 通过`（**0 条检查却显示通过**，§4.7.1 反例点名的最危险形态）；React 按规范实现 **空集 = `? 未知`**。
+**验证**：build ✅ · guard ✅ · vitest **48 → 73 passed/5 文件** · 原始色 0 命中。测试含**真实 SSE 字节**的端到端与去重验证。
+⚠️ **三处诚实边界**：① 无头 Chrome 本会话不可用（11 个残留进程、一律超时；**未全量 kill**，不排除含用户浏览器），A/B 改由 vitest 渲染真实夹具产出（非同一时刻同构对照）；② `EventSource` 接线用**伪造实现**测通，真实浏览器断线重连未真机验证；③ 真实 LLM 端到端未跑（夹具是网关侧真实抓取，但喂进的是 jsdom）。
+**下一步：⑥ 剩余三块**。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**S1 视图迁移：② 算例库 + F-2 字体令牌修复**）
+📄 [2026-09-26-view2-cases-migration.md](2026-09-26-view2-cases-migration.md)
+
+**F-2 已修**：`build_design_tokens.py` 的 `fontFamily` 生成**过度匹配**（`--p-font-` 吃掉 `--p-font-size-*`）+ **二次 `var()` 包裹** → `font-sans`/`font-mono` 产出无效 CSS 被浏览器丢弃，而**两道护栏都拦不住**。修法：`by_prefix(..., exclude=...)` + 不再二次包裹，**新增第三道护栏** `validate_artifacts()` 校验**产物内容合法性**（与「是否漂移」是两类问题 —— 生成器稳定吐垃圾时漂移检查照样绿）。变异探针 **3/3 全红**；组件内联绕过全部换回 `font-mono`。
+**② 算例库已迁完**：`api.ts` 新增 5 个 cases schema · `components/CaseCard.tsx`（§4.7.2）· `views/CasesView.tsx` · `App.tsx` 左栏挂载（与 MVP 同布局）。★ **§4.7.2 三条硬规则全部落到界面**：`available`/`drift` 现算不缓存 · `drift` 说明**基准来自登记时** · 围笼外给**可执行指引**（把哪个目录加进哪个变量后重启）。
+用 `POST /parse` **一次调用**替代 MVP 的 parse+ir 两次（少拉 52KB IR 全文，文案不变）。
+**验证**：build ✅ · guard ✅ · vitest **31 → 48 passed/4 文件** · 原始色 0 命中 · **A/B 与 MVP 一致**（算例卡 2/2 · 徽标 1/1 · 三按钮各 2/2 · 提示行 1/1）。**两处有意差异**（规范强制）：追加可见的可执行指引（MVP 只有徽标，§4.7.2 反例点名）；操作反馈就地显示在面板内（MVP 写进对话流，待 S2 改 Toast）。
+★ **围笼 409 分支第一次有了真实界面落点**（网关 curl 实测 409 + 视图用真实文案单测断言）；⚠️ 诚实边界：无头 dump-dom 不能点击，该交互由两段证据拼合。
+**下一步：S2 ③ 对话分析**（Zod 边界已就位）。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**React 地基步：组件层 · 视图拆分 · Zod 入站边界**）
+📄 [2026-09-26-react-foundation-step.md](2026-09-26-react-foundation-step.md)
+
+**为什么先做地基**：三个待迁视图（② 算例库 · ③ 对话分析 · ⑥ 校验层）**不能并行** —— 共享写入点（`api.ts` + 当时不存在的 `components/`，组件全内联在 321 行 `App.tsx` 里）+ ③→⑥ 有真依赖（校验层事件源就是对话的 SSE 流）。⇒ **串行**，地基步让「一视图一文件 + 组件统一出口」成立。
+**交付**：`components/`（8 文件：`Signature` §3.8.1 · `Button` §4.6.1 · `Input` §4.6.2 · `states` §4.6.5 · **`Quantity` §4.4**（`measure()` 唯一入口 + `unique symbol` 品牌防伪造）· **`Identifier` §4.5**（约定表从生成物 import，未命中→`约定未知`，冲突抛错）· `SkillCard` §4.7.3）· `views/`（`EnvView` + `SkillsView`，`App.tsx` 收为纯壳）· **`api.ts` 补 Zod 入站边界**（§8.4 强制：`apiParsed` 是唯一入口，漂移→`SchemaDriftError`→渲染成 `incident`；只校验**进入状态树的字段**）+ `zod@4.6.5` + `tsconfig allowJs`。
+**★ 顺手挖出两个真缺陷**：**F-2**（**待裁决**）`tools/build_design_tokens.py:258` 的 `fontFamily` **过度匹配 + 二次 `var()` 包裹** → `font-mono` 产出无效 CSS 被浏览器丢弃，**两道护栏都拦不住**；**F-3**（**已修**）真实 `/environment` **没有 `llm.required_env`**，而前端声明为必填并 `.join()` → **LLM 未配置时白屏**（只因当时恰好已配置才未暴露）。
+**验证**：`npm run build` ✅ · `npm run guard` ✅（88 令牌）· `npx vitest run` **31 passed/3 文件** · 原始色 **0 命中** · **A/B 与 MVP 无差异**（22 卡 / 10 触发表 / 计数行逐字符一致）；唯一有意差异是按 DoD #6 给徽标加了**图标+文字**并把误用的 `⚠` 改回规范值 `▲`。
+⚠️ **环境坑（新增 4 条）**：`npm install` 会毁依赖树（平台二进制 **+ `@babel/generator`** → **dev 下 500、build 正常**），补救用 **tarball 直下 + tar 解包**（scoped 包 URL 必须 `%2f` 编码）；**MSYS 会把以 `/` 开头的参数改写成 Windows 路径**；`vite dev` 绑 `localhost`（IPv6）；Chrome 旧 `--headless` **不执行 ES module**，必须 `--headless=new`。
+**下一步：S1 ② 算例库迁移**（阻塞已解除）。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**#6 结案 + #8 通过 + F-1 已修：围笼路径形态 · 输入规范化**）
+📄 [2026-09-26-case6-closeout-and-fence-defect.md](2026-09-26-case6-closeout-and-fence-defect.md)
+
+**#6 结案 = 输入侧**（干净 curl 直构同一路径 **201**，`available=true` 证明网关读到了文件；探针 `.superpowers/sdd/m34-case-register-input.py` 穷举污染形态 —— **⑦ 单引号包裹的回显与记录原文逐字符一致**，另 ② 双引号 / ③ 零宽 / ④ 全角反斜杠也复现 400）。**#8 通过 3/3**（`missing_required`/`wrong_type`/`unknown_arg`，`remounted:false` 证明调用未转发到 server）。**★ 首次真实触发 409 围笼分支**（此前只有 monkeypatch 单测）。
+**★ F-1 已修**：`run_gateway.sh:15` 的 `pwd` 在 Git Bash 下给 POSIX 形态 → 允许根被写成 `D:\d\coding\...` → **项目内算例也判 `within_allowed_roots=false`，任何算例解析都 409**（`run_gateway.cmd` 的 `%~dp0..` 正常）。改为 `pwd -W 2>/dev/null || pwd`；闭环验证：`fence` 形态正确 · case39.m 解析 **200** · case5.m 仍 **409**。
+**★ #6 已修**：新增 `normalize_case_path` / `suspicious_case_path` —— 剥离成对引号（含嵌套）· 剔除零宽字符 · 全角标点归一；**改动如实回报**（`path_normalized`，**不静默修正**）；400 文案给出可疑字符类别 + 可操作建议；MVP 前端显示归一化提示。
+测试 **501 → 515 passed, 2 deselected**（+14，**顺带确证 ≈501 基线**，上期遗留的「待复跑确证」可关闭）；变异探针 **2/2 全红**。
+★ 环境备忘：本机 HTTP 探测**必须加 `--noproxy '*'`**（沙箱代理会把 localhost 劫持成 502）；**MSYS 会改写 Bash 参数里的 Windows 路径**（`'C:\Users\Z'` → `C:/Users/Z`）—— 含反斜杠的代码用编辑工具写，别走 shell。
+
+---
+
+### 🚩 2026-09-26 — HANDOFF（**React 迁移第 1 步完成 + MVP 人工测试闭环**）
+📄 [handoff_2026-09-26_react-skeleton-and-mvp-test.md](handoff_2026-09-26_react-skeleton-and-mvp-test.md)
+
+接手入口。状态：MVP 测试 8✓/#6 坐实 bug/#8 待 curl 补测；React 骨架 DoD 7/7 全过、视图 1 技能手册 A/B 无差异；下一步算例库迁移。含：母线编号口径（surge 1-based vs 基线 0-based 恒差+1）、契约违规对话路径不可靠（以 HTTP 直构为准绳）、#6 诊断命令、npm/沙箱踩坑档案、仓库未提交清单。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**React 骨架 DoD 7/7 全过，迁移第 1 步闭环**）
+📄 [2026-09-26-react-skeleton-dod-passed.md](2026-09-26-react-skeleton-dod-passed.md)
+
+张老师确认骨架验收全过：构建零错、tokens 双护栏绿、原始色 0 命中、真实数据贯通（无头验证）、主题双态、状态签名 unknown 如实、guard 篡改探针报红/恢复、vitest 2/2；`/ui/mvp.html` 未动。踩坑三连（测试库版本不存在 / esbuild EBUSY / 平台二进制缺）+ npm 直调 npm-cli.js 绕 WSL shim，均已记当日日志。下一步：第 2 步逐视图迁移（技能手册 → 算例库 → 对话+校验层），A/B 对照 MVP。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**MVP 人工测试结果：8✓ · #6 坐实网关侧 bug · #8 待 curl 补测**）
+📄 [2026-09-26-mvp-manual-test-results.md](2026-09-26-mvp-manual-test-results.md)
+
+张老师执行 10 条清单：`1✓ 2✓ 3✓ 4✓ 5✓ 6✗ 7✓ 8未完成 9✓ 10✓`。
+**#6**：登记存在的项目外文件误报 400「文件不存在」（文件存在 + venv `exists()=True` + 前后端 strip 链路均已核实）——到达网关的字符串存疑或运行时差异，待 curl 二分复现；围笼 409 分支至今未被验证。**#8**：对话路径触发契约违规不可靠（模型拒绝/改道，其"客户端 SDK 先校验"理由已被源码证伪），确定性路径 = HTTP 直构 `/tools/call`（见 `docs/MVP测试_契约拦截示例.md`）。**#10** 通过；★ 长期口径：surge 报 Matpower 1-based 母线号，基线（pandapower）为 0-based，恒差 +1。结论：MVP 验证使命基本完成，支撑 React 骨架启动（见 `docs/MVP崩溃后技术栈评估与建议.md`）。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**补记：`8064da6` 之后 7 个未记提交 + 工作区脏**）
+📄 [2026-09-26-gateway-startup-hardening.md](2026-09-26-gateway-startup-hardening.md) · [2026-09-26-skills-manual-view.md](2026-09-26-skills-manual-view.md) · [2026-09-26-cases-context-injection.md](2026-09-26-cases-context-injection.md) · [2026-09-26-ands-access-toolface.md](2026-09-26-ands-access-toolface.md)
+
+`handoff_2026-09-25_workbench-p0-and-mvp.md` 与索引均曾滞后于实际仓库。当前 HEAD=`6f5d454`，补记 `8064da6` 之上的 7 个提交（启动脚本加固 · 技能手册视图 · 算例库上下文注入 · **ANDES 接入工具面**）+ 工作区脏（`run_gateway` 路径围笼补丁未提交、`examples/` 从未入版）。测试基线 **≈501 passed**（433→g7-g10 447→g1-g5 487→serverpool 498→cases 500→ANDES 501，按提交链累加，**待复跑确证**）；端点 **16 个**。
+
+---
+
+### 🚩 2026-09-25 — JOURNAL（**子项目 4：持久 server 连接池，T6-M5 根治**）
 📄 [2026-09-25-serverpool-t6m5.md](2026-09-25-serverpool-t6m5.md)
 
 张老师真实测试把 T6-M5 从「慢」坐实为「**功能阻断**」→ 会话级持久连接池
@@ -441,6 +518,7 @@
 
 | 路径 | 用途 |
 |---|---|
+| [docs/React版测试命令.md](../React版测试命令.md) | **手测清单**（2026-09-26）：服务地址 · 界面逐项预期 · 9 组 curl（**均已实跑**）· 3 条环境坑 · 一键复跑脚本 |
 | [docs/PowerMCP实践指南_v2.pdf](PowerMCP实践指南_v2.pdf) · [.md](PowerMCP实践指南_v2.md) | 对外交付文档（第二版，A4 23 页）。含可用性全景、科研步骤与场景 |
 | [docs/PowerSkills实践指南_v2.pdf](PowerSkills实践指南_v2.pdf) · [.md](PowerSkills实践指南_v2.md) | 对外交付文档（第二版，A4 24 页）。含技能健康度审计 |
 | [docs/PowerMCP实践指南.pdf](PowerMCP实践指南.pdf) · [PowerSkills实践指南.pdf](PowerSkills实践指南.pdf) | 第一版（2026-09-19），**保留存档，未改动** |

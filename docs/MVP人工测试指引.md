@@ -35,16 +35,16 @@ cd /d/coding/powerMcp_Pskills/gateway && ./run_gateway.sh
 
 | # | 测什么 | 怎么测 | 预期 |
 |---|---|---|---|
-| 1 | 页面渲染 | 打开页面 | 无白屏；顶部有校验层状态条 |
-| 2 | 环境就绪 | 环境面板 | Python/网关版本、LLM `api_key_set: true`；**不显示**密钥本体 |
-| 3 | 技能手册 | 顶部切到「技能手册」标签；试试筛选框（输入 `电压` 或 `surge`） | 22 张卡片（tool 11 · engineering 10 · meta 1），10 个带「触发条件 → 缓解手册」表；ltspice 标记"缺 escalation 表"；健康度显示 **unknown**（如实状态） |
-| 4 | 算例登记 | 登记一个算例：路径填 `D:\coding\powerMcp_Pskills\examples\data\case39.m` | 200 登记成功；显示 sha256 与标签 |
-| 5 | 算例解析 | 对已登记算例点"解析" | **首次约 5–10 秒**（真实拉起 powerio）；完成后可看 IR / 诊断（case39 诊断应为 0 条） |
-| 6 | 围笼拦截（反向） | 登记一个项目外路径的算例（如 `D:\某其他目录\xxx.m`）再解析 | 409，提示"不在允许根内" |
-| 7 | 对话 + 工具 | 对话输入"加载 case39 并做基态潮流，告诉我最低电压" | 流式回答；出现 `tool_call` 事件（surge.load_network / run_power_flow）|
-| 8 | 契约拦截 | 故意让模型调工具但删掉必填参数（或直接观察） | 违规时状态条出现 `contract_violation`，且调用**未转发** |
-| 9 | 模块提示词 | 对话里问"你现在带着哪个选题模块的提示词？" | 回答能体现 n1-ranking / cross-engine-consistency 的工作流要点（G-4 新能力）|
-| 10 | 禁用模块自证 | 把 `modules/` 临时改名 → 重启网关 → 重复 #2/#7 | 内核全部照常（无模块 = 正常状态）|
+✓| 1 | 页面渲染 | 打开页面 | 无白屏；顶部有校验层状态条 |    
+✓| 2 | 环境就绪 | 环境面板 | Python/网关版本、LLM `api_key_set: true`；**不显示**密钥本体 |
+✓| 3 | 技能手册 | 顶部切到「技能手册」标签；试试筛选框（输入 `电压` 或 `surge`） | 22 张卡片（tool 11 · engineering 10 · meta 1），10 个带「触发条件 → 缓解手册」表；ltspice 标记"缺 escalation 表"；健康度显示 **unknown**（如实状态） |
+✓| 4 | 算例登记 | 登记一个算例：路径填 `D:\coding\powerMcp_Pskills\examples\data\case39.m` | 200 登记成功；显示 sha256 与标签 |
+✓| 5 | 算例解析 | 对已登记算例点"解析" | **首次约 5–10 秒**（真实拉起 powerio）；完成后可看 IR / 诊断（case39 诊断应为 0 条） |
+✗| 6 | 围笼拦截（反向） | 登记一个项目外路径的算例（如 `D:\某其他目录\xxx.m`）再解析 | 409，提示"不在允许根内" |。实际测试显示“/cases → HTTP 400：算例文件不存在：'C:\Users\Z\Downloads\_科研项目\case5.m'”
+✓| 7 | 对话 + 工具 | 对话输入"加载 case39 并做基态潮流，告诉我最低电压" | 流式回答；出现 `tool_call` 事件（surge.load_network / run_power_flow）|
+未完成| 8 | 契约拦截 | 故意让模型调工具但删掉必填参数（或直接观察） | 违规时状态条出现 `contract_violation`，且调用**未转发** |
+✓| 9 | 模块提示词 | 对话里问"你现在带着哪个选题模块的提示词？" | 回答能体现 n1-ranking / cross-engine-consistency 的工作流要点（G-4 新能力）|
+✓| 10 | 禁用模块自证 | 把 `modules/` 临时改名 → 重启网关 → 重复 #2/#7 | 内核全部照常（无模块 = 正常状态）|
 
 ## 三、已知预期行为（不是 bug）
 
