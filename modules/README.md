@@ -94,6 +94,7 @@ PY
 |---|---|---|
 | **G-3** | 「软收窄」目前只是 `/modules` 的 `notes` 文案，**清单层无字段** | 若将来要做硬白名单，需加 `enforcement: soft \| hard`；当前保持软收窄 |
 | **G-6** | `entities` 与 `result_tables` 是**平行列表**，看不出"输入 → 输出"关系 | 可选：给 `result_tables[]` 加 `produced_from: <entity_id>`，让界面能"从实体跳到结果表" |
+| **G-11** | **T0 契约 1（接口存在）对「局部变量接收者」的工具实现无法静态判定** —— 实测 8/9 server 全部 `unknown/structural`，能力矩阵「契约 1」列整列 `? 未知`（2026-09-27 张老师真机测试提出；当日 `/contracts/t0` 实测 38 findings 中契约 1 全 unknown，detail 已写明成因：接收者多为局部变量，如 `net = pp.create_empty_network()` 后的 `net.add_*`） | 三条改进方向，按成本排序：① **运行时兜底已部分替代** —— 契约 2（README ↔ 运行时工具面，真实拉起 server 数工具）已能给出 满足/降级 结论，契约 1 的信息增量有限；② **网关/上游侧**：工具注册时显式记录实现函数对象，以函数存在性直接判定（需 PowerMCP 上游 registry 配合）；③ **AST 推断**：追踪 `net = create_x()` 局部变量赋值（成本最高，误报风险需评估）。**触发条件**：报告/论文需要「接口存在」维度的可判定结论时再做；当前界面已如实显示 unknown 且徽标可下钻看成因，不阻塞。**最小验证**：对 pandapower 一个 server 打通后，看 `/contracts/t0` 的契约 1 是否变 `satisfied` |
 
 ## 五、这次验证**没有**发现的
 
