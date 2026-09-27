@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import pfFx from "./__fixtures__/gateway/result-power-flow.json";
+import ppFx from "./__fixtures__/gateway/result-power-flow-pp.json";
 import n1Fx from "./__fixtures__/gateway/result-n1.json";
 import { ResultSummary, ToolCallRow, ViolationTable } from "./components";
 import {
@@ -164,7 +165,126 @@ describe("ResultSummary 渲染", () => {
   });
 });
 
-/* ─────────────── extractViolations（N-1 violations 结构化，⑥ 校验层配套）─────────────── */
+/* ─────────────── extractResults —— pandapower 潮流形状（真实夹具，2026-09-27）─────────────── */
+
+describe("extractResults —— pandapower 形状（bus_results 键控字典）", () => {
+  // ★ 张老师真机测试坐实的缺口：pp 的潮流结果没有 vm/bus_numbers 数组，
+  //   而是 bus_results.vm_pu 键控字典（键 "0".."38"）—— 首版只认 surge 形状，
+  //   跨引擎一致性面板因此配不上对。
+  const items = extractResults("pandapower", "run_power_flow", ppFx);
+
+  it("最低电压 0.982 @ 键 30；最高电压 1.0636 @ 键 35（与 surge 同算例实测一致）", () => {
+    expect(items.find((i) => i.label === "最低电压")!.value!.value).toBeCloseTo(0.982, 6);
+    expect(items.find((i) => i.label === "最低电压")!.ref!.id).toBe(30);
+    expect(items.find((i) => i.label === "最高电压")!.value!.value).toBeCloseTo(1.0636, 6);
+    expect(items.find((i) => i.label === "最高电压")!.ref!.id).toBe(35);
+  });
+
+  it("★ 编号约定 = 0-based，来自 byOutput 新条目（键含 \"0\"、39 条母线 → 决定性）", () => {
+    expect(items.find((i) => i.label === "最低电压")!.ref!.convention).toBe("0-based");
+  });
+
+  it("收敛 = 是（pp 形状无迭代数字段，不臆造）", () => {
+    const c = items.find((i) => i.label === "收敛")!;
+    expect(c.text).toBe("是");
+  });
+
+  it("键含非正整数 / 非有限值 → 跳过；两个形状都不认识 → 空数组", () => {
+    const weird = {
+      is_error: false,
+      inner: { results: { bus_results: { vm_pu: { "0": 1.0, x: 2.0, "-1": 3.0, NaN: null } } } },
+    };
+    const items = extractResults("pandapower", "run_power_flow", weird);
+    expect(items.find((i) => i.label === "最低电压")!.ref!.id).toBe(0);
+    expect(extractResults("pandapower", "run_dc_power_flow", { is_error: false, inner: { foo: 1 } })).toEqual([]);
+  });
+});
+
+/* ─────────────── crossEngineComparisons —— caseKey 继承（run 调用无参）─────────────── */
+
+describe("crossEngineComparisons —— caseKey 继承（张老师真机场景）", () => {
+  const load = (server: string, seq: number, file: string) => ({
+    server,
+    tool: server === "surge" ? "load_network" : "load_network_from_any",
+    seq,
+    args: { file_path: file },
+    results: undefined,
+  });
+
+  it("★ load 带路径 + run 无参 → run 的 caseKey 继承自同引擎最近载入，正常配对并给判定", () => {
+    const rows = [
+      load("pandapower", 1, "D:/data/case39.m"),
+      load("surge", 2, "D:/data/case39.m"),
+      {
+        server: "surge",
+        tool: "run_ac_power_flow",
+        seq: 3,
+        args: {},
+        results: [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "s") }],
+      },
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 4,
+        args: null,
+        results: [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "p") }],
+      },
+    ];
+    const out = crossEngineComparisons(rows);
+    expect(out).toHaveLength(1);
+    expect(out[0].caseKey).toContain("case39.m");
+    expect(out[0].caseVerified).toBe(true);
+    expect(out[0].caseKeyInherited).toBe(true);
+    expect(out[0].consistent).toBe(true);
+  });
+
+  it("★ 两引擎最近载入的是**不同**算例 → 永不配对（继承也不能跨算例）", () => {
+    const rows = [
+      load("pandapower", 1, "D:/data/case39.m"),
+      load("surge", 2, "D:/data/case118.m"),
+      {
+        server: "surge",
+        tool: "run_ac_power_flow",
+        seq: 3,
+        args: {},
+        results: [{ label: "最低电压", value: measure(0.943, { unit: "pu" }, "s") }],
+      },
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 4,
+        args: null,
+        results: [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "p") }],
+      },
+    ];
+    expect(crossEngineComparisons(rows)).toHaveLength(0);
+  });
+
+  it("★ 继承按引擎隔离：surge 载过、pandapower 从未载 → **不配对**（一方算例未知就不能比）", () => {
+    const rows = [
+      load("surge", 1, "D:/data/case39.m"),
+      {
+        server: "surge",
+        tool: "run_ac_power_flow",
+        seq: 2,
+        args: {},
+        results: [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "s") }],
+      },
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 3,
+        args: null,
+        results: [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "p") }],
+      },
+    ];
+    // surge 侧继承到 case39，pandapower 侧算例未知 → 两项分属不同 caseKey 组、
+    // 各自单引擎 → 全部丢弃。宁可不比，不可不知算例就比（错误的一致性结论比慢更危险）。
+    expect(crossEngineComparisons(rows)).toHaveLength(0);
+  });
+});
+
+/* ─────────────── N-1 violations 结构化（⑥ 校验层配套）────────────── */
 
 describe("extractViolations —— 真实 N-1 夹具（52 条）", () => {
   const rows = extractViolations("surge", "run_n1_branch_contingency", n1Fx);

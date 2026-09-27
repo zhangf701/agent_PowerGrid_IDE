@@ -73,55 +73,85 @@ function busConvention(server: string, tool: string, field: string): Convention 
 /** 潮流结果里电压的判据单位（有量纲量：单位即判据，无需 criterion）。 */
 const PF_SHAPES = new Set(["run_ac_power_flow", "run_power_flow", "run_dc_power_flow"]);
 
-function extremeIndex(values: unknown[], mode: "min" | "max"): number {
-  let best = -1;
-  let bestVal = mode === "min" ? Infinity : -Infinity;
-  for (let i = 0; i < values.length; i += 1) {
-    const v = values[i];
-    // ⚠️ 网关会把 NaN/Infinity 消毒成 null —— 必须跳过，不能当成 0
-    if (typeof v !== "number" || !Number.isFinite(v)) continue;
-    if (mode === "min" ? v < bestVal : v > bestVal) {
-      bestVal = v;
-      best = i;
-    }
-  }
-  return best;
-}
-
-/** 潮流结果 → 收敛 / 最低电压 / 最高电压（后两者带**母线标识符**，约定按输出查表）。 */
+/** 潮流结果 → 收敛 / 最低电压 / 最高电压（后两者带**母线标识符**，约定按输出查表）。
+ *
+ *  ⚠️ 两种**真实形状**（都有网关夹具，2026-09-27）：
+ *    - A（surge `run_ac_power_flow`）：`vm` 数组 + `bus_numbers` 数组（1-based 母线号）；
+ *    - B（pandapower `run_power_flow`）：`bus_results.vm_pu` = **键控字典**，键 `"0".."N-1"`
+ *      （0-based 母线索引，无 bus_numbers 数组）—— 首版只认 A，跨引擎一致性面板因此
+ *      配不上对（张老师真机测试坐实）。认不出 → []（不猜）。
+ */
 function extractPowerFlow(inner: unknown, server: string, tool: string): ResultItem[] {
   const source = `${server}.${tool}`;
   const r = (inner as { results?: Record<string, unknown> } | null)?.results;
   if (!r) return [];
-  const vm = r.vm;
-  const buses = r.bus_numbers;
-  if (!Array.isArray(vm) || !Array.isArray(buses) || vm.length !== buses.length) return [];
 
-  const conv = busConvention(server, tool, "bus_numbers");
   const items: ResultItem[] = [];
-  if (typeof r.converged === "boolean") {
-    items.push({
-      label: "收敛",
-      text: r.converged ? `是（${String(r.iterations ?? "?")} 次迭代）` : "否",
-    });
-  }
-  const iMin = extremeIndex(vm, "min");
-  const iMax = extremeIndex(vm, "max");
-  if (iMin >= 0) {
+  const pushExtreme = (
+    entries: { bus: number; vm: number }[],
+    convention: Convention,
+  ) => {
+    if (!entries.length) return false;
+    let iMin = 0;
+    let iMax = 0;
+    for (let i = 1; i < entries.length; i += 1) {
+      if (entries[i].vm < entries[iMin].vm) iMin = i;
+      if (entries[i].vm > entries[iMax].vm) iMax = i;
+    }
     items.push({
       label: "最低电压",
-      value: measure(vm[iMin], { unit: "pu" }, source),
-      ref: { id: buses[iMin] as number, convention: conv, kind: "bus" },
+      value: measure(entries[iMin].vm, { unit: "pu" }, source),
+      ref: { id: entries[iMin].bus, convention, kind: "bus" },
     });
-  }
-  if (iMax >= 0) {
     items.push({
       label: "最高电压",
-      value: measure(vm[iMax], { unit: "pu" }, source),
-      ref: { id: buses[iMax] as number, convention: conv, kind: "bus" },
+      value: measure(entries[iMax].vm, { unit: "pu" }, source),
+      ref: { id: entries[iMax].bus, convention, kind: "bus" },
     });
+    return true;
+  };
+
+  /* 形状 A：vm + bus_numbers 平行数组（surge） */
+  const vm = r.vm;
+  const buses = r.bus_numbers;
+  if (Array.isArray(vm) && Array.isArray(buses) && vm.length === buses.length) {
+    const conv = busConvention(server, tool, "bus_numbers");
+    if (typeof r.converged === "boolean") {
+      items.push({
+        label: "收敛",
+        text: r.converged ? `是（${String(r.iterations ?? "?")} 次迭代）` : "否",
+      });
+    }
+    const entries: { bus: number; vm: number }[] = [];
+    for (let i = 0; i < vm.length; i += 1) {
+      // ⚠️ 网关会把 NaN/Infinity 消毒成 null —— 必须跳过，不能当成 0
+      if (typeof vm[i] !== "number" || !Number.isFinite(vm[i])) continue;
+      entries.push({ bus: buses[i] as number, vm: vm[i] as number });
+    }
+    pushExtreme(entries, conv);
+    return items;
   }
-  return items;
+
+  /* 形状 B：bus_results.vm_pu 键控字典（pandapower，键 = 0-based 索引） */
+  const busResults = r.bus_results as Record<string, Record<string, unknown>> | undefined;
+  const vmByBus = busResults?.vm_pu;
+  if (vmByBus && typeof vmByBus === "object" && !Array.isArray(vmByBus)) {
+    const conv = busConvention(server, tool, "bus_results");
+    if (typeof r.converged === "boolean") {
+      items.push({ label: "收敛", text: r.converged ? "是" : "否" });
+    }
+    const entries: { bus: number; vm: number }[] = [];
+    for (const [k, v] of Object.entries(vmByBus)) {
+      const idx = Number(k);
+      if (!Number.isInteger(idx) || idx < 0) continue; // 键不是非负整数 → 不猜
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      entries.push({ bus: idx, vm: v });
+    }
+    pushExtreme(entries, conv);
+    return items;
+  }
+
+  return [];
 }
 
 /** N-1 结果 → 场景数 / 越限 / Top-1 最重载支路。 */
@@ -169,6 +199,9 @@ export interface CrossEngineComparison {
   criterion?: string;
   /** 从参数里提取的算例标识（文件路径等）；`null` = 参数里找不到可比对标识 */
   caseKey: string | null;
+  /** ★ caseKey 不是本调用自己的参数，而是继承自该 server 会话内**最近一次载入** ——
+   *  `run_*` 类调用通常无参（操作已载入的网络），此时用载入调用的路径补全 */
+  caseKeyInherited: boolean;
   entries: CrossEngineEntry[];
   /** 最大 − 最小（`entries` ≥ 2 时存在） */
   delta: number;
@@ -204,9 +237,12 @@ function caseKeyOf(args?: Record<string, unknown> | null): string | null {
 
 /** 从会话工具轨迹里配出**跨引擎**的同名同单位可比组。
  *
- *  ★ 只配 `results` 里的 **Measured** 项（label + unit + criterion 全同才算同一指标）；
+ *  ★ 只配 `rows` 里的 **Measured** 项（label + unit + criterion 全同才算同一指标）；
  *  ★ `caseKey` 不同的**永不配对**（跨算例比较 = 错误的一致性结论，比慢更危险）；
- *    参数里找不到算例标识的标 `caseVerified: false` —— Δ 照算照显，但**不给判定**。
+ *  ★ **caseKey 继承**：`run_*` 类调用通常无参（操作会话池里已载入的网络）——
+ *    按 seq 顺序记录每个 server **最近一次**带算例路径的调用，为其后的无参调用补全
+ *    caseKey（`caseKeyInherited=true`）。这与会话池的真实状态一致；从未载入过可识别
+ *    路径的 server 仍落 `caseVerified: false` —— 不猜。
  *  ★ 单引擎组不是比较 —— 直接丢弃（只回跨引擎组）。
  */
 export function crossEngineComparisons(
@@ -215,12 +251,33 @@ export function crossEngineComparisons(
   type Key = string;
   const groups = new Map<
     Key,
-    { label: string; unit: string; criterion?: string; caseKey: string | null; entries: CrossEngineEntry[] }
+    {
+      label: string;
+      unit: string;
+      criterion?: string;
+      caseKey: string | null;
+      caseKeyInherited: boolean;
+      entries: CrossEngineEntry[];
+    }
   >();
 
-  for (const row of rows) {
+  // ★ 预扫描（按 seq 升序）：每个 server 的「会话内最近载入」算例标识
+  const ordered = [...rows].sort((a, b) => a.seq - b.seq);
+  const lastCaseByServer = new Map<string, string>();
+  const caseKeyOfRow = (row: (typeof ordered)[number]): { key: string | null; inherited: boolean } => {
+    const own = caseKeyOf(row.args);
+    if (own) {
+      lastCaseByServer.set(row.server, own);
+      return { key: own, inherited: false };
+    }
+    const prev = lastCaseByServer.get(row.server);
+    return { key: prev ?? null, inherited: prev !== undefined };
+  };
+
+  for (const row of ordered) {
+    // ★ 载入调用（无 results）也必须推进 lastCaseByServer —— 先更新状态，再过滤
+    const { key: ck, inherited } = caseKeyOfRow(row);
     if (!row.results) continue;
-    const ck = caseKeyOf(row.args);
     for (const it of row.results) {
       if (!it.value) continue; // 纯文本 / 标识符项不可比
       const m = it.value;
@@ -231,6 +288,7 @@ export function crossEngineComparisons(
           unit: m.unit,
           criterion: m.criterion,
           caseKey: ck,
+          caseKeyInherited: inherited,
           entries: [],
         });
       }
@@ -253,6 +311,7 @@ export function crossEngineComparisons(
       unit: g.unit,
       criterion: g.criterion,
       caseKey: g.caseKey,
+      caseKeyInherited: g.caseKeyInherited,
       entries: g.entries,
       delta,
       relative,

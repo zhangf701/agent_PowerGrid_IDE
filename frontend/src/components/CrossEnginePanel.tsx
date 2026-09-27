@@ -49,7 +49,14 @@ export function CrossEnginePanel({
           <div className="flex flex-wrap items-baseline gap-2">
             <span className="font-medium">{c.label}</span>
             {c.caseKey && (
-              <span className="font-mono text-caption text-text-muted">{c.caseKey}</span>
+              <span className="font-mono text-caption text-text-muted">
+                {c.caseKey}
+                {c.caseKeyInherited && (
+                  <span title="本次调用无参（操作已载入的网络），算例标识继承自该引擎会话内最近一次载入调用">
+                    {" "}（会话内最近载入）
+                  </span>
+                )}
+              </span>
             )}
           </div>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
