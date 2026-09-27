@@ -138,10 +138,17 @@ async def fetch_server_tools(
                                      else cfg.server_timeout_s) from exc
             raise
 
+    # ⚠️ **延迟导入**（不能放模块顶层）：`inventory → proxy → contracts.model →
+    #    contracts/__init__ → contracts.namespacing → inventory` 会成环。
+    #    这里只需要一个纯函数，函数内导入即可。
+    from .proxy import session_server_env
+
     params = StdioServerParameters(
         command=str(cfg.python),
         args=["-m", "powermcp.cli", "run", server],
         cwd=str(cfg.powermcp_root),
+        # ★ §11.2 措施 1：与 `proxy._server_params` **同一实现**（会话命名空间只有一份）。
+        env=session_server_env(sid),
     )
     timeout = timeout_s if timeout_s is not None else cfg.server_timeout_s
 

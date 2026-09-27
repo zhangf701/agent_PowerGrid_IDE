@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .concurrency import file_write_lock
 from .config import GatewayConfig, server_env
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,16 @@ def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
     return False
 
 
+def is_within_roots(path: Path, roots: tuple[Path, ...]) -> bool:
+    """`_is_within` 的**公开入口**。
+
+    ★ 为什么必须公开而不是让并发层自己写一遍：围笼判定一旦有两份实现就会**漂移**，
+      而漂移的后果是「算例库说可读、server 实际读不到」这类**静默不一致**（本项目
+      反复付过学费）。并发层（§11.2 会话命名空间）与算例库必须用**同一套**判定。
+    """
+    return _is_within(path, roots)
+
+
 class CaseStore:
     """算例索引的读写。
 
@@ -355,30 +366,34 @@ class CaseStore:
             notes=notes,
         )
 
-        rows = self._load()
-        created = True
-        for i, row in enumerate(rows):
-            if row.get("id") == case.id:
-                created = False
-                # 保留原登记时间（它是"这个算例什么时候进入研究"的记录，不该被覆盖）
-                case = Case(**{**asdict(case), "registered_at": row.get(
-                    "registered_at", case.registered_at)})
-                rows[i] = asdict(case)
-                break
-        else:
-            rows.append(asdict(case))
-        self._write(rows)
+        # ★ §11.2 措施 2/3：「读-改-写」必须**整体**在锁内 —— 只锁 `_write` 挡不住
+        #   丢更新（两个请求各自读到旧 rows，后写的覆盖先写的）。见 `file_write_lock`。
+        with file_write_lock(self.index_path):
+            rows = self._load()
+            created = True
+            for i, row in enumerate(rows):
+                if row.get("id") == case.id:
+                    created = False
+                    # 保留原登记时间（它是"这个算例什么时候进入研究"的记录，不该被覆盖）
+                    case = Case(**{**asdict(case), "registered_at": row.get(
+                        "registered_at", case.registered_at)})
+                    rows[i] = asdict(case)
+                    break
+            else:
+                rows.append(asdict(case))
+            self._write(rows)
         return case, created
 
     def unregister(self, case_id: str) -> Case:
         """注销登记 —— **只删索引条目，绝不删除源文件**。"""
-        rows = self._load()
-        for i, row in enumerate(rows):
-            if row.get("id") == case_id:
-                removed = _to_case(row)
-                del rows[i]
-                self._write(rows)
-                return removed
+        with file_write_lock(self.index_path):
+            rows = self._load()
+            for i, row in enumerate(rows):
+                if row.get("id") == case_id:
+                    removed = _to_case(row)
+                    del rows[i]
+                    self._write(rows)
+                    return removed
         raise KeyError(case_id)
 
 

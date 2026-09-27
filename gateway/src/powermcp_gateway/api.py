@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import os
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
@@ -41,6 +42,7 @@ from .case_ir import (
     save_artifact,
 )
 from .config import GatewayConfig
+from .concurrency import LEASES
 from .checks import run_checks as run_module_checks_engine
 from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
@@ -1109,6 +1111,42 @@ def register_experiment_routes(app: FastAPI) -> None:
             "notes": ["本步不执行，全部格子为 `pending`；执行端点是 `POST /experiments/{eid}/run`。"],
         }
 
+    @app.delete("/experiments/{eid}")
+    async def delete_experiment(eid: str):
+        """删除实验定义及其按实验隔离的结果记录，不影响算例源文件。"""
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        if eid in _RUNNING:
+            return JSONResponse(status_code=409, content={
+                "detail": "该实验正在执行中，不能删除；请等待执行完成后重试",
+            })
+
+        store = _store()
+        try:
+            exp = store.get(eid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验不存在"})
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        result_dir = results_root(c, eid)
+        if result_dir.exists():
+            try:
+                shutil.rmtree(result_dir)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"实验结果清理失败：{exc}") from exc
+        try:
+            store.delete(eid)
+        except KeyError:
+            # 与并发删除保持幂等的 404 语义；通常只会在外部改写索引时发生。
+            return JSONResponse(status_code=404, content={"detail": "实验不存在"})
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"deleted": True, "experiment_id": exp.id}
+
     @app.post("/experiments/{eid}/run")
     async def run_experiment(eid: str):
         """**串行**执行一个实验的全部格子（P2-①b）。
@@ -1158,13 +1196,36 @@ def register_experiment_routes(app: FastAPI) -> None:
         except ExperimentIndexError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        # ★ **空步骤序列必须拒跑**（fail-closed）：`execute_cells` 的步骤循环不跑，
+        #   格子会得到 `status="ok"` 且 0 步 —— 那是**假绿灯**（"跑了 0 步却说成功"）。
+        #   何时会出现：①a 时期的**旧格式记录**（只有 server/tool/args_template，
+        #   没有 steps）或索引被手工编辑过。新登记的实验不可能为空（`_parse_steps`
+        #   已要求至少一步），故这是**历史数据**的兜底。
+        if not exp.steps:
+            return JSONResponse(status_code=409, content={
+                "detail": (
+                    "该实验没有步骤（定义为空）—— 无法执行。这通常是 **2026-09-27 之前的"
+                    "旧格式记录**（当时实验只支持单步 `server`/`tool`）或索引被手工编辑过。"
+                    "请按 `steps[]` 重新登记该实验（至少一步）。"
+                ),
+            })
+
         # ★ 同一实验**不并发执行**：结果按 `cache_key` 落盘，两个并发 run 会互相覆盖。
-        #   §11.2 的并发隔离尚未做，故这里用进程内标记做最小防护（单进程本地使用）。
+        #   ⚠️ **占位必须在首个 `await` 之前**（§11.2 实测的竞态）：原先的顺序是
+        #   「检查 → await 取清单 → add」，两个并发请求会**都通过检查**（此时谁都还没
+        #   add），防护形同虚设。现在改成「检查 + 立即占位 → try/finally 释放」。
         if eid in _RUNNING:
             return JSONResponse(status_code=409, content={
                 "detail": "该实验正在执行中（同一实验不并发执行：结果按 cache_key 落盘，并发会互相覆盖）",
             })
+        _RUNNING.add(eid)
+        try:
+            return await _run_experiment_body(eid, c, store, exp, cells)
+        finally:
+            _RUNNING.discard(eid)
 
+    async def _run_experiment_body(eid: str, c, store: ExperimentStore, exp, cells) -> dict:
+        """`/run` 的主体（占位与释放由调用方负责 —— 见上面的竞态说明）。"""
         # 取一次工具清单 → (server, tool) → input_schema。契约 3 需要**真实 schema**，
         # 拿不到就绝不调用（空 schema 会让校验静默 fail-open）。
         scratch_sid = _STORE.create((exp.server,)).id
@@ -1196,15 +1257,11 @@ def register_experiment_routes(app: FastAPI) -> None:
                                 if outcome.result is not None else None),
             )
 
-        _RUNNING.add(eid)
-        try:
-            records = await execute_cells(
-                cells,
-                new_session=lambda: _STORE.create((exp.server,)).id,
-                run_step=run_step,
-            )
-        finally:
-            _RUNNING.discard(eid)
+        records = await execute_cells(
+            cells,
+            new_session=lambda: _STORE.create((exp.server,)).id,
+            run_step=run_step,
+        )
 
         try:
             ResultsStore(results_root(c, eid)).merge(records)
@@ -1228,6 +1285,8 @@ def register_experiment_routes(app: FastAPI) -> None:
                 "会话状态无法担保。",
                 "结果按 `cache_key` 落盘 —— 算例或模板一改，旧结果自动失配（不会冒充当前条件）。",
                 "结果表与导出见 `GET /experiments/{eid}/results` 与 `/export`。",
+                "★ §11.2 并发隔离已就位：每个会话有自己的 `runs/` 命名空间（会话级 "
+                "`POWERMCP_HOME`），且同一 (会话, 引擎) 的工具调用不交错。",
             ],
         }
 
@@ -1347,10 +1406,15 @@ def create_app(cfg: GatewayConfig | None = None, *,
           历史中、但未持久化到 NDJSON** —— 这是 I-2 之后**唯一残留的静默降级路径**。
           让它在这里可读，就不必翻日志才发现"证据流已在悄悄掉数据"。
           `audit.append_failures` 是**累计量**（丢失量级），`audit.handles` 是现状量。
+
+        ★ **`leases`（§11.2）**：并发隔离的观测面 —— `waited` 是"真排过队"的累计次数，
+          `timed_out` 是等不到租约而**响亮失败**的次数，`contended_keys` 是当前正在
+          争用的 key（正常运行时为空）。没有这个面，"有没有在排队"就只能靠猜。
         """
         return {"status": "ok", "audit": _AUDIT.stats(),
                 "server_pool": (_POOL.stats() if _POOL is not None
-                                else {"enabled": False})}
+                                else {"enabled": False}),
+                "leases": LEASES.stats()}
 
     @app.get("/servers")
     async def servers() -> dict[str, list[str]]:

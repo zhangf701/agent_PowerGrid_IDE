@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .cases import CaseStore, cases_root
+from .concurrency import LEASES, case_key_of, file_write_lock
 from .modules import CORE_VERSION
 
 logger = logging.getLogger(__name__)
@@ -436,12 +437,26 @@ class ExperimentStore:
 
     def create(self, exp: Experiment) -> Experiment:
         """登记一个实验（**只存定义，不存格子** —— 见 `cells()` 的说明）。"""
-        rows = self._load()
-        if any(r.get("id") == exp.id for r in rows):
-            raise ExperimentError(f"实验 id 已存在：{exp.id}")
-        rows.append(exp.to_dict())
-        self._write(rows)
+        # ★ §11.2 措施 2/3：读-改-写整体在锁内（只锁 `_write` 挡不住丢更新）。
+        with file_write_lock(self.index_path):
+            rows = self._load()
+            if any(r.get("id") == exp.id for r in rows):
+                raise ExperimentError(f"实验 id 已存在：{exp.id}")
+            rows.append(exp.to_dict())
+            self._write(rows)
         return exp
+
+    def delete(self, exp_id: str) -> Experiment:
+        """删除实验定义并返回被删除的实验；结果文件由 API 层一并清理。"""
+        with file_write_lock(self.index_path):
+            rows = self._load()
+            for index, row in enumerate(rows):
+                if row.get("id") == exp_id:
+                    deleted = _to_experiment(row)
+                    del rows[index]
+                    self._write(rows)
+                    return deleted
+        raise KeyError(exp_id)
 
 
 # ------------------------------------------------------------------ 执行（P2-①b）
@@ -505,12 +520,15 @@ class ResultsStore:
 
     def merge(self, records: tuple[dict, ...]) -> None:
         """把本轮执行记录并入结果库（**只覆盖本轮跑到的 `cache_key`**）。"""
-        data = self._load()
-        for rec in records:
-            key = rec.get("cache_key")
-            if isinstance(key, str) and key:
-                data[key] = rec
-        self._write(data)
+        # ★ §11.2 措施 2/3：读-改-写整体在锁内 —— 否则两个并发 run 会互相覆盖
+        #   （各自读到旧 data，后写的把先写的整片抹掉）。
+        with file_write_lock(self.path):
+            data = self._load()
+            for rec in records:
+                key = rec.get("cache_key")
+                if isinstance(key, str) and key:
+                    data[key] = rec
+            self._write(data)
 
     def get(self, cache_key: str) -> dict | None:
         rec = self._load().get(cache_key)
@@ -542,6 +560,11 @@ async def execute_cells(
     ★ **`remounted=True` 一律判该格失败**：重连意味着该 server 进程此前已死，
       **会话状态（如已加载的网络）无法担保**。宁可保守报失败，也不让
       "可能是空网络跑出来的结果"冒充成功（假绿灯）。
+
+    ★ **§11.2 措施 2（租约锁）**：每步按 `(server, 算例键)` 取租约后才执行 ——
+      保护的是"同一引擎上的同一算例"这份共享可变状态。当前**串行**执行下不会争用，
+      它是**并发化时**才生效的接线（`proxy.call_tool` 另有 `(会话, server)` 租约，
+      保护引擎实例；两者 key 不同、按固定顺序嵌套，不会死锁）。
     """
     started = ran_at or _now()
     records: list[dict] = []
@@ -550,7 +573,9 @@ async def execute_cells(
         steps_out: list[dict] = []
         status = "ok"
         for i, step in enumerate(cell.steps):
-            outcome = await run_step(sid, step["server"], step["tool"], step["args"])
+            lease_key = f"case::{step['server']}::{case_key_of(step['args'])}"
+            async with LEASES.hold(lease_key):
+                outcome = await run_step(sid, step["server"], step["tool"], step["args"])
             rec: dict[str, Any] = {
                 "index": i,
                 "server": step["server"],
@@ -1102,8 +1127,8 @@ def build_report(cfg: Any, store: ExperimentStore) -> dict:
         },
         "experiments": items,
         "notes": [
-            "本步（P2-①a）只做**定义与登记**：端点返回的是「要跑什么」，**尚不执行**；"
-            "执行与逐格状态是 P2-①b。",
+            "本端点只做**定义与登记**（展开成「要跑什么」+ `cache_key`）；"
+            "执行是 `POST /experiments/{eid}/run`，结果表是 `GET /experiments/{eid}/results`。",
             "`cache_key` = H(算例当前 sha256 + steps 规范化序列 + core_version)；"
             "**不含引擎版本与 IR 版本**（网关当前无可靠来源，不假装有）。"
             "算例源文件一改，同一格会算出新的 key —— 旧结果即为陈旧。",

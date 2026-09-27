@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import math
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .audit import AuditLog
+from .concurrency import LEASES, LeaseTimeout, session_env
 from .config import GatewayConfig, server_env
 from .contracts.model import ContractFinding
 from .contracts.params import ArgViolation, schema_is_unusable, validate_args
@@ -53,7 +55,20 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
-def _server_params(cfg: GatewayConfig, server: str) -> StdioServerParameters:
+#: 当前工具调用所属的**会话 id** —— 由 `call_tool` 设置、`_server_params` 读取。
+#:
+#: ★ 为什么用 ContextVar 而不是给 `_dispatch` 加参数：`_dispatch` 是**测试的
+#:   monkeypatch 接缝**，其 4 参数签名被约 10 处假实现依赖（项目约定：
+#:   「旧路径保持原签名调用」，见 `inventory.fetch_server_tools`）。为了一处需要
+#:   而改动一大批**已验证**的测试，收益不抵风险。
+#: ★ 它**不是隐式通道**：只有一个写入点（`call_tool`，工具执行的唯一入口），
+#:   默认值 `None` 表示"无会话"，此时行为与改动前**逐位相同**；取值**只**用于
+#:   计算子进程的 env（§11.2 措施 1 的 `POWERMCP_HOME`），不参与任何业务判定。
+_CURRENT_SID: ContextVar[str | None] = ContextVar("powermcp_current_sid", default=None)
+
+
+def _server_params(cfg: GatewayConfig, server: str, *,
+                   sid: str | None = None) -> StdioServerParameters:
     """构造 MCP server 子进程的启动参数。
 
     ★ **必须显式传 `env`**（见 `config.SERVER_ENV_PASSTHROUGH` 的实测记录）：
@@ -62,15 +77,48 @@ def _server_params(cfg: GatewayConfig, server: str) -> StdioServerParameters:
       后果分别是：**路径围笼形同虚设**（server 只认默认根 = `cfg.powermcp_root`，
       因而读不到算例目录）、**surge 的 DC OPF 永远拿不到求解器路径**。
 
+    ★ **§11.2 措施 1**：有会话时注入会话级 `POWERMCP_HOME`，使上游的
+      `runs_dir(tool)` 落到 `<base>/sessions/<sid>/runs/<tool>` —— 每个会话
+      有**自己的可写产物目录**，并发会话不再争同一个 `runs/<tool>/`。
+      围笼校验不通过时**不重定向**并响亮说明（见 `concurrency.session_env`）。
+
+    `sid` 显式给出时优先；否则取 `_CURRENT_SID`（由 `call_tool` 设置）。
+
     抽成独立函数是为了让"传了什么 env"成为一个**可直接断言**的接缝
     （无需真的拉起子进程）。
     """
+    effective_sid = sid or _CURRENT_SID.get()
     return StdioServerParameters(
         command=str(cfg.python),
         args=["-m", "powermcp.cli", "run", server],
         cwd=str(cfg.powermcp_root),
-        env=server_env(),
+        env=session_server_env(effective_sid),
     )
+
+
+#: 已就"会话命名空间未启用"告警过的 sid —— 避免每个工具调用都刷同一条日志。
+_WARNED_SESSION_NS: set[str] = set()
+
+
+def _warn_session_ns_once(sid: str, note: str) -> None:
+    if sid in _WARNED_SESSION_NS:
+        return
+    _WARNED_SESSION_NS.add(sid)
+    logger.warning("会话级命名空间未启用（sid=%s）：%s", sid, note)
+
+
+def session_server_env(sid: str | None) -> dict[str, str]:
+    """**唯一的**"会话级 env 构造"实现 —— `_server_params` 与 `ServerPool` 共用。
+
+    ★ 为什么必须只有一份：会话命名空间的判定（含围笼校验与"不重定向"的告警）
+      一旦有两份实现就会**漂移**，而漂移的后果是"某条路径其实没隔离，且没人发现"。
+    """
+    overrides: dict[str, str] = {}
+    if sid:
+        overrides, note = session_env(sid)
+        if note:
+            _warn_session_ns_once(sid, note)
+    return server_env(overrides=overrides)
 
 
 async def _dispatch(cfg: GatewayConfig, server: str, tool: str, args: dict) -> dict:
@@ -373,22 +421,41 @@ async def call_tool(
         )
 
     remounted = False
+    # ★ §11.2 措施 4：**引擎实例串行化** —— 同一 (会话, server) 的调用不交错。
+    #   为什么要它：上游把 `runs/<tool>/` 当共享可写目录（ANDES 甚至按**名字**拼路径），
+    #   同一引擎实例上的两次并发调用可能互相覆盖产物。串行化把"共享可变状态"的
+    #   访问面收到 1。跨会话的隔离由措施 1（各自的 `POWERMCP_HOME`）保证。
+    #   ⚠️ 租约**覆盖整个转发过程**（含子进程启动/执行）—— 保护的就是那段时间里的写入。
+    lease_key = f"{session_id or '_nosid'}::{server}"
+    # ⚠️ `cfg` 可以是 `None`：测试里 `_dispatch` 被打桩，不需要真实配置。
+    #    此时用租约的默认超时（不能去读 `cfg.server_timeout_s`）。
+    lease_timeout = (cfg.server_timeout_s + 5.0) if cfg is not None else None
+    token = _CURRENT_SID.set(session_id)
     try:
-        if pool is not None and session_id is not None:
-            # ★ 子项目 4：经**会话级持久连接**执行 —— 同一 (session, server) 的
-            #   多次调用共享同一 server 进程，有状态工作流（载入 → 分析）才成立。
-            #   连接断裂时池内自动重连一次并重跑，remounted=True 如实上报状态丢失。
-            res = await pool.call(session_id, server, tool, args,
-                                  timeout_s=cfg.server_timeout_s)
-            result, remounted = res.result, res.remounted
-        else:
-            result = await _dispatch(cfg, server, tool, args)
+        async with LEASES.hold(lease_key, timeout_s=lease_timeout):
+            if pool is not None and session_id is not None:
+                # ★ 子项目 4：经**会话级持久连接**执行 —— 同一 (session, server) 的
+                #   多次调用共享同一 server 进程，有状态工作流（载入 → 分析）才成立。
+                #   连接断裂时池内自动重连一次并重跑，remounted=True 如实上报状态丢失。
+                res = await pool.call(session_id, server, tool, args,
+                                      timeout_s=cfg.server_timeout_s)
+                result, remounted = res.result, res.remounted
+            else:
+                result = await _dispatch(cfg, server, tool, args)
+    except LeaseTimeout as exc:
+        # ★ 等不到租约**不是"没结果"，是"还没轮到"** —— 必须说出来（不静默继续）。
+        _emit(bus, audit, session_id, "tool_error", {
+            "server": server, "tool": tool, "error": str(exc)[:300],
+        })
+        return CallOutcome(ok=False, server=server, tool=tool, error=str(exc)[:300])
     except Exception as exc:  # 引擎失败要如实暴露，不吞
         _emit(bus, audit, session_id, "tool_error", {
             "server": server, "tool": tool, "error": f"{type(exc).__name__}: {exc}"[:300],
         })
         return CallOutcome(ok=False, server=server, tool=tool,
                            error=f"{type(exc).__name__}: {exc}"[:300])
+    finally:
+        _CURRENT_SID.reset(token)
 
     if result.get("is_error"):
         # MCP 工具失败的标准形态：**不抛异常**，以 is_error=True 返回。

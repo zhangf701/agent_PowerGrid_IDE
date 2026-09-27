@@ -126,6 +126,26 @@ async def test_unknown_id_is_404(app):
     assert r.status_code == 404
 
 
+async def test_delete_experiment_removes_definition_and_results(app, case_id, roots):
+    created = (await _req(app, "POST", "/experiments", json=_payload(case_id))).json()
+    eid = created["experiment"]["id"]
+    result_dir = roots / "exp" / eid
+    result_dir.mkdir(parents=True)
+    (result_dir / "results.json").write_text("{}", encoding="utf-8")
+
+    r = await _req(app, "DELETE", f"/experiments/{eid}")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": True, "experiment_id": eid}
+    assert (await _req(app, "GET", "/experiments")).json()["summary"]["total"] == 0
+    assert not result_dir.exists()
+    assert (await _req(app, "GET", f"/experiments/{eid}")).status_code == 404
+
+
+async def test_delete_unknown_experiment_is_404(app):
+    r = await _req(app, "DELETE", "/experiments/nope")
+    assert r.status_code == 404
+
+
 async def test_bad_definition_is_400_with_actionable_detail(app, case_id):
     r = await _req(app, "POST", "/experiments",
                    json={"case_ids": [case_id],
@@ -396,6 +416,30 @@ async def test_run_single_step_without_pool_is_ok(app, case_id, stubs):
     assert r.json()["summary"]["ok"] == 1
 
 
+async def test_run_legacy_experiment_without_steps_is_409(pool_app, case_id, tmp_path):
+    """★ 空步骤序列必须**拒跑** —— 否则 `execute_cells` 的步骤循环不跑，格子会得到
+    `status="ok"` 且 0 步，即「跑了 0 步却说成功」的**假绿灯**。
+
+    场景：①a 时期的旧格式记录（只有 `server`/`tool`/`args_template`，没有 `steps`）。
+    """
+    import json as _json
+
+    app, _ = pool_app
+    idx = tmp_path / "exp" / "experiments.json"
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    idx.write_text(_json.dumps([{
+        "id": "legacy000001", "label": "旧格式实验", "created_at": "t",
+        "case_ids": [case_id], "factors": [],
+        "server": "surge", "tool": "run_ac_power_flow",
+        "args_template": {"file_path": "{case_path}"},
+    }]), encoding="utf-8")
+
+    r = await _req(app, "POST", "/experiments/legacy000001/run")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "没有步骤" in detail and "steps" in detail
+
+
 async def test_run_unknown_experiment_is_404(pool_app):
     app, _ = pool_app
     r = await _req(app, "POST", "/experiments/nope/run")
@@ -415,6 +459,52 @@ async def test_run_while_running_is_409(pool_app, case_id):
         assert "正在执行" in r.json()["detail"]
     finally:
         api_mod._RUNNING.discard(eid)
+
+
+async def test_concurrent_runs_one_wins_one_409(pool_app, case_id, monkeypatch):
+    """★ §11.2 实测的竞态：`_RUNNING` 占位必须在**首个 await 之前**。
+
+    原先的顺序是「检查 → await 取清单 → add」—— 两个并发请求会**都通过检查**
+    （此时谁都还没 add），防护形同虚设。本测试用**真并发**钉住它。
+    """
+    import asyncio
+
+    import powermcp_gateway.api as api_mod
+    from powermcp_gateway.proxy import CallOutcome
+
+    app, _ = pool_app
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_call(sid, server, tool, args, *, get_schema):
+        started.set()
+        await release.wait()
+        return CallOutcome(ok=True, server=server, tool=tool, result={"content": []})
+
+    monkeypatch.setattr(api_mod, "call_with_contracts", slow_call)
+    eid = await _create(app, case_id, steps=[_TWO_STEPS[0]])
+
+    async def one() -> int:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            return (await c.post(f"/experiments/{eid}/run")).status_code
+
+    first = asyncio.create_task(one())
+    await asyncio.wait_for(started.wait(), timeout=5)   # 第一个已进入执行
+    second = asyncio.create_task(one())
+    await asyncio.sleep(0.2)                            # 让第二个去撞占位
+    release.set()
+    codes = sorted([await first, await second])
+    assert codes == [200, 409], f"并发 run 未被拒绝（防护失效）：{codes}"
+
+
+async def test_health_exposes_lease_stats(app):
+    """★ 并发隔离必须**可观测**（§11.2）：没有这个面，"有没有在排队"只能靠猜。"""
+    r = await _req(app, "GET", "/health")
+    assert r.status_code == 200
+    leases = r.json()["leases"]
+    assert leases["scope"] == "process-local"
+    assert {"acquired", "waited", "timed_out", "contended_keys"} <= set(leases)
+    assert leases["active"] == 0
 
 
 async def test_run_failed_step_is_visible_per_cell(pool_app, case_id, monkeypatch):

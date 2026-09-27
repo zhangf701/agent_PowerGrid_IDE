@@ -227,7 +227,9 @@ class ServerPool:
                 command=str(self._cfg.python),
                 args=["-m", "powermcp.cli", "run", server],
                 cwd=str(self._cfg.powermcp_root),
-                env=self._server_env(),
+                # ★ §11.2 措施 1：会话级命名空间。连接池本来就按 (sid, server) 分桶，
+                #   故这里天然是"每个会话一套自己的 runs 目录"。
+                env=self._server_env(sid),
             )
             conn = _Conn(key, params, self._connector)
             self._conns[key] = conn
@@ -239,10 +241,16 @@ class ServerPool:
                 order.move_to_end(key)
         return conn
 
-    def _server_env(self) -> dict[str, str] | None:
-        """与 `proxy._server_params` 同源的显式 env（防两处口径漂移）。"""
-        from .config import server_env
-        return server_env()
+    def _server_env(self, sid: str | None = None) -> dict[str, str] | None:
+        """与 `proxy._server_params` 同源的显式 env（防两处口径漂移）。
+
+        ★ 走 `proxy` 的同一实现，而不是在这里再拼一次 `server_env()`：
+          会话命名空间（§11.2 措施 1）的判定与告警必须**只有一份** ——
+          两份实现会漂移，而漂移的后果是"某条路径没隔离，且没人发现"。
+        """
+        from .proxy import session_server_env
+
+        return session_server_env(sid)
 
     def _evict_lru(self, sid: str) -> None:
         order = self._by_sid.get(sid)
