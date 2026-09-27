@@ -21,6 +21,8 @@ __pycache__/
 # 运行产物
 *.log
 gateway/.cache/
+# vitest 的缓存目录（跑测试时在仓库根生成 .vite/vitest/results.json）—— 2026-09-27
+/.vite/
 
 # 例外：docs/logs/ 下的实测演示日志是证据链，需入库（须置于 *.log 之后）
 !docs/logs/*.log

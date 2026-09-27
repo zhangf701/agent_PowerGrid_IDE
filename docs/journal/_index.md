@@ -8,7 +8,42 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-27 — HANDOFF（**P2 实验矩阵功能闭环：定义 → 执行 → 结果表 → 导出**）★ 最新
+### 🚩 2026-09-27 — JOURNAL（**§11.2 并发隔离：会话命名空间 · 租约 · 写串行化**）★ 最新
+📄 [2026-09-27-concurrency-isolation-11-2.md](2026-09-27-concurrency-isolation-11-2.md)
+
+**并发化的前置条件已补齐**（**没有**打开并发开关 —— 执行仍串行）。★ **关键可行性发现**：
+`runs_dir` 走 `powermcp_home()`，而它认 `POWERMCP_HOME` ⇒ 网关给每个会话的子进程注入
+不同的 `POWERMCP_HOME`，上游的 `runs_dir` 就落到 `~/.powermcp/sessions/<sid>/runs/<tool>`
+—— **未改上游一行**（`PowerMCP/` 一行不改是硬约束）。新增 `concurrency.py`
+（`LeaseRegistry` / `session_home` / `session_env` / `case_key_of` / `file_write_lock`）。
+★ **修掉 3 个真实缺陷**：`_RUNNING` 竞态（检查与占位之间夹了 `await` ⇒ 两个并发 run 都能通过）·
+三处 JSON 索引的**丢更新**（读-改-写只锁 `_write` 挡不住）· `waited` 统计漏计（锁空闲时
+`await acquire()` 不让出循环 ⇒ 按 `waiting` 判会漏）。★ **e2e 磁盘级证据**：ANDES 真实跑潮流的产物
+落在 `~/.powermcp/sessions/<sid>/runs/andes/pf_case39/`；无池网关同会话并发 → `waited=1`；
+并发 run → 200 + 409。★ 探针 **m41 11/11 红**，并补强了探针自检（锚点唯一性 / 写入回读 /
+单条超时 / 恢复不依赖备份）。⚠️ **诚实边界**：租约是**进程内**的（跨机文件租约未做）；
+措施 5 属上游；**不得**宣称"并发已完全安全"。
+
+---
+
+### 🚩 2026-09-27 — JOURNAL（**④ 实验矩阵前端视图：ExperimentGrid + ExperimentsView**）★ 最新
+📄 [2026-09-27-experiments-view-frontend.md](2026-09-27-experiments-view-frontend.md)
+
+**实验矩阵功能界面侧收口**。UI 规范 §4.7.5 三条约束逐条落地：**失败逐格可见**（行内给出失败步骤 +
+引擎错误原文，总计数只是补充）· **结果绑 `cache_key`**（`never_run` / `orphaned` 显式标注）·
+**串行优先**（无并发控件，写明「一格一个会话」）。新增 7 个**真实网关夹具** + 28 条测试
+（含"夹具必须能通过 zod schema"的双向断言）；前端 **172 passed / 8 文件**、`tsc` 干净、
+`build` 与 tokens 护栏通过；真机 Chrome 驱动 6 场景截图（`work/exp-ui-shots/`）。
+★ **开发中修掉 4 个真问题**：`toGridCells` **静默丢弃**不属于当前定义的执行记录（改并集 +
+`definitionChanged` 标记）· React 重复 key（`index`/`cacheKey` 都会撞）·
+**dev 代理漏 `experiments`**（会回落 index.html，`/servers` 踩过同一个坑）·
+网关 `/experiments` 的 `notes` 过时文案。★ 主题用 **PIL 直方图核实不凭目测**（无主题泄漏）。
+⚠️ 全量跑偶发 `EPERM`（沙箱 `node-brokered-fs-shim` 拦 vite-node 缓存写）导致假失败 ——
+已用实验排除是本步引入，重跑即 8 文件/172 全绿。
+
+---
+
+### 🚩 2026-09-27 — HANDOFF（**P2 实验矩阵功能闭环：定义 → 执行 → 结果表 → 导出**）
 📄 [handoff_2026-09-27_p2-experiments-complete.md](handoff_2026-09-27_p2-experiments-complete.md)
 
 **接手先读这篇**。状态：实验矩阵**网关侧已全部交付**（①a 定义层 · ①b 步骤序列契约与串行执行器 ·
@@ -20,8 +55,8 @@ e2e 模板 `{file_path,branch}` **是错的**，别再照抄）。⇒ 契约扩�
 **全部步骤同 server**）。★ 执行期三条硬 fail-closed：**一格一会话** / **`remounted` 判失败** /
 **多步无会话池显式 503**（各有探针）。★ 结果按 `cache_key` 落盘，算例一改即 `never_run` + `orphaned`
 （实测）。★ 环境坑：**`create_app()` 会把全局 `_POOL` 重置为 `None`**（测试夹具走 HTTP 会抹掉会话池）；
-探针又踩一次「选择器指错」（已内建识别）。**未做：前端 `ExperimentsView` · §11.2 并发隔离 · P3 的
-`result_tables` 透视。**
+探针又踩一次「选择器指错」（已内建识别）。**未做：§11.2 并发隔离 · P3 的 `result_tables` 透视。**
+⚠️ **本 handoff 的「前端 ExperimentsView 未做」已由上方 journal 交付**（2026-09-27 同日）。
 
 ---
 

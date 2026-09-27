@@ -1,9 +1,14 @@
 # 交接：P2 实验矩阵功能闭环（定义 → 执行 → 结果表 → 导出）（2026-09-27）
 
 > 接手人请先读 `docs/journal/_index.md` 回溯，再读本文。
-> 一句话状态：**实验矩阵的网关侧已全部交付**（①a 定义层 + ①b 步骤序列契约与串行执行器 + ①c 结果表与导出），
-> 网关 **613 passed**、探针 **m38 11/11 · m39 11/11 全红**、真实网关 e2e 全过。
-> **前端 `ExperimentsView` 未开始**；§11.2 并发隔离仍 0 实现（串行版不需要它）。
+> 一句话状态：**实验矩阵功能已闭环**（①a 定义层 + ①b 步骤序列契约与串行执行器 + ①c 结果表与导出
+> + **④ 前端视图** + **§11.2 并发隔离（网关侧）**），网关 **635 passed**、前端 **172 passed / 8 文件**、
+> 探针 **m38 11/11 · m39 11/11 · m41 11/11 全红**、真实网关 e2e 全过、真机 Chrome 目视 6 场景。
+> ⚠️ **并发开关仍未打开**（执行仍串行）；租约是**进程内**的（跨机文件租约未做）。
+
+> ⚠️ **本 handoff 原写于 ①b/①c 交付时**，其后**同日**又交付了 ④ 前端视图
+> （见 [2026-09-27-experiments-view-frontend.md](2026-09-27-experiments-view-frontend.md)）。
+> 本文中「前端 ExperimentsView 未开始」的表述均已按事实更新。
 
 ---
 
@@ -61,8 +66,8 @@ surge.run_n1_branch_contingency(monitored_branches)   # 只有这一个参数，
 
 | # | 事项 | 状态 | 入口 |
 |---|---|---|---|
-| 1 | **④ 实验矩阵前端视图** `ExperimentsView` + `ExperimentGrid` | 未开始；端点已就绪 | UI 规范 §4.7.5 三条约束 |
-| 2 | **§11.2 并发隔离**五项措施 | 0 实现；**并发化前必须完成**（串行版不需要） | 方案 §11.2 |
+| 1 | **④ 实验矩阵前端视图** `ExperimentsView` + `ExperimentGrid` | ✅ **同日已交付**（前端 172 passed / 8 文件；§4.7.5 三条约束逐条落地） | [journal](2026-09-27-experiments-view-frontend.md) |
+| 2 | **§11.2 并发隔离**五项措施 | ✅ **同日已交付（网关侧）**：措施 1/3/4 落地（命名空间靠注入 `POWERMCP_HOME`，**未改上游**）+ 进程内租约；⚠️ **跨机文件租约未做**、措施 5 属上游。**并发开关未打开**（执行仍串行） | [journal](2026-09-27-concurrency-isolation-11-2.md) |
 | 3 | 越限明细级 `result_tables` 透视（模块列定义 / G-2 pivot） | 未做，属 **P3** 面 | 模块清单 `result_tables` |
 | 4 | 挂起（不受本步影响） | opendss 挂载失败 · G-11 契约 1 静态判定 unknown · surge distributed-slack（未立项） | 各自 journal |
 
@@ -121,9 +126,14 @@ curl -s --noproxy '*' "http://127.0.0.1:8766/experiments/<eid>/export?format=csv
 
 ## 七、下游依赖提示
 
-- **前端尚未消费 `/experiments`**：无 `ExperimentsView` / `ExperimentGrid`。UI 规范 §4.7.5
-  已固定三条约束（进度可观测且失败逐格可见 / 结果绑 `cache_key` / 串行优先）——
-  现在端点齐了，可以动界面了。
+- ★ **人工验收看 `docs/实验矩阵与并发隔离_人工测试指引.md`**（A–J 共 24 条步骤 + 逐条记录表 +
+  「已知预期行为」9 条）。其中两个**易踩的启动坑**：① 必须用 **Vite dev（5173）**，
+  不能用 `127.0.0.1:8765/ui/`（网关挂的是前端**源码**目录，`index.html` 引 `/src/main.tsx`）；
+  ② 深链 `#experiments/<eid>` **只在全新加载生效**（同页改 hash 不重挂载）。
+- **前端已消费 `/experiments`**（同日交付）：`views/ExperimentsView.tsx` + `components/ExperimentGrid.tsx`，
+  导航标签「实验矩阵」，深链 `#experiments/<eid>`。UI 规范 §4.7.5 三条约束逐条落地。
+  ⚠️ 新增网关端点时**必须**同步 `src/gatewayPaths.ts` 的 `GATEWAY_PREFIXES` 与 `api.test.ts` 的守卫清单
+  —— 漏一项，dev 下该路径会回落 index.html，表现为「响应不是 JSON」（`/servers` 踩过）。
 - **`/results` 是格级对比表**，不是越限明细表。越限明细（`result_tables` 的列定义 / G-2 pivot）
   属 P3，别以为 `/results` 里漏了。
 - **多步实验对会话池是硬依赖**：部署时若忘了 `POWERMCP_SESSION_POOL=1`，

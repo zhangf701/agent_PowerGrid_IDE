@@ -1319,17 +1319,31 @@ export const ENGINE_SIGNATURE: Record<EngineStatus, SignatureKey> = {
 ❌ identifier 列直接渲染 12               → 重现"偏差放大 3.1 亿倍"的实测缺陷
 ```
 
-### 4.7.5 ExperimentGrid · 实验矩阵格（**P2，此处只固定约束**）
+### 4.7.5 ExperimentGrid · 实验矩阵格（**P2，2026-09-27 已实现**）
 
 **功能说明**：渲染「算例 × 因子」的批量实验网格与进度。
 
 **为什么需要**：科研场景 8「批量算例扫描与数据集构建」—— 这是「任何研究」都需要的实验矩阵。
 
-**本版只固定三条约束**（P2 才实现）：
+**三条约束及其落地方式**（`frontend/src/components/ExperimentGrid.tsx`）：
 
 1. **进度必须可观测**，且**失败必须逐格可见**（不得只给一个总进度条）。
+   → 每格一行、行内自带 `Signature` 状态；`failed` 的格子**在行内**给出失败步骤与引擎错误原文；
+   总计数（"共 N 格 · 成功 X · 失败 Y"）只是**补充**，不是唯一信息。
+   ⚠️ 未映射的网关状态**原样显示 + `unknown` 签名**（不猜、不静默当成功）。
 2. **结果必须绑定 `cache_key`**（v4 §11.6），陈旧结果须标注"来自旧契约状态"。
+   → 每行显式显示 `cache_key`；`never_run` 表示"当前 `cache_key` 无存档结果"；
+   存档里对不上任何当前格子的记录由 `orphaned` 单独标注为**来自旧条件**，不与当前结果并列。
 3. **执行模型为串行优先**（v4 §4.4 已裁决）；并发需先完成 §11.2 的并发隔离。
+   → 界面**不做任何并发暗示**（无并行度/并发数控件），并如实写明"串行执行（不并发）"。
+
+**已实现**：`ExperimentGrid` 组件 + ④ 实验矩阵视图（`views/ExperimentsView.tsx`）。
+数据来自 `POST/GET /experiments` · `GET /experiments/{id}` · `POST /experiments/{id}/run` ·
+`GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv|md`。
+
+⚠️ **两处诚实边界**（都在界面上写明，不静默）：
+- 结果表是**格级对比表**；越限明细级的 `result_tables` 透视（模块列定义 / G-2 pivot）属 **P3**，未做。
+- 行内只展示**前 4 项指标**（数值优先），其余以"共 N 项指标，见结果表"明示 —— 截断必须可见。
 
 ### 4.7.6 ModuleBadge · 模块徽章 + 槽位契约
 
