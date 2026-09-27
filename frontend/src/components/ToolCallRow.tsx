@@ -9,6 +9,8 @@
  */
 import { ResultSummary, type ResultItem } from "./ResultSummary";
 import { Signature } from "./Signature";
+import { ViolationTable } from "./ViolationTable";
+import type { ViolationItem } from "../results";
 
 /** 由**参数声明**的输出目标参数名。
  *
@@ -44,9 +46,12 @@ export interface ToolCallRowProps {
   /** ★ 结构化结果（由数据适配层 `extractResults()` 产出）——
    *  数值与标识符走 `Quantity` / `Identifier`，不转述模型的自述（F-4） */
   results?: ResultItem[];
+  /** ★ 结构化违规清单（`extractViolations()` 产出，⑥ 校验层配套）——
+   *  表格呈现，截断必须可见 */
+  violations?: ViolationItem[];
 }
 
-export function ToolCallRow({ server, tool, status, args, error, contract, results }: ToolCallRowProps) {
+export function ToolCallRow({ server, tool, status, args, error, contract, results, violations }: ToolCallRowProps) {
   const outputs = declaredOutputs(args);
 
   return (
@@ -64,6 +69,9 @@ export function ToolCallRow({ server, tool, status, args, error, contract, resul
 
       {/* ★ 结构化结果：数值带单位与判据、标识符带编号约定 —— 由代码计算，非模型转述 */}
       {!!results?.length && <ResultSummary items={results} />}
+
+      {/* ★ N-1 违规表：排序在数据层做死、截断必须可见（共 X 条 · 显示前 N） */}
+      {!!violations?.length && <ViolationTable items={violations} />}
 
       {/* ★ 工具会往**用户的数据目录**写文件 —— 必须让用户看见（判据 #1 验收暴露）。
           措辞严格守住「参数声明 ≠ 确实写入」这条边界。 */}

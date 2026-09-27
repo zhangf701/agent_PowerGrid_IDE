@@ -10,13 +10,19 @@ import envFx from "./__fixtures__/gateway/environment.json";
 import skillsFx from "./__fixtures__/gateway/skills.json";
 import casesFx from "./__fixtures__/gateway/cases.json";
 import parseFx from "./__fixtures__/gateway/case-parse.json";
+import t0Fx from "./__fixtures__/gateway/contracts-t0.json";
+import diagFx from "./__fixtures__/gateway/case-diagnostics.json";
+import serversFx from "./__fixtures__/gateway/servers.json";
 import {
+  CaseDiagnosticsSchema,
   CaseParseResponseSchema,
   CaseRegisterResponseSchema,
   CasesResponseSchema,
   EnvironmentSchema,
   SchemaDriftError,
+  ServersResponseSchema,
   SkillsResponseSchema,
+  T0ReportSchema,
   apiParsed,
 } from "./api";
 
@@ -83,6 +89,33 @@ describe("真实响应能通过 schema（夹具取自运行中的网关）", () 
     const r = CaseRegisterResponseSchema.safeParse(normalized);
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.path_normalized).toEqual(["剥离首尾引号"]);
+  });
+
+  it("/servers 通过（9 个 server id）", () => {
+    const r = ServersResponseSchema.safeParse(serversFx);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.servers).toHaveLength(9);
+  });
+
+  it("/contracts/t0 通过；findings 与事件流 ContractFinding 同形（含 state —— 双轨汇总的输入）", () => {
+    const r = T0ReportSchema.safeParse(t0Fx);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.findings.length).toBeGreaterThan(0);
+      expect(r.data.summary.primary).toBe("degraded");
+      // ★ 38 条 finding 必须全带 state（缺了它就进不了双轨汇总）
+      for (const f of r.data.findings) expect(f.state).toBeTruthy();
+    }
+  });
+
+  it("/cases/{id}/diagnostics 通过（真实样本 = 零诊断的 case118）", () => {
+    const r = CaseDiagnosticsSchema.safeParse(diagFx);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.stale).toBe(false);
+      expect(r.data.result.summary.status).toBe("ok");
+      expect(r.data.result.diagnostics).toHaveLength(0);
+    }
   });
 });
 

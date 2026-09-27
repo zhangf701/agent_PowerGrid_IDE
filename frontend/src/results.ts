@@ -14,7 +14,13 @@
  *    ② **不猜编号约定**（§4.5）：未实测的输出标 `unknown`（渲染成「约定未知」），
  *       而不是套用引擎级默认值 —— 那是「语气确定的假声明」。
  */
-import { deriveConvention, measure, type Convention, type ResultItem } from "./components";
+import {
+  deriveConvention,
+  measure,
+  type Convention,
+  type Measured,
+  type ResultItem,
+} from "./components";
 
 /** 结果摘要的形状（由网关 `_result_excerpt()` 产出）。
  *
@@ -143,6 +149,216 @@ function extractN1(inner: unknown, source: string): ResultItem[] {
       text: `${String(top.contingency_id)}（${String(top.label)}）`,
     });
   }
+  return items;
+}
+
+/* ────────────────── 跨引擎一致性配对（⑥ 校验层 · §6.3 前瞻规格）────────────────── */
+
+/** 跨引擎配对后的可比组。 */
+export interface CrossEngineEntry {
+  server: string;
+  /** 事件序号 —— ★ §6.3：并发到达顺序不确定，必须靠单调序列号排序后再渲染 */
+  seq: number;
+  /** 原始 Measured（**不再复制**——渲染组件直接用它，杜绝绕过 `measure()` 品牌的旁路） */
+  measured: Measured;
+}
+
+export interface CrossEngineComparison {
+  label: string;
+  unit: string;
+  criterion?: string;
+  /** 从参数里提取的算例标识（文件路径等）；`null` = 参数里找不到可比对标识 */
+  caseKey: string | null;
+  entries: CrossEngineEntry[];
+  /** 最大 − 最小（`entries` ≥ 2 时存在） */
+  delta: number;
+  /** 相对偏差 = Δ / max|value|（全 0 时为 0） */
+  relative: number;
+  /** ★ 相对偏差 ≤ 1e-4 才判「一致」—— 阈值是**显式声明**的，不是隐含的 */
+  consistent: boolean;
+  /** 算例一致性是否核实过 —— `false` 时 Δ **只展示**，不给出一致性判定（不猜） */
+  caseVerified: boolean;
+}
+
+/** 一致性阈值：相对偏差 ≤ 1e-4。
+ *  ★ 依据：case118 跨引擎实测 Δ = 2.0e-06 pu（有可解释的保真度损失）——
+ *    判「一致」不应要求机器精度；而工程上有意义的电压差异 ≥ 1e-3 pu。
+ *    1e-4 介于两者之间：吸收数值噪声，放过真差异。**阈值必须在界面上随判定一起写出**。 */
+export const CONSISTENCY_TOLERANCE = 1e-4;
+
+/** 参数里寻找算例标识的键（大小写不敏感子串匹配）。⚠️ 白名单制 —— 认不出的键不猜。 */
+const CASE_ARG_KEYS = ["file", "path", "case"];
+
+function caseKeyOf(args?: Record<string, unknown> | null): string | null {
+  if (!args) return null;
+  const found: string[] = [];
+  for (const [k, v] of Object.entries(args)) {
+    const lk = k.toLowerCase();
+    if (CASE_ARG_KEYS.some((s) => lk.includes(s)) && typeof v === "string" && v.trim()) {
+      found.push(v.trim());
+    }
+  }
+  // 多个候选标识取字典序拼接 —— 保证同一组参数得到同一把钥匙
+  return found.length ? found.sort().join("|") : null;
+}
+
+/** 从会话工具轨迹里配出**跨引擎**的同名同单位可比组。
+ *
+ *  ★ 只配 `results` 里的 **Measured** 项（label + unit + criterion 全同才算同一指标）；
+ *  ★ `caseKey` 不同的**永不配对**（跨算例比较 = 错误的一致性结论，比慢更危险）；
+ *    参数里找不到算例标识的标 `caseVerified: false` —— Δ 照算照显，但**不给判定**。
+ *  ★ 单引擎组不是比较 —— 直接丢弃（只回跨引擎组）。
+ */
+export function crossEngineComparisons(
+  rows: { server: string; tool: string; seq: number; args?: Record<string, unknown> | null; results?: ResultItem[] }[],
+): CrossEngineComparison[] {
+  type Key = string;
+  const groups = new Map<
+    Key,
+    { label: string; unit: string; criterion?: string; caseKey: string | null; entries: CrossEngineEntry[] }
+  >();
+
+  for (const row of rows) {
+    if (!row.results) continue;
+    const ck = caseKeyOf(row.args);
+    for (const it of row.results) {
+      if (!it.value) continue; // 纯文本 / 标识符项不可比
+      const m = it.value;
+      const key = `${it.label}|${m.unit}|${m.criterion ?? ""}|${ck ?? "?"}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          label: it.label,
+          unit: m.unit,
+          criterion: m.criterion,
+          caseKey: ck,
+          entries: [],
+        });
+      }
+      groups.get(key)!.entries.push({ server: row.server, seq: row.seq, measured: m });
+    }
+  }
+
+  const out: CrossEngineComparison[] = [];
+  for (const g of groups.values()) {
+    const servers = new Set(g.entries.map((e) => e.server));
+    if (servers.size < 2) continue; // 单引擎，无可比性
+    // ★ §6.3：按 seq 排序后再渲染（到达顺序不可信）
+    g.entries.sort((a, b) => a.seq - b.seq);
+    const vals = g.entries.map((e) => e.measured.value);
+    const delta = Math.max(...vals) - Math.min(...vals);
+    const scale = Math.max(...vals.map(Math.abs));
+    const relative = scale === 0 ? 0 : delta / scale;
+    out.push({
+      label: g.label,
+      unit: g.unit,
+      criterion: g.criterion,
+      caseKey: g.caseKey,
+      entries: g.entries,
+      delta,
+      relative,
+      consistent: relative <= CONSISTENCY_TOLERANCE,
+      caseVerified: g.caseKey !== null,
+    });
+  }
+  // 确定输出顺序：先已核实算例的，再 Δ 大的在前
+  out.sort((a, b) => Number(b.caseVerified) - Number(a.caseVerified) || b.delta - a.delta);
+  return out;
+}
+
+/* ────────────────── N-1 violations 结构化（⑥ 校验层配套）────────────────── */
+
+/** 单条 N-1 违规的结构化行。数值只能由 `measure()` 构造（单位 + 判据强制）。 */
+export interface ViolationItem {
+  /** 故障场景 id（如 `branch_26`） */
+  contingencyId: string;
+  /** 违规类型**原文**（引擎输出，如 `ThermalOverload`） */
+  type: string;
+  /** 位置 —— 母线违规时给出（约定按输出查表，未实测 → unknown） */
+  bus?: { id: number; convention: Convention };
+  /** 位置 —— 支路（热越限）时给出两端母线 */
+  branch?: { from: number; to: number; convention: Convention };
+  /** 负载率（% · MVA 判据） */
+  loading?: Measured;
+  /** 视在功率 / 限值（MVA）—— §7.2：说「超限」必须同时给出限值与实测值 */
+  flowMva?: Measured;
+  limitMva?: Measured;
+  /** 电压（pu）与限值（pu） */
+  vm?: Measured;
+  vmLimit?: number;
+}
+
+/** 违规类型的中文标签 —— 原文始终保留（§7.1：引擎输出保留原文）。 */
+export const VIOLATION_TYPE_LABEL: Record<string, string> = {
+  ThermalOverload: "热越限",
+  VoltageHigh: "电压越上限",
+  VoltageLow: "电压越下限",
+  Islanding: "孤岛",
+  NonConvergent: "不收敛",
+};
+
+/** 有限数值才 measurable（网关已把 NaN 消毒成 null，这里防的是旧形状）。 */
+function num(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** N-1 结果 → 结构化违规行（**排序确定**：热越限按负载率降序 → 电压按越限幅度降序 → 其余）。
+ *
+ *  ★ 排序必须在**数据层**做死（与渲染无关）：同一场景的多条违规在服务端按场景分组，
+ *    直接渲染会把 Top-1 埋在中间 —— N-1 排序选题（`n1-ranking` 模块）的第一步就是它。
+ *  ★ 电压的越限幅度 = |vm − vm_limit|：High 与 Low 用同一把尺子。
+ *  ⚠️ 位置字段的编号约定**按输出查表**（F-5）：`bus_number` / `from_bus` / `to_bus`
+ *    各查各的键 —— 实测覆盖前如实落 unknown，不猜。
+ */
+export function extractViolations(
+  server: string,
+  tool: string,
+  resultExcerpt: unknown,
+): ViolationItem[] {
+  const inner = unwrapMcpResult(resultExcerpt);
+  if (inner === null) return [];
+  const source = `${server}.${tool}`;
+  const r = (inner as { results?: Record<string, unknown> } | null)?.results;
+  if (!r || !Array.isArray(r.violations)) return [];
+
+  const conv = (field: string) => busConvention(server, tool, field);
+  const items: ViolationItem[] = [];
+
+  for (const raw of r.violations as Record<string, unknown>[]) {
+    if (!raw || typeof raw !== "object") continue;
+    const type = typeof raw.violation_type === "string" ? raw.violation_type : "?";
+    const it: ViolationItem = { contingencyId: String(raw.contingency_id ?? "?"), type };
+
+    // 位置：母线违规（bus_number）与支路违规（from/to_bus）二选一，字段按类型可空
+    const bus = num(raw.bus_number);
+    const from = num(raw.from_bus);
+    const to = num(raw.to_bus);
+    if (bus !== null) it.bus = { id: bus, convention: conv("bus_number") };
+    if (from !== null && to !== null) {
+      it.branch = { from, to, convention: conv("from_bus") };
+    }
+
+    const loading = num(raw.loading_pct);
+    if (loading !== null) {
+      it.loading = measure(loading, { unit: "%", criterion: "MVA" }, source);
+    }
+    const flow = num(raw.flow_mva);
+    if (flow !== null) it.flowMva = measure(flow, { unit: "MVA" }, source);
+    const limit = num(raw.limit_mva);
+    if (limit !== null) it.limitMva = measure(limit, { unit: "MVA" }, source);
+    const vm = num(raw.vm_pu);
+    if (vm !== null) it.vm = measure(vm, { unit: "pu" }, source);
+    const vmLimit = num(raw.vm_limit_pu);
+    if (vmLimit !== null) it.vmLimit = vmLimit;
+
+    items.push(it);
+  }
+
+  const severityRank = (it: ViolationItem): number => {
+    if (it.loading) return it.loading.value; // 热越限：负载率即严重度
+    if (it.vm && it.vmLimit != null) return Math.abs(it.vm.value - it.vmLimit) * 1000;
+    return -1; // 孤岛 / 不收敛：无标量严重度，排后
+  };
+  items.sort((a, b) => severityRank(b) - severityRank(a));
   return items;
 }
 

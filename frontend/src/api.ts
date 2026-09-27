@@ -417,4 +417,75 @@ export function parseEvidenceFrame(data: string): Evidence | null {
   return d.ok ? parseEvidence(d.value) : null;
 }
 
+/* ══════════════════ ⑥ 校验层三块（§5.2/§5.3/§5.4）══════════════════
+ *
+ *  ⚠️ 本块必须在 `ContractFindingSchema` **之后**（`T0ReportSchema` 复用同一 schema，
+ *  放在前面会因 const 暂时性死区在模块加载时直接 ReferenceError）。 */
+
+/** `GET /servers` —— 9 个开源 server id（能力矩阵的行）。 */
+export const ServersResponseSchema = z.object({
+  servers: z.array(z.string()),
+});
+export type ServersResponse = z.infer<typeof ServersResponseSchema>;
+
+/** `GET /contracts/t0` —— findings 与事件流里的 `ContractFinding` **同形**（复用同一 schema）。 */
+export const T0ReportSchema = z.object({
+  cache_key: z.string(),
+  evaluated_at: z.string(),
+  summary: z.object({
+    primary: z.string(),
+    structural_unknown: z.number(),
+    incident_unknown: z.number(),
+  }),
+  findings: z.array(ContractFindingSchema),
+});
+export type T0Report = z.infer<typeof T0ReportSchema>;
+
+/** powerio 单条诊断（字段集核实自 `powerio.diagnostic_record` 源码，2026-09-27）：
+ *  `code` / `severity` / `message` / `target` 恒在；其余按需出现。 */
+export const DiagnosticRecordSchema = z.object({
+  code: z.string(),
+  severity: z.string(),
+  message: z.string(),
+  target: z.string(),
+  id: z.string().optional(),
+  suggested_action: z.string().optional(),
+  details: z.string().nullable().optional(),
+  related: z.array(z.string()).optional(),
+  spans: z
+    .array(
+      z.object({
+        source: z.string(),
+        byte_start: z.number(),
+        byte_end: z.number(),
+      }),
+    )
+    .optional(),
+});
+export type DiagnosticRecord = z.infer<typeof DiagnosticRecordSchema>;
+
+/** `GET /cases/{id}/diagnostics`（真实响应夹具 `case-diagnostics.json`）。 */
+export const CaseDiagnosticsSchema = z.object({
+  case_id: z.string(),
+  value_type: z.string().nullable(),
+  parsed_at: z.string().nullable(),
+  /** 源文件在解析后又变过 → 诊断结论来自旧数据（网关现算比对） */
+  stale: z.boolean(),
+  result: z.object({
+    value_type: z.string().nullable().optional(),
+    summary: z.object({
+      status: z.string(),
+      counts: z.object({
+        error: z.number(),
+        warning: z.number(),
+        remark: z.number(),
+        note: z.number(),
+      }),
+      text: z.string(),
+    }),
+    diagnostics: z.array(DiagnosticRecordSchema),
+  }),
+});
+export type CaseDiagnostics = z.infer<typeof CaseDiagnosticsSchema>;
+
 

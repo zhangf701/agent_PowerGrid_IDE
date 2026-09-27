@@ -8,7 +8,19 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-26 — JOURNAL（**F-4 接线：结果经适配层进 Quantity/Identifier**）★ 最新
+### 🚩 2026-09-27 — JOURNAL（**⑥ 校验层收尾：跨引擎一致性 · 能力矩阵 · IR 检查器 + N-1 violations 结构化**）★ 最新
+📄 [2026-09-27-verify-three-blocks.md](2026-09-27-verify-three-blocks.md)
+
+**React 迁移计划内视图全部落地**。校验层展开区改四标签；`ViolationTable`（排序数据层做死 + 截断可见 +
+flow/limit 并排）；跨引擎配对在数据层（**算例不同永不配对**、无标识 → Δ 照显但「无法判定」、阈值 1e-4
+显式声明）；能力矩阵**动态列/静态列来源分离写明**（t0 findings vs v4 §5.3 文档知识）；IR 检查器覆盖
+诊断/陈旧标记，selection/edits 注明未实现。★ F-5 延伸：`from_bus`/`to_bus` 实测 1-based 入 `byOutput`
+（case39 夹具：to_bus=39 > 38）。夹具 3 份抓自真实网关。vitest **126 passed/7 文件**；build/guard ✅。
+⚠️ chat.test 一次超时假失败与沙箱 EPERM 同现，隔离与干净全量跑均稳过。
+
+---
+
+### 🚩 2026-09-26 — JOURNAL（**F-4 接线：结果经适配层进 Quantity/Identifier**）
 📄 [2026-09-26-f4-wiring.md](2026-09-26-f4-wiring.md)
 
 **结构化通道建成**：`tool_call` 事件新增 `result_excerpt`（网关侧 NaN 消毒 + MCP 内层解析，523 passed）→ 前端 `results.ts` 适配层（`measure()` 唯一调用点）→ `ResultSummary` 组件（「非模型转述」）→ 对话视图接线，95 passed。

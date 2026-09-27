@@ -57,6 +57,8 @@ export const identifierConvention = {
   "byOutput": {
     "surge.run_ac_power_flow.bus_numbers": "1-based",
     "surge.run_n1_branch_contingency.bus_number": "1-based",
+    "surge.run_n1_branch_contingency.from_bus": "1-based",
+    "surge.run_n1_branch_contingency.to_bus": "1-based",
   },
   "byEngine": {
     "pandapower": "0-based",

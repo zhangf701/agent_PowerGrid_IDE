@@ -10,8 +10,14 @@ import { cleanup, render, screen } from "@testing-library/react";
 
 import pfFx from "./__fixtures__/gateway/result-power-flow.json";
 import n1Fx from "./__fixtures__/gateway/result-n1.json";
-import { ResultSummary, ToolCallRow } from "./components";
-import { extractResults, unwrapMcpResult } from "./results";
+import { ResultSummary, ToolCallRow, ViolationTable } from "./components";
+import {
+  crossEngineComparisons,
+  extractResults,
+  extractViolations,
+  unwrapMcpResult,
+} from "./results";
+import { measure } from "./components";
 
 afterEach(cleanup);
 
@@ -155,5 +161,194 @@ describe("ResultSummary 渲染", () => {
     );
     expect(screen.getByTestId("result-summary")).toBeInTheDocument();
     expect(screen.getByTestId("tool-call-row")).toBeInTheDocument();
+  });
+});
+
+/* ─────────────── extractViolations（N-1 violations 结构化，⑥ 校验层配套）─────────────── */
+
+describe("extractViolations —— 真实 N-1 夹具（52 条）", () => {
+  const rows = extractViolations("surge", "run_n1_branch_contingency", n1Fx);
+
+  it("★ 条数 = 52（与 results.violations 数组一致，不丢不重）", () => {
+    const raw = (
+      n1Fx as { inner: { results: { violations: unknown[] } } }
+    ).inner.results.violations;
+    expect(rows).toHaveLength(raw.length);
+    expect(rows).toHaveLength(52);
+  });
+
+  it("★ 排序：第 1 条 = branch_26 的 161.84% 热越限（Top-1 必须在最前）", () => {
+    expect(rows[0].contingencyId).toBe("branch_26");
+    expect(rows[0].type).toBe("ThermalOverload");
+    expect(rows[0].loading!.value).toBeCloseTo(161.836, 2);
+    expect((rows[0].loading as unknown as { criterion: string }).criterion).toBe("MVA");
+  });
+
+  it("★ 热越限行的位置 = 支路两端，且编号约定 **1-based**（F-5 延伸：from_bus/to_bus 已入 byOutput）", () => {
+    expect(rows[0].branch!.from).toBe(23);
+    expect(rows[0].branch!.to).toBe(24);
+    expect(rows[0].branch!.convention).toBe("1-based");
+    expect(rows[0].bus).toBeUndefined();
+  });
+
+  it("★ 热越限给出 flow / limit MVA（§7.2：说「超限」必须同时给出限值与实测值）", () => {
+    expect(rows[0].flowMva!.value).toBeCloseTo(971.017, 2);
+    expect(rows[0].limitMva!.value).toBeCloseTo(600.0, 6);
+  });
+
+  it("★ 电压违规带母线标识 + 限值；单位 pu", () => {
+    const vh = rows.find((r) => r.contingencyId === "branch_4" && r.type === "VoltageHigh")!;
+    expect(vh.bus!.id).toBe(25);
+    expect(vh.bus!.convention).toBe("1-based");
+    expect(vh.vm!.value).toBeCloseTo(1.06193, 5);
+    expect(vh.vmLimit).toBeCloseTo(1.06, 6);
+    expect(vh.loading).toBeUndefined(); // 电压违规没有负载率 —— 字段按类型可空
+  });
+
+  it("★ 母线违规行不臆造支路（bus_number 与 from/to 互斥时按真实字段取）", () => {
+    const islanding = rows.filter((r) => r.type === "Islanding");
+    expect(islanding.length).toBeGreaterThan(0);
+    for (const r of islanding) {
+      expect(r.bus).toBeUndefined();
+      expect(r.branch).toBeUndefined();
+    }
+  });
+
+  it("★ 电压违规的排序幅度 = |vm − vm_limit|（High/Low 同一把尺子）", () => {
+    const vh = rows.find((r) => r.contingencyId === "branch_4" && r.type === "VoltageHigh")!;
+    const vl = rows.find((r) => r.contingencyId === "branch_19" && r.type === "VoltageLow")!;
+    expect(vh.vm!.value - vh.vmLimit!).toBeCloseTo(0.00193, 5);
+    expect(vl.vmLimit! - vl.vm!.value).toBeCloseTo(0.00317, 5);
+    // branch_19 的低压越限幅度更大 → 在 branch_4 高压越限之前
+    expect(rows.indexOf(vl)).toBeLessThan(rows.indexOf(vh));
+  });
+
+  it("认不出的形状 → 空数组（不猜）", () => {
+    expect(extractViolations("surge", "run_n1_branch_contingency", pfFx)).toEqual([]);
+    expect(extractViolations("surge", "run_n1_branch_contingency", null)).toEqual([]);
+    expect(
+      extractViolations("surge", "run_n1_branch_contingency", { is_error: false, inner: {} }),
+    ).toEqual([]);
+  });
+});
+
+describe("ViolationTable 渲染", () => {
+  const rows = extractViolations("surge", "run_n1_branch_contingency", n1Fx);
+
+  it("★ 默认截断到 10 条且**截断必须可见**（共 52 条 · 显示前 10）", () => {
+    render(<ViolationTable items={rows} />);
+    const text = screen.getByTestId("violation-table").textContent ?? "";
+    expect(text).toContain("共 52 条");
+    expect(text).toContain("前 10 条");
+    expect(screen.getAllByTestId("violation-table").length).toBe(1);
+  });
+
+  it("★ 类型列 = 中文标签 + 引擎原文（颜色不单独承载信息）", () => {
+    render(<ViolationTable items={rows.slice(0, 1)} />);
+    const text = screen.getByTestId("violation-table").textContent ?? "";
+    expect(text).toContain("热越限");
+    expect(text).toContain("ThermalOverload");
+    expect(text).toContain("超限"); // Quantity 的 alarm 文字
+    expect(text).toContain("(1-based)");
+  });
+
+  it("空 items → 不渲染", () => {
+    const { container } = render(<ViolationTable items={[]} />);
+    expect(container.textContent).toBe("");
+  });
+});
+
+/* ─────────────── crossEngineComparisons（跨引擎一致性，§6.3）─────────────── */
+
+describe("crossEngineComparisons —— 跨引擎配对", () => {
+  const rowsFor = (file?: string) => [
+    {
+      server: "pandapower",
+      tool: "run_power_flow",
+      seq: 1,
+      args: file ? { file_path: file } : null,
+      results: [
+        { label: "最低电压", value: measure(0.982, { unit: "pu" }, "pandapower.run_power_flow") },
+      ],
+    },
+    {
+      server: "surge",
+      tool: "run_ac_power_flow",
+      seq: 2,
+      args: file ? { file_path: file } : null,
+      results: [
+        { label: "最低电压", value: measure(0.9820001, { unit: "pu" }, "surge.run_ac_power_flow") },
+      ],
+    },
+  ];
+
+  it("★ 同算例 + 同指标 + 同单位 → 配对，Δ 与 consistent 都有", () => {
+    const out = crossEngineComparisons(rowsFor("D:/data/case39.m"));
+    expect(out).toHaveLength(1);
+    expect(out[0].label).toBe("最低电压");
+    expect(out[0].caseKey).toContain("case39.m");
+    expect(out[0].caseVerified).toBe(true);
+    expect(out[0].consistent).toBe(true);
+    expect(out[0].delta).toBeCloseTo(1e-7, 9);
+    // ★ §6.3：按 seq 排序（pandapower seq=1 在前）
+    expect(out[0].entries[0].server).toBe("pandapower");
+  });
+
+  it("★ 算例不同 → 永不配对（错误的一致性结论比慢更危险）", () => {
+    const rows = [
+      rowsFor("D:/data/case39.m")[0],
+      { ...rowsFor("D:/data/case118.m")[1] },
+    ];
+    expect(crossEngineComparisons(rows)).toHaveLength(0);
+  });
+
+  it("★ 参数里没有算例标识 → 仍配对，但 caseVerified=false（Δ 照显，不给判定）", () => {
+    const out = crossEngineComparisons(rowsFor());
+    expect(out).toHaveLength(1);
+    expect(out[0].caseKey).toBeNull();
+    expect(out[0].caseVerified).toBe(false);
+    expect(out[0].consistent).toBe(true); // 数值上算出一致，但界面必须显示「无法判定」
+  });
+
+  it("★ 相对偏差超阈值 → consistent=false", () => {
+    const rows = [
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 1,
+        args: { file_path: "c.m" },
+        results: [{ label: "最大过载", value: measure(142, { unit: "%", criterion: "MVA" }, "a") }],
+      },
+      {
+        server: "pypsa",
+        tool: "run_power_flow",
+        seq: 2,
+        args: { file_path: "c.m" },
+        results: [{ label: "最大过载", value: measure(98, { unit: "%", criterion: "MVA" }, "b") }],
+      },
+    ];
+    const out = crossEngineComparisons(rows);
+    expect(out[0].consistent).toBe(false);
+    expect(out[0].relative).toBeGreaterThan(0.3);
+  });
+
+  it("单引擎结果不成组；label/单位/判据不同不成组", () => {
+    const rows = [
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 1,
+        args: null,
+        results: [{ label: "最低电压", value: measure(0.98, { unit: "pu" }, "a") }],
+      },
+      {
+        server: "surge",
+        tool: "run_ac_power_flow",
+        seq: 2,
+        args: null,
+        results: [{ label: "最高电压", value: measure(0.98, { unit: "pu" }, "b") }],
+      },
+    ];
+    expect(crossEngineComparisons(rows)).toHaveLength(0);
   });
 });

@@ -1,0 +1,1 @@
+{"case_id":"ac7ae93e8478","value_type":"powerio.BalancedNetwork","parsed_at":"2026-09-26T07:54:52Z","stale":false,"result":{"value_type":"powerio.BalancedNetwork","summary":{"status":"ok","counts":{"error":0,"warning":0,"remark":0,"note":0},"text":"ok: no diagnostics"},"diagnostics":[]}}

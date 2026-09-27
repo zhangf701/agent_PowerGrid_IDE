@@ -15,12 +15,32 @@ import {
   type Environment,
   type SkillsResponse,
 } from "./api";
-import { Button, ContractCard, ErrorBanner, LoadingState, VerificationLayer, summarizeFindings } from "./components";
+import {
+  Button,
+  CapabilityMatrixPanel,
+  ContractCard,
+  CrossEnginePanel,
+  ErrorBanner,
+  IrInspectorPanel,
+  LoadingState,
+  VerificationLayer,
+  summarizeFindings,
+} from "./components";
+import { crossEngineComparisons } from "./results";
 import { useSession } from "./session";
 import { CasesView, ChatView, EnvView, SkillsView } from "./views";
 
 type ErrorSig = "violated" | "incident";
 type Tab = "chat" | "skills";
+/** 校验层展开区的标签（§4.7.1：契约面板 / 跨引擎一致性 / 能力矩阵 / IR 检查器） */
+type VerifyTab = "contracts" | "cross-engine" | "capability" | "ir";
+
+const VERIFY_TABS: readonly [VerifyTab, string][] = [
+  ["contracts", "契约"],
+  ["cross-engine", "跨引擎一致性"],
+  ["capability", "能力矩阵"],
+  ["ir", "IR 检查器"],
+];
 
 export default function App() {
   const [dark, setDark] = useState(() => window.location.hash === "#dark");
@@ -34,9 +54,12 @@ export default function App() {
   const [error, setError] = useState<{ message: string; sig: ErrorSig } | null>(null);
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [verifyDisabled, setVerifyDisabled] = useState(false);
+  const [verifyTab, setVerifyTab] = useState<VerifyTab>("contracts");
 
   const session = useSession();
   const { summary, worst, incidentUnknown } = summarizeFindings(session.findings);
+  // ★ 跨引擎配对在 App 层算（rows 在这）—— 纯函数在 results.ts，可独立单测
+  const comparisons = crossEngineComparisons(session.rows);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -88,14 +111,36 @@ export default function App() {
         onEnable={() => setVerifyDisabled(false)}
         onDisable={() => setVerifyDisabled(true)}
       >
-        {session.findings.length ? (
-          session.findings.map((f, i) => <ContractCard key={i} finding={f} />)
-        ) : (
-          <div className="text-bodySm text-text-muted">
-            本次会话还没有契约事件。契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，
-            不在事件流里 —— 看 <code>GET /contracts/t0</code>。
-          </div>
-        )}
+        {/* ★ 展开区 = 四标签（§4.7.1 校验层详情的四块能力，一个不丢） */}
+        <div className="mb-2 flex flex-wrap gap-1">
+          {VERIFY_TABS.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setVerifyTab(key)}
+              className={`rounded-sm border px-2 py-0.5 text-caption ${
+                verifyTab === key
+                  ? "border-interactive-default bg-interactive-subtle font-medium text-text-primary"
+                  : "border-border-subtle text-text-secondary hover:bg-interactive-subtle"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {verifyTab === "contracts" &&
+          (session.findings.length ? (
+            session.findings.map((f, i) => <ContractCard key={i} finding={f} />)
+          ) : (
+            <div className="text-bodySm text-text-muted">
+              本次会话还没有契约事件。契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，
+              不在事件流里 —— 看 <code>GET /contracts/t0</code>（能力矩阵标签）。
+            </div>
+          ))}
+        {verifyTab === "cross-engine" && <CrossEnginePanel comparisons={comparisons} />}
+        {verifyTab === "capability" && <CapabilityMatrixPanel />}
+        {verifyTab === "ir" && <IrInspectorPanel />}
       </VerificationLayer>
 
       <nav className="flex gap-1 border-b border-border-subtle bg-surface-raised px-4">
