@@ -51,10 +51,10 @@ export { ResultSummary } from "./ResultSummary";
 export type { ResultItem, ResultId } from "./ResultSummary";
 
 export { ViolationTable, DEFAULT_MAX_ROWS } from "./ViolationTable";
-/* ViolationItem / VIOLATION_TYPE_LABEL 由 `../results` 直接导出 ——
-   ⚠️ 不经本出口中转：results.ts 已依赖本出口（measure/deriveConvention），
+/* ViolationItem / VoltageSeries 由 `../results` 直接导出 ——
+   ⚠️ 不经本出口中转运行时值：results.ts 已依赖本出口（measure/deriveConvention），
    再把 results 的运行时值回灌进来会补全一条循环链。类型仅此处中转是安全的。 */
-export type { ViolationItem } from "../results";
+export type { ViolationItem, VoltageSeries } from "../results";
 
 export { CrossEnginePanel } from "./CrossEnginePanel";
 export { CapabilityMatrixPanel } from "./CapabilityMatrixPanel";

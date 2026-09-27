@@ -15,17 +15,21 @@
  *    - 参数里找不到算例标识的组标 `caseVerified=false` —— Δ 照显，**判定一栏
  *      是「无法判定」而不是拍一个结论**（unknown 哲学：宁可未知，不可猜错）。
  */
-import type { CrossEngineComparison } from "../results";
+import type { CrossEngineComparison, SeriesComparison } from "../results";
 import { CONSISTENCY_TOLERANCE } from "../results";
+import { Identifier } from "./Identifier";
 import { Quantity } from "./Quantity";
 import { Signature } from "./Signature";
 
 export function CrossEnginePanel({
   comparisons,
+  seriesComparisons = [],
 }: {
   comparisons: CrossEngineComparison[];
+  /** 逐母线序列对比（Δmax）—— 比标量更严格：min/max 一致 ≠ 逐点一致 */
+  seriesComparisons?: SeriesComparison[];
 }) {
-  if (!comparisons.length) {
+  if (!comparisons.length && !seriesComparisons.length) {
     return (
       <div className="text-bodySm text-text-muted">
         本会话还没有可配对的跨引擎结果。让两个不同引擎（如 pandapower 与 surge）对
@@ -38,8 +42,43 @@ export function CrossEnginePanel({
     <div data-testid="cross-engine-panel">
       <div className="mb-1 text-caption text-text-muted">
         一致性阈值：相对偏差 ≤ {formatThreshold(CONSISTENCY_TOLERANCE)}（显式声明，非隐含判据）。
-        算例标识取自调用参数；标识缺失时只显示 Δ，<strong>不给</strong>一致性判定。
+        算例标识取自调用参数（无参调用继承本引擎最近载入）；标识缺失时只显示 Δ，<strong>不给</strong>一致性判定。
+        ★ 标量行（最低/最高电压）一致 <strong>不等于</strong> 逐点一致 —— 以下方 Δmax 行为准。
       </div>
+      {seriesComparisons.map((c, i) => (
+        <div
+          key={`s${i}`}
+          data-testid="cross-engine-series-row"
+          className="mb-1.5 rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-bodySm"
+        >
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="font-medium">逐母线{c.label} Δmax</span>
+            {c.caseKey && <span className="font-mono text-caption text-text-muted">{c.caseKey}</span>}
+          </div>
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="whitespace-nowrap">
+              <span className="text-text-secondary">Δmax</span>{" "}
+              <Quantity of={c.deltaMax} />
+            </span>
+            <span className="whitespace-nowrap">
+              <span className="text-text-secondary">@</span>{" "}
+              <Identifier id={c.atBus} convention="1-based" kind="母线（对齐后按源文件编号）" />
+            </span>
+            <span className="text-caption text-text-muted">
+              对齐 {c.alignedCount} 母线
+              {Object.entries(c.unaligned).map(([s, n]) => ` · ${s} 未对齐 ${n} 点`)}
+            </span>
+            {c.caseVerified ? (
+              <Signature
+                sig={c.consistent ? "satisfied" : "violated"}
+                text={c.consistent ? "满足" : "不一致"}
+              />
+            ) : (
+              <Signature sig="unknown" text="无法判定（算例一致性未核实）" />
+            )}
+          </div>
+        </div>
+      ))}
       {comparisons.map((c, i) => (
         <div
           key={i}

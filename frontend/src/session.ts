@@ -19,8 +19,8 @@ import {
   apiParsed,
   type ContractFinding,
 } from "./api";
-import type { ResultItem, ViolationItem } from "./components";
-import { extractResults, extractViolations } from "./results";
+import type { ResultItem, ViolationItem, VoltageSeries } from "./components";
+import { extractResults, extractSeries, extractViolations } from "./results";
 
 /** 与 MVP 同口径的默认 server 清单 —— 少了 ANDES 会让模型以为「没有 ANDES 工具」。 */
 export const DEFAULT_SERVERS = ["surge", "powerio", "pandapower", "pypsa", "andes"];
@@ -43,6 +43,8 @@ export interface ToolRowWithTurn extends ToolRow {
   results?: ResultItem[];
   /** ★ 结构化违规清单（N-1）：由 `extractViolations()` 从结果摘要算出 */
   violations?: ViolationItem[];
+  /** ★ 逐母线电压序列：跨引擎 Δmax 对比的数据基础（`extractSeries()` 产出） */
+  series?: VoltageSeries;
 }
 
 export function useSession() {
@@ -103,6 +105,7 @@ export function useSession() {
         //   认不出的形状 → []（不猜）；界面只渲染认得的部分。
         const results = extractResults(parsed.server, parsed.tool, parsed.resultExcerpt);
         const violations = extractViolations(parsed.server, parsed.tool, parsed.resultExcerpt);
+        const series = extractSeries(parsed.server, parsed.tool, parsed.resultExcerpt);
         setRows((rs) => [
           ...rs,
           {
@@ -114,6 +117,7 @@ export function useSession() {
             seq: parsed.seq,
             ...(results.length ? { results } : {}),
             ...(violations.length ? { violations } : {}),
+            ...(series ? { series } : {}),
           },
         ]);
       } else if (parsed.kind === "tool_error") {

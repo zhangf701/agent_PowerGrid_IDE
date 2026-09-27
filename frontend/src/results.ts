@@ -182,7 +182,240 @@ function extractN1(inner: unknown, source: string): ResultItem[] {
   return items;
 }
 
-/* ────────────────── 跨引擎一致性配对（⑥ 校验层 · §6.3 前瞻规格）────────────────── */
+/* ────────────────── 逐母线序列提取（跨引擎 Δmax 对比的数据基础）────────────────── */
+
+/** 逐母线数值序列 —— 只能由本适配层构造（与 `Measured` 同纪律：唯一起点、品牌防伪造）。
+ *
+ *  ⚠️ 覆盖边界：当前只有**电压幅值**（label 封闭），因为只有它有两个引擎的真实夹具。
+ *  相角序列**有意不做**：跨引擎相角需要参考母线归算（2026-09-27 实测两侧参考不同、
+ *  差 ~14° 常数平移），对齐规则未定，做出来就是被平移污染的假精度。 */
+export interface VoltageSeries {
+  readonly label: "电压幅值";
+  readonly unit: "pu";
+  readonly points: readonly { readonly bus: number; readonly value: number }[];
+  readonly convention: Convention;
+  readonly source: string;
+  readonly [SERIES_BRAND]: true;
+}
+
+const SERIES_BRAND: unique symbol = Symbol("powermcp.voltageSeries");
+
+function freezeSeries(
+  label: "电压幅值",
+  unit: "pu",
+  points: { bus: number; value: number }[],
+  convention: Convention,
+  source: string,
+): VoltageSeries {
+  return Object.freeze({
+    label,
+    unit,
+    points: Object.freeze(points),
+    convention,
+    source,
+    [SERIES_BRAND]: true,
+  }) as VoltageSeries;
+}
+
+/** 从工具结果摘要提取逐母线电压序列。认不出的形状 → `null`（不猜）。 */
+export function extractSeries(
+  server: string,
+  tool: string,
+  resultExcerpt: unknown,
+): VoltageSeries | null {
+  const inner = unwrapMcpResult(resultExcerpt);
+  if (inner === null) return null;
+  const r = (inner as { results?: Record<string, unknown> } | null)?.results;
+  if (!r) return null;
+
+  /* 形状 A：vm + bus_numbers 平行数组（surge） */
+  const vm = r.vm;
+  const buses = r.bus_numbers;
+  if (Array.isArray(vm) && Array.isArray(buses) && vm.length === buses.length) {
+    const points: { bus: number; value: number }[] = [];
+    for (let i = 0; i < vm.length; i += 1) {
+      if (typeof vm[i] !== "number" || !Number.isFinite(vm[i])) continue;
+      points.push({ bus: buses[i] as number, value: vm[i] as number });
+    }
+    return points.length
+      ? freezeSeries("电压幅值", "pu", points, busConvention(server, tool, "bus_numbers"), `${server}.${tool}`)
+      : null;
+  }
+
+  /* 形状 B：bus_results.vm_pu 键控字典（pandapower，键 = 0-based 索引） */
+  const busResults = r.bus_results as Record<string, Record<string, unknown>> | undefined;
+  const vmByBus = busResults?.vm_pu;
+  if (vmByBus && typeof vmByBus === "object" && !Array.isArray(vmByBus)) {
+    const points: { bus: number; value: number }[] = [];
+    for (const [k, v] of Object.entries(vmByBus)) {
+      const idx = Number(k);
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      points.push({ bus: idx, value: v });
+    }
+    return points.length
+      ? freezeSeries("电压幅值", "pu", points, busConvention(server, tool, "bus_results"), `${server}.${tool}`)
+      : null;
+  }
+
+  return null;
+}
+
+/** 跨引擎逐母线对比结果。 */
+export interface SeriesComparison {
+  label: string;
+  unit: string;
+  caseKey: string | null;
+  caseKeyInherited: boolean;
+  /** 对齐后的最大绝对偏差（已由 measure() 构造，单位 = 序列单位） */
+  deltaMax: Measured;
+  /** Δmax 所在母线（**对齐后按源文件编号**） */
+  atBus: number;
+  /** 成功对齐的母线数 */
+  alignedCount: number;
+  /** 各引擎未能对齐的点数（键不匹配等）—— 非 0 必须可见 */
+  unaligned: Record<string, number>;
+  /** ★ 相对偏差 ≤ 1e-4 才判「一致」（与标量同一显式阈值） */
+  consistent: boolean;
+  caseVerified: boolean;
+}
+
+/** 0-based 数据模型下标 → 源文件母线号的换算口径。
+ *
+ *  ★ 依据：pandapower 对 Matpower 算例的下标 k ↔ 源母线号 k+1 —— 项目实测口径
+ *    （2026-09-21 case30：pp 0-based vs pypsa 1-based 恒差 +1；2026-09-27 case39：
+ *    pp 键 30/35 的极值与 surge 母线 31/36 逐位一致）。⚠️ 该换算只对
+ *  「源编号从 1 连续」的 Matpower 类算例成立——不规则编号的算例会在这里现出
+ *  对齐失败（unaligned 计数），不会静默给错。 */
+const ZERO_BASED_TO_SOURCE_OFFSET = 1;
+
+/** 把序列的点换算到**源文件母线号**。约定未实测（unknown）的序列无法对齐 → null。 */
+function toSourceNumbering(points: VoltageSeries["points"]): Map<number, number> | null {
+  if (points.length === 0) return null;
+  const map = new Map<number, number>();
+  for (const p of points) {
+    if (p.bus <= 0) return null; // 1-based 源编号不应有 0；0-based 序列在调用前已 +1
+    map.set(p.bus, p.value);
+  }
+  return map;
+}
+
+/** 配对逐母线序列（同一指标 + 同一算例 + ≥2 引擎），给出 Δmax。
+ *
+ *  ★ 对齐规则：各序列先换算到源文件母线号（见 `ZERO_BASED_TO_SOURCE_OFFSET` 的口径
+ *    与边界），再按母线号求交；约定为 unknown 的序列**无法对齐 → 整组不比**（不猜）。
+ *  ★ 未对齐点数如实带回（`unaligned`），界面上不得隐藏。
+ */
+export function crossEngineSeriesComparisons(
+  rows: { server: string; tool: string; seq: number; args?: Record<string, unknown> | null; series?: VoltageSeries | null }[],
+): SeriesComparison[] {
+  // caseKey 继承（与标量配对同一套口径）：run_* 无参调用继承本引擎最近一次载入
+  const ordered = [...rows].sort((a, b) => a.seq - b.seq);
+  const lastCaseByServer = new Map<string, string>();
+  const caseKeyOfRow = (row: (typeof ordered)[number]): { key: string | null; inherited: boolean } => {
+    const own = caseKeyOf(row.args);
+    if (own) {
+      lastCaseByServer.set(row.server, own);
+      return { key: own, inherited: false };
+    }
+    const prev = lastCaseByServer.get(row.server);
+    return { key: prev ?? null, inherited: prev !== undefined };
+  };
+
+  type Group = {
+    label: string;
+    unit: string;
+    caseKey: string | null;
+    caseKeyInherited: boolean;
+    perServer: { server: string; seq: number; series: VoltageSeries }[];
+  };
+  const groups = new Map<string, Group>();
+
+  for (const row of ordered) {
+    const { key: ck, inherited } = caseKeyOfRow(row);
+    if (!row.series) continue;
+    const gkey = `${row.series.label}|${row.series.unit}|${ck ?? "?"}`;
+    if (!groups.has(gkey)) {
+      groups.set(gkey, {
+        label: row.series.label,
+        unit: row.series.unit,
+        caseKey: ck,
+        caseKeyInherited: inherited,
+        perServer: [],
+      });
+    }
+    groups.get(gkey)!.perServer.push({ server: row.server, seq: row.seq, series: row.series });
+  }
+
+  const out: SeriesComparison[] = [];
+  for (const g of groups.values()) {
+    const servers = new Set(g.perServer.map((e) => e.server));
+    if (servers.size < 2) continue; // 单引擎，无可比性
+    // 换算到源编号；任一序列约定 unknown → 无法对齐 → 整组不比（不猜）
+    const bySource = new Map<string, { seq: number; series: VoltageSeries; map: Map<number, number> }>();
+    for (const e of g.perServer) {
+      if (e.series.convention === "unknown") {
+        bySource.clear();
+        break;
+      }
+      let map: Map<number, number> | null;
+      if (e.series.convention === "1-based") {
+        map = toSourceNumbering(e.series.points);
+      } else {
+        // 0-based 数据模型下标 → 源编号：+1（口径见常量注释）
+        const shifted = e.series.points.map((p) => ({ bus: p.bus + ZERO_BASED_TO_SOURCE_OFFSET, value: p.value }));
+        map = toSourceNumbering(shifted);
+      }
+      if (map === null) {
+        bySource.clear();
+        break;
+      }
+      bySource.set(e.server, { seq: e.seq, series: e.series, map });
+    }
+    if (bySource.size < 2) continue;
+
+    const entries = [...bySource.values()];
+    const buses = [...entries[0].map.keys()].filter((b) =>
+      entries.slice(1).every((e) => e.map.has(b)),
+    );
+    if (!buses.length) continue; // 没有共同母线 → 不比
+    const scale = Math.max(
+      ...entries.flatMap((e) => [...e.map.values()].map(Math.abs)),
+    );
+    // ★ 逐母线取「跨引擎最大 − 最小」—— >2 引擎时不偏向任何单个基准
+    let deltaMax = 0;
+    let atBus = buses[0];
+    for (const b of buses) {
+      const vals = entries.map((e) => e.map.get(b)!);
+      const d = Math.max(...vals) - Math.min(...vals);
+      if (d > deltaMax) {
+        deltaMax = d;
+        atBus = b;
+      }
+    }
+    const unaligned: Record<string, number> = {};
+    for (const [server, e] of bySource) {
+      const n = e.series.points.length - buses.length;
+      if (n > 0) unaligned[server] = n;
+    }
+    const relative = scale === 0 ? 0 : deltaMax / scale;
+    out.push({
+      label: g.label,
+      unit: g.unit,
+      caseKey: g.caseKey,
+      caseKeyInherited: g.caseKeyInherited,
+      deltaMax: measure(deltaMax, { unit: g.unit as "pu" }, `cross-engine:${[...bySource.keys()].sort().join(" vs ")}`),
+      atBus,
+      alignedCount: buses.length,
+      unaligned,
+      consistent: relative <= CONSISTENCY_TOLERANCE,
+      caseVerified: g.caseKey !== null,
+    });
+  }
+  return out;
+}
+
+/* ────────────────── 跨引擎标量配对（⑥ 校验层 · §6.3；到达顺序与算例隔离规则同上）────────────────── */
 
 /** 跨引擎配对后的可比组。 */
 export interface CrossEngineEntry {

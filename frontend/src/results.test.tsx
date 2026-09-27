@@ -14,7 +14,9 @@ import n1Fx from "./__fixtures__/gateway/result-n1.json";
 import { ResultSummary, ToolCallRow, ViolationTable } from "./components";
 import {
   crossEngineComparisons,
+  crossEngineSeriesComparisons,
   extractResults,
+  extractSeries,
   extractViolations,
   unwrapMcpResult,
 } from "./results";
@@ -281,6 +283,127 @@ describe("crossEngineComparisons —— caseKey 继承（张老师真机场景�
     // surge 侧继承到 case39，pandapower 侧算例未知 → 两项分属不同 caseKey 组、
     // 各自单引擎 → 全部丢弃。宁可不比，不可不知算例就比（错误的一致性结论比慢更危险）。
     expect(crossEngineComparisons(rows)).toHaveLength(0);
+  });
+});
+
+/* ─────────────── extractSeries + 逐母线 Δmax（2026-09-27 张老师疑问的直接回答）─────────────── */
+
+describe("extractSeries —— 两引擎的逐母线电压序列（真实夹具）", () => {
+  it("surge 形状：118 点、1-based", () => {
+    const s = extractSeries("surge", "run_ac_power_flow", pfFx);
+    expect(s).not.toBeNull();
+    expect(s!.points).toHaveLength(118);
+    expect(s!.convention).toBe("1-based");
+    expect(s!.points.every((p) => p.bus >= 1)).toBe(true);
+  });
+
+  it("pandapower 形状：39 点、0-based 键", () => {
+    const s = extractSeries("pandapower", "run_power_flow", ppFx);
+    expect(s).not.toBeNull();
+    expect(s!.points).toHaveLength(39);
+    expect(s!.convention).toBe("0-based");
+    expect(s!.points[0].bus).toBe(0);
+  });
+
+  it("认不出的形状 → null", () => {
+    expect(extractSeries("surge", "compute_ptdf", { is_error: false, inner: { foo: 1 } })).toBeNull();
+    expect(extractSeries("surge", "run_ac_power_flow", null)).toBeNull();
+  });
+});
+
+describe("crossEngineSeriesComparisons —— ★ 逐母线 Δmax（张老师实测 7e-3 的结构化通道）", () => {
+  // 真实场景：两引擎 load（带路径）→ run（无参，结果含逐母线序列）。
+  // surge/pandapower 对同一 case39 的潮流——标量行（min/max，均为设定值）Δ=0/满足，
+  // 但逐母线 Δmax = 7.179e-3 pu @ bus 15（2026-09-27 网关原始结果独立复算确认）。
+  const load = (server: string, seq: number, file: string) => ({
+    server,
+    tool: server === "surge" ? "load_network" : "load_network_from_any",
+    seq,
+    args: { file_path: file },
+    series: null,
+  });
+  function rows39(surgeVm: number, ppVm: number) {
+    const surgeVmArr = Array.from({ length: 39 }, (_, i) => (i === 14 ? surgeVm : 1.0));
+    const surgeBusArr = Array.from({ length: 39 }, (_, i) => i + 1);
+    const ppMap = Object.fromEntries(
+      Array.from({ length: 39 }, (_, i) => [String(i), i === 14 ? ppVm : 1.0]),
+    ); // pp 键 14 ↔ 源母线 15（+1 口径）
+    return [
+      load("pandapower", 1, "D:/data/case39.m"),
+      load("surge", 2, "D:/data/case39.m"),
+      {
+        server: "surge",
+        tool: "run_ac_power_flow",
+        seq: 3,
+        args: {},
+        results: [],
+        series: extractSeries("surge", "run_ac_power_flow", {
+          is_error: false,
+          inner: { results: { converged: true, vm: surgeVmArr, bus_numbers: surgeBusArr } },
+        }),
+      },
+      {
+        server: "pandapower",
+        tool: "run_power_flow",
+        seq: 4,
+        args: null,
+        results: [],
+        series: extractSeries("pandapower", "run_power_flow", {
+          is_error: false,
+          inner: { results: { converged: true, bus_results: { vm_pu: ppMap } } },
+        }),
+      },
+    ];
+  }
+
+  it("★ Δmax 取逐母线最大偏差，@母线按**源文件编号**（pp 键 +1 对齐）", () => {
+    const out = crossEngineSeriesComparisons(rows39(1.009007, 1.016185));
+    expect(out).toHaveLength(1);
+    expect(out[0].deltaMax.value).toBeCloseTo(0.007178, 5);
+    expect(out[0].atBus).toBe(15); // pp 键 14 + 1 = 源母线 15
+    expect(out[0].alignedCount).toBe(39);
+    expect(out[0].unaligned).toEqual({});
+  });
+
+  it("★ 7e-3 级偏差在 1e-4 阈值下判「不一致」—— 而同一数据的标量行（min/max）是满足", () => {
+    const out = crossEngineSeriesComparisons(rows39(1.009007, 1.016185));
+    expect(out[0].consistent).toBe(false);
+    // 标量对比（min/max 都是设定值 0.982）→ Δ=0、满足 —— 与 Δmax 行并列才是完整真相
+    const rows = rows39(0.982, 0.982);
+    const scalar = crossEngineComparisons(
+      rows.map((r) => ({
+        server: r.server,
+        tool: r.tool,
+        seq: r.seq,
+        args: r.args,
+        results:
+          r.seq === 3
+            ? [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "s") }]
+            : r.seq === 4
+              ? [{ label: "最低电压", value: measure(0.982, { unit: "pu" }, "p") }]
+              : undefined,
+      })),
+    );
+    expect(scalar[0].consistent).toBe(true);
+  });
+
+  it("逐点一致 → consistent=true；两引擎算例不同 → 不配对", () => {
+    expect(crossEngineSeriesComparisons(rows39(1.0, 1.0))[0].consistent).toBe(true);
+    const mismatched = rows39(1.0, 1.0);
+    (mismatched[1].args as { file_path: string }).file_path = "D:/data/case118.m";
+    expect(crossEngineSeriesComparisons(mismatched)).toHaveLength(0);
+  });
+
+  it("约定 unknown 的序列无法对齐 → 整组不比（不猜）", () => {
+    const rows = rows39(1.0, 1.0);
+    rows[2].series = {
+      label: "电压幅值",
+      unit: "pu",
+      points: [{ bus: 1, value: 1.0 }],
+      convention: "unknown",
+      source: "surge.run_ac_power_flow",
+    } as never;
+    expect(crossEngineSeriesComparisons(rows)).toHaveLength(0);
   });
 });
 

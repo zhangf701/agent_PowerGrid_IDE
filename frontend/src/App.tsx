@@ -26,7 +26,7 @@ import {
   VerificationLayer,
   summarizeFindings,
 } from "./components";
-import { crossEngineComparisons } from "./results";
+import { crossEngineComparisons, crossEngineSeriesComparisons } from "./results";
 import { useSession } from "./session";
 import { CasesView, ChatView, EnvView, SkillsView } from "./views";
 
@@ -60,6 +60,7 @@ export default function App() {
   const { summary, worst, incidentUnknown } = summarizeFindings(session.findings);
   // ★ 跨引擎配对在 App 层算（rows 在这）—— 纯函数在 results.ts，可独立单测
   const comparisons = crossEngineComparisons(session.rows);
+  const seriesComparisons = crossEngineSeriesComparisons(session.rows);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -151,7 +152,9 @@ export default function App() {
               <strong>能力矩阵</strong>标签（<code>GET /contracts/t0</code>）。
             </div>
           ))}
-        {verifyTab === "cross-engine" && <CrossEnginePanel comparisons={comparisons} />}
+        {verifyTab === "cross-engine" && (
+          <CrossEnginePanel comparisons={comparisons} seriesComparisons={seriesComparisons} />
+        )}
         {verifyTab === "capability" && <CapabilityMatrixPanel />}
         {verifyTab === "ir" && <IrInspectorPanel />}
       </VerificationLayer>
