@@ -52,6 +52,10 @@ export function CasesView() {
 
   async function act<T>(fn: () => Promise<T>, onOk: (r: T) => ReactNode) {
     setError(null);
+    // ★ 新操作的反馈必须先清掉上一次的 —— 否则「A 成功的提示」会残留在
+    //   「B 失败的横幅」旁边，被误读成 B 的结果（2026-09-27 张老师真机测试踩中：
+    //   case39 解析成功 → case_fencetest.m 解析 409，残留的 case39 提示被当成后者的结果）。
+    setNote(null);
     try {
       setNote(onOk(await fn()));
     } catch (err) {
@@ -90,11 +94,13 @@ export function CasesView() {
 
   async function parse(id: string) {
     setBusyId(id);
+    // ★ 反馈带上算例名 —— 面板内的提示是全局的，不带名字就会被安到别的算例头上
+    const label = data?.cases.find((c) => c.id === id)?.label ?? id;
     await act(
       () =>
         apiParsed(`/cases/${id}/parse`, CaseParseResponseSchema, { method: "POST" }),
       (r) =>
-        `已解析 ${r.value_type}（${fmtBytes(r.ir_bytes)}，IR 可读：${r.has_ir ? "是" : "否"}）`,
+        `已解析 ${label}：${r.value_type}（${fmtBytes(r.ir_bytes)}，IR 可读：${r.has_ir ? "是" : "否"}）`,
     );
     setBusyId(null);
   }

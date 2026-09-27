@@ -40,8 +40,8 @@ cd D:/coding/powerMcp_Pskills/frontend && npm run dev          # React dev
 |---|---|---|
 | 1 | 看顶部**校验层状态条** | 初始应为 **`? 未知`** + `✔ 0 · ▲ 0 · ✖ 0` —— **不是「通过」**（0 条检查 = 未判定，不是通过） |
 | 2 | 左栏「算例库」 | 5 张卡（见页首清单）；项目内 4 张正常；`case_fencetest.m` 带 **`server 读不到`** 徽标 **+ 一行可执行指引**（把 `C:\Users\Z\Downloads` 加进 `POWERIO_MCP_ALLOWED_ROOTS`） |
-| 3 | 点 `case_fencetest.m` 的**解析** | 面板内出 **错误横幅（`! 事故` 签名）**，文案含「请把 `C:\Users\Z\Downloads` 加入该变量后重启网关」 |
-| 4 | 点 `case39.m` 的**解析** | 面板内提示「已解析 powerio.BalancedNetwork（51.0 KB，IR 可读：是）」 |
+| 3 | 点 `case_fencetest.m` 的**解析** | 面板内出 **错误横幅（`! 事故` 签名）**，文案含「请把 `C:\Users\Z\Downloads` 加入该变量后重启网关」；⚠️ 若先做步骤 4，这里上一条「已解析 case39.m」提示会**消失**（2026-09-27 修复：旧提示曾残留，被误读成本卡结果） |
+| 4 | 点 `case39.m` 的**解析** | 面板内提示「**已解析 case39.m：**powerio.BalancedNetwork（51.0 KB，IR 可读：是）」（带算例名，反馈可归因） |
 | 5 | 登记框粘一条**带引号**的路径（如 `"D:/coding/powerMcp_Pskills/examples/data/case39.m"`）→ 登记 | 提示「已登记算例（路径已自动归一化：剥离首尾引号）」 |
 | 6 | 对话框输入 `只回答两个字：收到` → 发送 | 助手气泡出「收到」；底部进度「对话完成：2 帧」；连接状态 `● 已连接` |
 | 7 | 点「技能手册」标签 | 22 张卡 / 10 个触发表；计数行 `22 个技能 · tool 11 · engineering 10 · meta 1 · 10 个带触发表`；健康度 `unknown` |

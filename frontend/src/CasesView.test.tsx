@@ -29,10 +29,11 @@ const json = (body: unknown, status = 200) =>
 const OUTSIDE_ID = casesFx.cases.find((c) => !c.within_allowed_roots)!.id;
 const INSIDE_ID = casesFx.cases.find((c) => c.within_allowed_roots)!.id;
 
-/** 网关对围笼外算例解析的**真实** 409 文案（2026-09-26 实测抓取）。 */
+/** 网关对围笼外算例解析的**真实** 409 文案（2026-09-27 实测抓取；
+ *  ⚠️ 2026-09-26 版用 `_科研项目` —— 该文件已不存在，现用 Downloads 下的围笼测试文件）。 */
 const FENCE_409 =
   "算例所在目录不在 `POWERIO_MCP_ALLOWED_ROOTS` 内 —— server 子进程读不到它。" +
-  "请把 `C:\\Users\\Z\\Downloads\\_科研项目` 加入该变量后重启网关" +
+  "请把 `C:\\Users\\Z\\Downloads` 加入该变量后重启网关" +
   "（当前允许根：['D:\\coding\\powerMcp_Pskills', 'C:\\Users\\Z\\.powermcp']；" +
   "见 `GET /environment` 的 `server_env` 段）。";
 
@@ -92,7 +93,28 @@ describe("② 算例库视图", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("POWERIO_MCP_ALLOWED_ROOTS");
     expect(alert.textContent).toContain("加入该变量后重启网关");
-    expect(alert.textContent).toContain("_科研项目");
+    expect(alert.textContent).toContain("Downloads");
+  });
+
+  it("★ 回归（2026-09-27 真机踩中）：先成功解析 A，再解析 B 失败 —— A 的提示**不得残留**", async () => {
+    // 张老师实测：case39 解析成功（「已解析 …51.0 KB」）→ 点围笼外算例解析（409），
+    // 残留的 case39 提示被误读成围笼文件的结果。根因 = act() 只清 error 不清 note。
+    stub({ [`/cases/${OUTSIDE_ID}/parse`]: () => json({ detail: FENCE_409 }, 409) });
+    render(<CasesView />);
+    await waitFor(() => expect(screen.getAllByTestId("case-card")).toHaveLength(2));
+
+    const cards = screen.getAllByTestId("case-card");
+    const inside = cards.find((el) => !el.textContent?.includes("server 读不到"))!;
+    fireEvent.click(within(inside).getByRole("button", { name: "解析" }));
+    // ★ 成功反馈带算例名（可归因）
+    expect(await screen.findByText(/已解析 case39\.m：/)).toBeInTheDocument();
+
+    const outside = cards.find((el) => el.textContent?.includes("server 读不到"))!;
+    fireEvent.click(within(outside).getByRole("button", { name: "解析" }));
+
+    // 409 横幅可见的同时，上一条「已解析」**必须已消失**
+    await screen.findByRole("alert");
+    expect(screen.queryByText(/已解析 case39\.m：/)).toBeNull();
   });
 
   it("★ 注销：走 DELETE 且提示「源文件未删除」（数据安全底线）", async () => {
