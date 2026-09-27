@@ -8,16 +8,49 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-27 — HANDOFF（**P2 盘点 + 实验矩阵定义层 P2-①a**）★ 最新
+### 🚩 2026-09-27 — HANDOFF（**P2 实验矩阵功能闭环：定义 → 执行 → 结果表 → 导出**）★ 最新
+📄 [handoff_2026-09-27_p2-experiments-complete.md](handoff_2026-09-27_p2-experiments-complete.md)
+
+**接手先读这篇**。状态：实验矩阵**网关侧已全部交付**（①a 定义层 · ①b 步骤序列契约与串行执行器 ·
+①c 结果表与导出），网关 **613 passed**、探针 **m38 11/11 · m39 11/11 全红**、真实网关 e2e 全过。
+★ **①b 硬前置核实核出了与上篇 handoff 不符的事实**：`surge.run_n1_branch_contingency` **只接
+`monitored_branches`、没有 `file_path`** —— 它跑的是进程内已加载的网络 ⇒ 一次 N-1 =
+`load_network` → `run_n1_branch_contingency` **两步**，且须同一 server 会话（旧 handoff §六 的
+e2e 模板 `{file_path,branch}` **是错的**，别再照抄）。⇒ 契约扩展为显式 `steps[]`（**不保留旧 `step`**、
+**全部步骤同 server**）。★ 执行期三条硬 fail-closed：**一格一会话** / **`remounted` 判失败** /
+**多步无会话池显式 503**（各有探针）。★ 结果按 `cache_key` 落盘，算例一改即 `never_run` + `orphaned`
+（实测）。★ 环境坑：**`create_app()` 会把全局 `_POOL` 重置为 `None`**（测试夹具走 HTTP 会抹掉会话池）；
+探针又踩一次「选择器指错」（已内建识别）。**未做：前端 `ExperimentsView` · §11.2 并发隔离 · P3 的
+`result_tables` 透视。**
+
+---
+
+### 🚩 2026-09-27 — JOURNAL（**P2-①b/①c 实验矩阵：执行器 · 结果表 · 导出**）
+📄 [2026-09-27-p2-experiments-execution.md](2026-09-27-p2-experiments-execution.md)
+
+**判据 #2/#3 的网关侧由此具备**。①b-1 契约扩展（`Step` / `Experiment.steps` / `Cell.steps` /
+`cache_key = H(算例 sha256 + steps 序列 + core_version)`，**步骤顺序参与身份**）· ①b-2 串行执行器
+`POST /experiments/{eid}/run` · ①b-3 真实 e2e（case39：**46 场景 / 23 越限 / 52 条**，3.1s；
+无池网关多步 **503**、单步 **200** 正对照）· ①c `/results` + `/export?format=csv|md`。
+★ **e2e 抓到真实缺陷**：引擎内层 JSON 的 `status` 与保留列 `status` **撞名**（列里出现两个 status）
+→ 指标键统一加 `metric.` 前缀 + C5 探针。★ 陈旧结果实测：改算例前 `{'ok':1} orphaned=0`
+→ 改后 `{'never_run':1} orphaned=1`。★ 未引用因子会告警（否则两格 `cache_key` 相同却看着正常）。
+⚠️ 越限明细级 `result_tables` 透视属 **P3**，本步未做（不给假表）。
+
+---
+
+### 🚩 2026-09-27 — HANDOFF（**P2 盘点 + 实验矩阵定义层 P2-①a**）
 📄 [handoff_2026-09-27_p2-experiments-definition.md](handoff_2026-09-27_p2-experiments-definition.md)
 
-**接手先读这篇**。状态：P2 三缺二已定位（**实验矩阵 / 并发隔离**未做，均已用 grep 核实而非照抄文档）；
+状态：P2 三缺二已定位（**实验矩阵 / 并发隔离**未做，均已用 grep 核实而非照抄文档）；
 实验矩阵的**定义与登记层已交付**并提交 `ad6b50b`，工作区干净。★ 三个必须延续的设计决定：
 一格 = 显式声明的工具调用（**因子只是标签维度**，不做"负荷水平"这类语义因子）·
 `cache_key` **不含引擎/IR 版本**（无可靠来源，不假装有）· **格子现算不存快照**。
 ⚠️ **①b 执行器的硬前置**：开工前必须先核实目标工具真实 `input_schema`，
 不核实就写执行器 = 对着想象的接口定型。★ 探针教训：**探针不红时先怀疑选择器指错，再怀疑实现**。
 含环境踩坑（后台网关会被回收 / curl 需 `--noproxy '*'` / 测试需设围笼否则 409）与全套自检命令。
+⚠️ **本文的 §七-1「①b 硬前置」已由下一篇 handoff 完成核实**，并核出与本文 §六 e2e 模板不符的事实
+—— 以最新 handoff 为准。
 
 ---
 

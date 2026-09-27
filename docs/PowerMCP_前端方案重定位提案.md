@@ -110,11 +110,18 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 
 ### 4.4 ④ 实验矩阵
 
-- **能力**：参数网格定义（算例 × 负荷水平 × 故障集 × 引擎）× 任务队列 × 进度 × 结果表 × 失败重试 × 导出
+- **能力**：参数网格定义（算例 × 因子 × **步骤序列**）× 串行执行 × 逐格进度 × 结果表 × 失败逐格可见 × 导出
 - **依据**：科研 8（批量算例扫描与数据集构建，🚧 需先构造数据集）
-- **数据来源**：**新增** `POST /experiments` · `GET /experiments/{id}` · `GET /experiments/{id}/results` · `GET /experiments/{id}/export`
-- ⚠️ **依赖前置**：并发执行会撞上 §11.2 的**并发隔离缺口**（`runs_dir` 是 per-tool 共享、全仓**无任何锁机制**）。故 §11.2 的「命名空间加 session 维度 + 租约锁 + 工作流级事务」**必须从 P2 提前到本视图的前置条件**
-- **★ 导出必须按用户级规则**：PDF 走「单文件 HTML + Chrome headless 渲染 + PyMuPDF 叠页码」，**禁用 pandoc**
+- **数据来源**：`POST /experiments` · `GET /experiments` · `GET /experiments/{id}` · **`POST /experiments/{id}/run`** · `GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv|md`（**均已交付**）
+- ★ **一格 = 一条显式声明的步骤序列**（2026-09-27 契约扩展）：引擎是**有状态**的
+  （`surge.run_n1_branch_contingency` 只接 `monitored_branches`，跑的是进程内已加载的网络），
+  故一次 N-1 分析 = `load_network` → `run_n1_branch_contingency` 两步，且**全部步骤须同一 server**。
+  执行时**一格一个会话**（会话是引擎状态的边界）。
+- ⚠️ **依赖前置**：**串行版不需要** §11.2 并发隔离（方案 §4.4 已裁决「先串行跑通，再评估并发」）；
+  §11.2 的「命名空间加 session 维度 + 租约锁 + 工作流级事务」只在**引入并发前**必须完成。
+  ⚠️ 多步实验**要求会话池**（`POWERMCP_SESSION_POOL=1`），否则显式 503（不静默降级）。
+- **★ 导出必须按用户级规则**：PDF 走「单文件 HTML + Chrome headless 渲染 + PyMuPDF 叠页码」，**禁用 pandoc**。
+  网关侧只出 CSV / Markdown 文本（渲染属界面层）。
 
 ### 4.5 ⑤ 技能手册
 
@@ -167,8 +174,9 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 | `GET /environment` | ① 环境就绪 | P1 | ✅ **2026-09-25 交付**（廉价检查，不拉起 server） |
 | `GET /skills` | ⑤ 技能手册 | P1 | ✅ **2026-09-25 交付**（22 技能 + escalation triggers） |
 | `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | ✅ **2026-09-25 全部交付**（另加 `GET /cases/{id}/ir`）。parse 会真实拉起 powerio；产物落盘并记 `source_sha256`，源文件改动即报 `stale` |
-| `POST /experiments` · `GET /experiments` · `GET /experiments/{id}` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付定义与登记层**（P2-①a：算例 × 因子 × 工具步骤 → 逐格 `args` + `cache_key`；**不执行**，详见 [journal](journal/2026-09-27-p2-experiments-definition.md)） |
-| `/experiments/{id}/results` · `/export` · 执行端点 `/run` | ④ 实验矩阵 | P2 | ⏳ 待做（P2-①b 执行器 · ①c 结果表与导出） |
+| `POST /experiments` · `GET /experiments` · `GET /experiments/{id}` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付定义与登记层**（P2-①a；★ 同日扩展为**步骤序列 `steps[]`**，P2-①b 前置核实所得） |
+| `POST /experiments/{id}/run` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付**（P2-①b：**串行**执行，**一格一会话**，`remounted` 判失败，多步无会话池显式 503） |
+| `GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv\|md` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付**（P2-①c：格级对比表；结果按 `cache_key` 对齐，旧结果入 `orphaned`。⚠️ 越限明细级 `result_tables` 透视属 P3） |
 | `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
 **已交付可直接复用**：`POST /sessions` · `GET /sessions/{sid}/events` · `POST /sessions/{sid}/tools/call` · `GET /health` · `GET /servers` · `GET /contracts/t0`

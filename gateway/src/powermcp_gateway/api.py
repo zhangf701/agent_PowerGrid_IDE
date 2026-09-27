@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import DEFAULT_MAX_ROUNDS, AgentEvent, run_turn
@@ -46,20 +46,29 @@ from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
 from .events import format_sse
 from .experiments import (
+    EXPORT_FORMATS,
     ExperimentCaseStateError,
     ExperimentError,
     ExperimentIndexError,
     ExperimentStore,
+    ResultsStore,
+    StepOutcome,
     build_report as build_experiments_report,
-    experiments_root,
+    build_results_report,
     derive_experiment_id,
+    execute_cells,
+    experiments_root,
+    export_table,
     parse_experiment_request,
+    results_root,
+    status_counts,
+    unreferenced_factors,
 )
 from .inventory import build_inventory
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .modules import build_prompt_supplement
 from .modules import build_report as build_modules_report
-from .proxy import CallOutcome, call_tool
+from .proxy import CallOutcome, call_tool, result_excerpt
 from .serverpool import ServerPool
 from .session import Channel, SessionStore
 from .skills import build_report as build_skills_report
@@ -114,6 +123,10 @@ _PROVIDER: OpenAICompatProvider | None = None
 #: ★ **默认关闭**（None = 每次调用临时挂载的旧语义），由 `POWERMCP_SESSION_POOL=1`
 #:   或 `create_app(pool=…)` 显式开启 —— 既有测试 monkeypatch `_dispatch` 的语义不变。
 _POOL: "ServerPool | None" = None
+
+#: 正在执行的实验 id（P2-①b）。结果按 `cache_key` 落盘，两个并发 run 会互相覆盖，
+#: 而 §11.2 的并发隔离尚未做 —— 故这里用**进程内标记**做最小防护（单进程本地使用）。
+_RUNNING: set[str] = set()
 
 
 def _cfg() -> GatewayConfig:
@@ -965,13 +978,19 @@ def register_check_routes(app: FastAPI) -> None:
 def register_experiment_routes(app: FastAPI) -> None:
     """实验矩阵端点（方案 v4 §4.4 · 判据 #2/#3 的落点）。
 
-    ★ **本步只做定义与登记**（P2-①a）：
-        `POST /experiments` 登记一个网格（算例 × 因子 × 工具步骤），
-        返回展开后的每一格（要跑什么 + `cache_key`）；**不执行**。
-      执行是 P2-①b —— 分开做是为了让定义层不依赖「模板参数是否被引擎接受」这一
-      尚未核实的结论，而执行层可用契约 3 的 fail-closed 直接兜住。
+    - `POST /experiments` 登记一个网格（算例 × 因子 × **步骤序列**），
+      返回展开后的每一格（要跑什么 + `cache_key`）；**不执行**。
+    - `GET /experiments` · `GET /experiments/{eid}` 读定义与格子（现算）。
+    - `POST /experiments/{eid}/run` **串行执行**全部格子（P2-①b），
+      结果按 `cache_key` 落盘。
+    - `GET /experiments/{eid}/results` 格级结果对比表（P2-①c）；
+      `GET /experiments/{eid}/export?format=csv|md` 导出同一张表。
 
-    错误映射：400 定义非法 / 404 未知实验 id / 500 索引损坏 / 503 配置失败。
+    ★ 定义与执行分开（P2-①a 的裁决）：定义层不必回答「模板参数是否被引擎接受」，
+      执行层由**契约 3 的 fail-closed** 逐格兜住。
+
+    错误映射：400 定义非法 / 404 未知实验 id / 409 算例已注销或正在执行 /
+    500 索引损坏 / 503 配置失败或缺少会话池。
     """
 
     def _store() -> ExperimentStore:
@@ -1029,15 +1048,26 @@ def register_experiment_routes(app: FastAPI) -> None:
         except ExperimentError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+        notes = [
+            "格子是**现算**的（不存快照）—— 改了算例或模板，同一格会算出新的 `cache_key`。",
+            "本端点只登记；执行是 `POST /experiments/{eid}/run`。",
+        ]
+        # ★ 未被引用的因子会产出**内容相同的重复格**（`cache_key` 逐位相同）——
+        #   "N 格都成功"看着正常，实际只有一种条件被跑过。必须说出来，不静默。
+        unused = unreferenced_factors(created)
+        if unused:
+            notes.append(
+                f"⚠️ 因子 {list(unused)} **未被任何步骤的 `args_template` 引用** —— "
+                "它们不影响参数，故各格 `cache_key` 相同、属于**重复格**"
+                "（跑一遍等于跑多遍同样的事）。若要真的改变实验条件，"
+                "请在某个步骤的 `args_template` 里写上对应的 `{因子名}`。"
+            )
         return JSONResponse(status_code=201, content={
             "created": True,
             "experiment": created.to_dict(),
             "cells": [cell.to_dict() for cell in cells],
             "summary": {"cells": len(cells)},
-            "notes": [
-                "格子是**现算**的（不存快照）—— 改了算例或模板，同一格会算出新的 `cache_key`。",
-                "本步不执行；执行端点是 P2-①b。",
-            ],
+            "notes": notes,
         })
 
     @app.get("/experiments")
@@ -1076,8 +1106,206 @@ def register_experiment_routes(app: FastAPI) -> None:
             "experiment": exp.to_dict(),
             "cells": [cell.to_dict() for cell in cells],
             "summary": {"cells": len(cells), "by_status": _status_counts(cells)},
-            "notes": ["本步不执行，全部格子为 `pending`；执行端点是 P2-①b。"],
+            "notes": ["本步不执行，全部格子为 `pending`；执行端点是 `POST /experiments/{eid}/run`。"],
         }
+
+    @app.post("/experiments/{eid}/run")
+    async def run_experiment(eid: str):
+        """**串行**执行一个实验的全部格子（P2-①b）。
+
+        ★ 需要**会话级持久连接池**（`POWERMCP_SESSION_POOL=1` 或 `create_app(pool=…)`）：
+          多步实验的 `load_network` 与 `run_*` 必须在**同一 server 进程**内，否则第二步
+          跑在空网络上。池未开启时**显式 503**，绝不静默降级成"每步各起一个进程" ——
+          那会产出"跑成功但没加载网络"的假结果（本项目最防的形态）。
+
+        ★ 结果按 `cache_key` 落盘（`results.json`），算例/模板一改即自动失配。
+
+        错误映射：400 无 / 404 未知实验 · 409 算例已注销或本实验正在执行中 ·
+        500 索引损坏 · 503 配置失败 / 缺少会话池。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        store = _store()
+        try:
+            exp = store.get(eid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验不存在"})
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # ★ 多步序列**必须有会话池**：否则每步各起一个 server 进程，
+        #   `load_network` 装进的进程与 `run_*` 执行的进程不是同一个 —— 状态丢失。
+        #   这里 fail-closed 报 503（可修复：设 POWERMCP_SESSION_POOL=1 后重启），
+        #   而不是放行后让用户看到一堆"未加载网络"的失败。
+        if len(exp.steps) >= 2 and _POOL is None:
+            return JSONResponse(status_code=503, content={
+                "detail": (
+                    f"本实验有 {len(exp.steps)} 个步骤，需要**会话级持久连接池**才能保证"
+                    "各步落在同一个 server 进程内（否则第二步会跑在空网络上）。"
+                    "请设置 `POWERMCP_SESSION_POOL=1` 后重启网关（run_gateway 脚本已默认设置）。"
+                ),
+            })
+
+        try:
+            cells = store.cells(exp, cfg=c)
+        except KeyError:
+            return JSONResponse(status_code=409, content={
+                "detail": "该实验引用的算例已被注销，无法展开网格",
+            })
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # ★ 同一实验**不并发执行**：结果按 `cache_key` 落盘，两个并发 run 会互相覆盖。
+        #   §11.2 的并发隔离尚未做，故这里用进程内标记做最小防护（单进程本地使用）。
+        if eid in _RUNNING:
+            return JSONResponse(status_code=409, content={
+                "detail": "该实验正在执行中（同一实验不并发执行：结果按 cache_key 落盘，并发会互相覆盖）",
+            })
+
+        # 取一次工具清单 → (server, tool) → input_schema。契约 3 需要**真实 schema**，
+        # 拿不到就绝不调用（空 schema 会让校验静默 fail-open）。
+        scratch_sid = _STORE.create((exp.server,)).id
+        try:
+            if _POOL is not None:
+                inv = await build_inventory(c, [exp.server], sid=scratch_sid, pool=_POOL)
+            else:
+                inv = await build_inventory(c, [exp.server])
+        except Exception as exc:  # noqa: BLE001 —— 与 /contracts/t0 一致：系统性失败 503
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        schemas = {(t.server, t.name): t.input_schema for t in inv.tools}
+
+        async def run_step(sid: str, server: str, tool: str, args: dict) -> StepOutcome:
+            schema = schemas.get((server, tool))
+            if schema is None:
+                return StepOutcome(ok=False, error=(
+                    f"{server}.{tool} 不存在或该 server 未拉起 —— 取不到 `input_schema`，"
+                    "已跳过该步（不静默放行）"
+                ))
+            outcome = await call_with_contracts(
+                sid, server, tool, args,
+                get_schema=lambda _s, _t: schema,
+            )
+            return StepOutcome(
+                ok=outcome.ok,
+                error=outcome.error,
+                remounted=outcome.remounted,
+                result_excerpt=(result_excerpt(outcome.result)
+                                if outcome.result is not None else None),
+            )
+
+        _RUNNING.add(eid)
+        try:
+            records = await execute_cells(
+                cells,
+                new_session=lambda: _STORE.create((exp.server,)).id,
+                run_step=run_step,
+            )
+        finally:
+            _RUNNING.discard(eid)
+
+        try:
+            ResultsStore(results_root(c, eid)).merge(records)
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return {
+            "experiment": exp.to_dict(),
+            "cells": list(records),
+            "summary": {
+                "cells": len(records),
+                "by_status": status_counts(records),
+                "ok": sum(1 for r in records if r["status"] == "ok"),
+                "failed": sum(1 for r in records if r["status"] != "ok"),
+            },
+            "notes": [
+                "**串行**执行（方案 §4.4：先串行跑通，再评估并发）。",
+                "★ **一格一个会话**：会话是引擎状态的边界；跨格复用会让某格跑在"
+                "上一格残留的网络上（结果张冠李戴）。",
+                "★ `remounted=True` 一律判该格失败：重连意味着 server 进程死过，"
+                "会话状态无法担保。",
+                "结果按 `cache_key` 落盘 —— 算例或模板一改，旧结果自动失配（不会冒充当前条件）。",
+                "结果表与导出见 `GET /experiments/{eid}/results` 与 `/export`。",
+            ],
+        }
+
+    def _load_for_read(eid: str):
+        """读路径的公共前置：配置 → 实验 → 当前格子。返回 `(cfg, exp, cells)` 或响应。
+
+        ★ 三个读端点（`/results`、`/export`）共用同一套错误映射，避免各写一遍
+          导致语义漂移（这正是本项目反复付学费的地方）。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        store = _store()
+        try:
+            exp = store.get(eid)
+        except KeyError:
+            return None, JSONResponse(status_code=404, content={"detail": "实验不存在"})
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        try:
+            cells = store.cells(exp, cfg=c)
+        except KeyError:
+            return None, JSONResponse(status_code=409, content={
+                "detail": "该实验引用的算例已被注销，无法展开网格",
+            })
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return (c, exp, cells), None
+
+    @app.get("/experiments/{eid}/results")
+    async def experiment_results(eid: str):
+        """格级结果对比表（P2-①c）。
+
+        ★ 结果按 `cache_key` 与**当前**格子对齐：算例/模板一改，该格显示 `never_run`，
+          旧记录进入 `orphaned` —— 不冒充当前条件，也不丢弃。
+        ⚠️ 越限明细级的 `result_tables` 透视（模块列定义 / G-2 pivot）属 P3 面，未实现。
+
+        错误映射：404 未知实验 · 409 算例已注销 · 500 索引/结果文件损坏 · 503 配置失败。
+        """
+        loaded, resp = _load_for_read(eid)
+        if resp is not None:
+            return resp
+        c, exp, cells = loaded
+        try:
+            stored = ResultsStore(results_root(c, eid)).all()
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return build_results_report(exp, cells, stored)
+
+    @app.get("/experiments/{eid}/export")
+    async def experiment_export(eid: str, format: str = "csv"):
+        """把格级结果表导成 CSV / Markdown（P2-①c）。
+
+        ★ 只做**文本格式**：PDF 须走 HTML + Chrome headless（本项目禁用 pandoc），
+          属渲染层的事，不在网关进程里做。
+        """
+        loaded, resp = _load_for_read(eid)
+        if resp is not None:
+            return resp
+        c, exp, cells = loaded
+        try:
+            stored = ResultsStore(results_root(c, eid)).all()
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        report = build_results_report(exp, cells, stored)
+        try:
+            text = export_table(report, format)
+        except ExperimentError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        media_type, ext = EXPORT_FORMATS[format]
+        return Response(
+            content=text,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="experiment-{eid}.{ext}"',
+            },
+        )
 
 
 def _status_counts(cells) -> dict[str, int]:

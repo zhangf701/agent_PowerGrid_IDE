@@ -189,6 +189,16 @@ def _result_excerpt(result: Any) -> dict:
     return safe if isinstance(safe, dict) else {"raw": safe}
 
 
+def result_excerpt(result: Any) -> dict:
+    """`_result_excerpt` 的**公开入口** —— 供实验结果层（`experiments`）复用。
+
+    ★ 为什么必须有这个别名而不是让调用方自己拼一份：摘要的形状（`inner` / `text` /
+      `raw` / `__truncated__`）是**前端与结果表共同的分派依据**。一旦出现第二套实现，
+      两边就会各读各的、并随着时间漂移 —— 这正是本项目反复否掉的"两处真相"。
+    """
+    return _result_excerpt(result)
+
+
 def _emit(bus: EventBus | None, audit: AuditLog | None, session_id: str | None,
           kind: str, payload: dict) -> None:
     """把事件发到会话总线**并**落审计 —— **尽力而为，失败不得吞掉调用结果**。
