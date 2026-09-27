@@ -186,7 +186,11 @@ export default function App() {
       {session.boundaryIssue && (
         <ErrorBanner sig="incident" message={session.boundaryIssue} />
       )}
-      <LoadingState label="加载中…（等待网关 /environment 与 /skills）" />
+      {/* ★ 加载态只在「还没加载到数据且没失败」时渲染 —— 骨架步曾把它写成无条件渲染，
+          导致加载完成后「加载中…」永远挂在页面上（2026-09-27 张老师真机指出）。 */}
+      {!env && !error && (
+        <LoadingState label="加载中…（等待网关 /environment 与 /skills）" />
+      )}
 
       <main className="flex min-h-0 flex-1">
         <aside className="w-[300px] flex-none overflow-auto border-r border-border-subtle bg-surface-raised p-4">

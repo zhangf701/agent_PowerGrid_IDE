@@ -86,16 +86,20 @@ describe("App 骨架冒烟", () => {
     stubFetch(true, true);
     render(<App />);
     expect(await screen.findByText("环境就绪")).toBeInTheDocument();
+    // ★ 数据到达后「加载中…」**必须消失**（骨架步曾无条件渲染，永远挂在页面上 ——
+    //   2026-09-27 真机指出。前置「加载态可见」断言在 stub 下是竞态，故不写。）
+    expect(screen.queryByText(/加载中/)).toBeNull();
     gotoSkills();
     expect(await screen.findByText("run_power_flow")).toBeInTheDocument();
     expect(screen.getByText(/健康度/)).toHaveTextContent("unknown");
   });
 
-  it("端点失败时错误横幅可见（非白屏）", async () => {
+  it("端点失败时错误横幅可见（非白屏），且**不再**显示加载态（加载已失败，不能再等）", async () => {
     stubFetch(false, true);
     render(<App />);
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("/environment");
+    expect(screen.queryByText(/加载中/)).toBeNull();
   });
 
   it("筛选框命中名称/描述/触发表，未命中显示空态（对齐 MVP 行为）", async () => {
