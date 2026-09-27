@@ -167,7 +167,8 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 | `GET /environment` | ① 环境就绪 | P1 | ✅ **2026-09-25 交付**（廉价检查，不拉起 server） |
 | `GET /skills` | ⑤ 技能手册 | P1 | ✅ **2026-09-25 交付**（22 技能 + escalation triggers） |
 | `GET/POST /cases` · `POST /cases/{id}/parse` · `GET /cases/{id}/diagnostics` | ② 算例库 | P1 | ✅ **2026-09-25 全部交付**（另加 `GET /cases/{id}/ir`）。parse 会真实拉起 powerio；产物落盘并记 `source_sha256`，源文件改动即报 `stale` |
-| `POST /experiments` · `GET /experiments/{id}` · `/results` · `/export` | ④ 实验矩阵 | P2 | ⏳ 待做 |
+| `POST /experiments` · `GET /experiments` · `GET /experiments/{id}` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付定义与登记层**（P2-①a：算例 × 因子 × 工具步骤 → 逐格 `args` + `cache_key`；**不执行**，详见 [journal](journal/2026-09-27-p2-experiments-definition.md)） |
+| `/experiments/{id}/results` · `/export` · 执行端点 `/run` | ④ 实验矩阵 | P2 | ⏳ 待做（P2-①b 执行器 · ①c 结果表与导出） |
 | `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
 **已交付可直接复用**：`POST /sessions` · `GET /sessions/{sid}/events` · `POST /sessions/{sid}/tools/call` · `GET /health` · `GET /servers` · `GET /contracts/t0`

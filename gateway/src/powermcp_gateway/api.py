@@ -45,6 +45,16 @@ from .checks import run_checks as run_module_checks_engine
 from .contracts.engine import T0Cache, evaluate_t0
 from .environment import build_report as build_environment_report
 from .events import format_sse
+from .experiments import (
+    ExperimentCaseStateError,
+    ExperimentError,
+    ExperimentIndexError,
+    ExperimentStore,
+    build_report as build_experiments_report,
+    experiments_root,
+    derive_experiment_id,
+    parse_experiment_request,
+)
 from .inventory import build_inventory
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .modules import build_prompt_supplement
@@ -952,6 +962,135 @@ def register_check_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+def register_experiment_routes(app: FastAPI) -> None:
+    """实验矩阵端点（方案 v4 §4.4 · 判据 #2/#3 的落点）。
+
+    ★ **本步只做定义与登记**（P2-①a）：
+        `POST /experiments` 登记一个网格（算例 × 因子 × 工具步骤），
+        返回展开后的每一格（要跑什么 + `cache_key`）；**不执行**。
+      执行是 P2-①b —— 分开做是为了让定义层不依赖「模板参数是否被引擎接受」这一
+      尚未核实的结论，而执行层可用契约 3 的 fail-closed 直接兜住。
+
+    错误映射：400 定义非法 / 404 未知实验 id / 500 索引损坏 / 503 配置失败。
+    """
+
+    def _store() -> ExperimentStore:
+        return ExperimentStore(experiments_root(_cfg()))
+
+    @app.post("/experiments")
+    async def create_experiment(payload: dict):
+        """登记一个实验网格（同一定义重复提交 = 已存在，返回 200 而非 201）。"""
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        store = _store()
+        try:
+            exp, err = parse_experiment_request(
+                payload, known_servers=OPEN_SOURCE_SERVERS, store=store, cfg=c,
+            )
+        except ExperimentIndexError as exc:
+            # 解析期要读算例索引 —— 索引损坏是服务端数据问题
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except ExperimentCaseStateError as exc:
+            # 算例存在但状态不允许（不可读 / 不在围笼）—— **可修复**，故 409
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+
+        assert exp is not None
+        exp = dataclasses.replace(exp, id=derive_experiment_id(exp))
+
+        try:
+            existing = store.get(exp.id)
+        except KeyError:
+            existing = None
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        if existing is not None:
+            try:
+                cells = store.cells(existing, cfg=c)
+            except KeyError:
+                cells = ()
+            return JSONResponse(status_code=200, content={
+                "created": False,
+                "experiment": existing.to_dict(),
+                "cells": [cell.to_dict() for cell in cells],
+                "summary": {"cells": len(cells)},
+            })
+
+        try:
+            created = store.create(exp)
+            cells = store.cells(created, cfg=c)
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except ExperimentError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+        return JSONResponse(status_code=201, content={
+            "created": True,
+            "experiment": created.to_dict(),
+            "cells": [cell.to_dict() for cell in cells],
+            "summary": {"cells": len(cells)},
+            "notes": [
+                "格子是**现算**的（不存快照）—— 改了算例或模板，同一格会算出新的 `cache_key`。",
+                "本步不执行；执行端点是 P2-①b。",
+            ],
+        })
+
+    @app.get("/experiments")
+    async def list_experiments() -> dict:
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            return build_experiments_report(c, _store())
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/experiments/{eid}")
+    async def get_experiment(eid: str):
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        store = _store()
+        try:
+            exp = store.get(eid)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验不存在"})
+        except ExperimentIndexError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        try:
+            cells = store.cells(exp, cfg=c)
+        except KeyError:
+            # 引用的算例已被注销 —— 网格无法展开，但**实验本身还在**
+            return JSONResponse(status_code=409, content={
+                "detail": "该实验引用的算例已被注销，无法展开网格",
+                "experiment": exp.to_dict(),
+            })
+        return {
+            "experiment": exp.to_dict(),
+            "cells": [cell.to_dict() for cell in cells],
+            "summary": {"cells": len(cells), "by_status": _status_counts(cells)},
+            "notes": ["本步不执行，全部格子为 `pending`；执行端点是 P2-①b。"],
+        }
+
+
+def _status_counts(cells) -> dict[str, int]:
+    """按格状态计数 —— 供 UI 规范 §4.7.5 的「进度必须可观测、失败必须逐格可见」。
+
+    ★ 空集也要如实：`{}` 而不是 `{pending: 0}` 冒充"全部正常"。
+    """
+    counts: dict[str, int] = {}
+    for cell in cells:
+        counts[cell.status] = counts.get(cell.status, 0) + 1
+    return counts
+
+
 def create_app(cfg: GatewayConfig | None = None, *,
                provider: OpenAICompatProvider | None = None,
                pool: "ServerPool | None" = None) -> FastAPI:
@@ -1058,6 +1197,7 @@ def create_app(cfg: GatewayConfig | None = None, *,
     register_session_routes(app)
     register_case_routes(app)
     register_check_routes(app)
+    register_experiment_routes(app)
     _mount_ui(app)
     return app
 
