@@ -8,7 +8,20 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-27 — JOURNAL（**⑥ 校验层收尾：跨引擎一致性 · 能力矩阵 · IR 检查器 + N-1 violations 结构化**）★ 最新
+### 🚩 2026-09-27 — JOURNAL（**case39 跨引擎 7e-3 pu 根因结题：surge 是 distributed slack**）★ 最新
+📄 [2026-09-27-xengine-7e3-rootcause.md](2026-09-27-xengine-7e3-rootcause.md)
+
+**根因实锤（复现误差 6.8e-09 pu）**：surge 的 AC 潮流把功率失配**均摊到全部 10 台机组**
+（每台 +69.5995 MW），而非标准 single-slack 语义（bus31 独自承担 677.87 MW）。
+排除链：IR 无辜（参数逐项一致）· pp 双路径逐位一致 · 编号/f_hz 排除 ·
+统一 Ybus 下 surge 解每台 gen 母线 +69.599 MW 失配 → distributed-slack 假设下 pp 逐位复现。
+**含义**：cross-engine-consistency 选题的核心案例（平衡机语义差异）；
+`run_ac_power_flow` 缺「求解语义」契约（schema 一致但语义不同）；界面 Δmax「不一致」判定正确。
+脚本 m35/m36/m37 + 证据 work/xengine-diff/。遗留：surge 无关闭开关（上游）；pp 经 IR 丢 rate_a。
+
+---
+
+### 🚩 2026-09-27 — JOURNAL（**⑥ 校验层收尾：跨引擎一致性 · 能力矩阵 · IR 检查器 + N-1 violations 结构化**）
 📄 [2026-09-27-verify-three-blocks.md](2026-09-27-verify-three-blocks.md)
 
 **React 迁移计划内视图全部落地**。校验层展开区改四标签；`ViolationTable`（排序数据层做死 + 截断可见 +
