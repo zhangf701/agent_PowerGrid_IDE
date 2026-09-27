@@ -116,13 +116,14 @@ describe("IrInspectorPanel", () => {
   });
 
   it("★ 未解析的算例 → 网关 409 的 detail 原样可见（不吞错误）", async () => {
+    // 409 文案为真实网关实测（2026-09-27：项目内未解析算例的 diagnostics）。
     stubDiag({
       "/cases/": () =>
-        json({ detail: "算例尚未解析 —— 请先在算例库执行解析" }, 409),
+        json({ detail: "该算例尚未解析 —— 先 `POST /cases/{id}/parse`" }, 409),
     });
     render(<IrInspectorPanel />);
     await pickAndRun();
-    expect(screen.getByTestId("ir-inspector").textContent).toContain("算例尚未解析");
+    expect(screen.getByTestId("ir-inspector").textContent).toContain("尚未解析");
   });
 
   it("★ 诊断条目按 severity 排序（error → warning → remark → note）；建议与 target 可见", async () => {
