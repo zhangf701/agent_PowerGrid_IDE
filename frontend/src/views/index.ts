@@ -10,3 +10,4 @@ export { SkillsView, filterSkills, healthParts } from "./SkillsView";
 export { CasesView } from "./CasesView";
 export { ChatView, applyChatFrame } from "./ChatView";
 export type { Turn } from "./ChatView";
+export { ExperimentsView, toGridCells, DEFAULT_STEPS_JSON } from "./ExperimentsView";

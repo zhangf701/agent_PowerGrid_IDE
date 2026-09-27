@@ -69,6 +69,20 @@ export async function api<T>(path: string, opts?: RequestInit): Promise<T> {
       body && typeof body === "object" && "detail" in body
         ? String((body as { detail: unknown }).detail)
         : text.slice(0, 300);
+    // ★ **空响应体的 5xx**：几乎总是 **dev 代理连不上网关**。
+    //   Vite 的 `http-proxy` 在目标 `ECONNREFUSED`（网关没起）时返回 **500 + 空体**
+    //   ——2026-09-27 张老师真机测试踩中：界面只显示「✖ 违反 /environment → HTTP 500：」
+    //   （冒号后为空），**完全无法判断是网关没起还是代码坏了**。
+    //   裸报一个空 detail 等于把排查成本推给用户，违反「错误必须给出可执行路径」。
+    if (!detail) {
+      throw new Error(
+        `${path} → HTTP ${resp.status}（响应体为空）。` +
+          `最常见原因：**网关没在跑** —— dev 代理（Vite）连不上 127.0.0.1:8765 时会` +
+          `返回 500 且响应体为空。请先启动网关（gateway/run_gateway.sh），` +
+          `并用 http://127.0.0.1:8765/health 确认它活着；` +
+          `若是直连（非 dev 代理），请查网关终端的 traceback。`,
+      );
+    }
     throw new Error(`${path} → HTTP ${resp.status}：${detail}`);
   }
   // ★ 200 却不是 JSON：几乎总是 **dev 代理没覆盖该路径**（vite 回落 index.html，
@@ -227,6 +241,169 @@ export type Case = z.infer<typeof CaseSchema>;
 export type CasesResponse = z.infer<typeof CasesResponseSchema>;
 export type CaseParseResponse = z.infer<typeof CaseParseResponseSchema>;
 export type CaseUnregisterResponse = z.infer<typeof CaseUnregisterResponseSchema>;
+
+/* ══════════════════ /experiments（④ 实验矩阵）══════════════════
+ *
+ * ★ **一格 = 一条显式声明的步骤序列**（2026-09-27 契约扩展）：引擎是**有状态**的，
+ *   故一次 N-1 分析 = `load_network` → `run_n1_branch_contingency` 两步。
+ *   `Experiment.steps[]` 是**声明**（含 `args_template`）；`Cell.steps[]` 是**渲染后**的
+ *   实际参数（含 `args`）。两者字段名不同，不得混用。
+ *
+ * ⚠️ **只声明视图真正消费的字段**（见本文件顶部约定）。特别是执行记录里的
+ *   `result_excerpt`（可达 20+ KB）**刻意不进 schema** —— 逐格结果由 `/results` 的
+ *   格级对比表承载，把 23 KB 的原始结果灌进状态树只会拖垮渲染。
+ */
+
+export const ExperimentStepSchema = z.object({
+  server: z.string(),
+  tool: z.string(),
+  args_template: z.record(z.string(), z.unknown()),
+});
+
+export const ExperimentSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  created_at: z.string(),
+  case_ids: z.array(z.string()),
+  factors: z.array(z.object({ name: z.string(), values: z.array(z.unknown()) })),
+  steps: z.array(ExperimentStepSchema),
+  notes: z.string().optional(),
+  /** 列表端点才有：展开后的格数 */
+  cell_count: z.number().optional(),
+  /** 引用的算例已被注销 → 网格无法展开（**不静默跳过**，如实报出） */
+  error: z.string().optional(),
+});
+export type Experiment = z.infer<typeof ExperimentSchema>;
+export type ExperimentStep = z.infer<typeof ExperimentStepSchema>;
+
+export const ExperimentsResponseSchema = z.object({
+  index_exists: z.boolean(),
+  summary: z.object({ total: z.number(), cells: z.number() }),
+  experiments: z.array(ExperimentSchema),
+  notes: z.array(z.string()).optional(),
+});
+export type ExperimentsResponse = z.infer<typeof ExperimentsResponseSchema>;
+
+/** 定义端点里**渲染后**的一格（`args` 已绑定算例路径与因子值）。 */
+export const CellSchema = z.object({
+  index: z.number(),
+  case_id: z.string(),
+  case_sha256: z.string(),
+  bindings: z.record(z.string(), z.unknown()),
+  steps: z.array(
+    z.object({
+      server: z.string(),
+      tool: z.string(),
+      args: z.record(z.string(), z.unknown()),
+    }),
+  ),
+  cache_key: z.string(),
+  /** 定义层恒为 `pending`（不预先声称进度） */
+  status: z.string(),
+});
+export type Cell = z.infer<typeof CellSchema>;
+
+export const ExperimentDetailSchema = z.object({
+  experiment: ExperimentSchema,
+  cells: z.array(CellSchema),
+  summary: z.object({
+    cells: z.number(),
+    by_status: z.record(z.string(), z.number()),
+  }),
+  notes: z.array(z.string()).optional(),
+});
+export type ExperimentDetail = z.infer<typeof ExperimentDetailSchema>;
+
+/** `POST /experiments` —— 登记结果。★ `notes` 里可能带**未被引用的因子告警**
+ *  （那种因子会让各格 `cache_key` 相同 = 重复格），界面必须显示，不能吞。 */
+export const ExperimentCreateResponseSchema = z.object({
+  /** 同一定义重复提交 → `false`（HTTP 200），新定义 → `true`（201） */
+  created: z.boolean(),
+  experiment: ExperimentSchema,
+  cells: z.array(CellSchema),
+  summary: z.object({ cells: z.number() }),
+  notes: z.array(z.string()).optional(),
+});
+export type ExperimentCreateResponse = z.infer<typeof ExperimentCreateResponseSchema>;
+
+export const ExperimentDeleteResponseSchema = z.object({
+  deleted: z.literal(true),
+  experiment_id: z.string(),
+});
+export type ExperimentDeleteResponse = z.infer<typeof ExperimentDeleteResponseSchema>;
+
+/** 一次工具调用的执行记录。★ `error` / `remounted` 是「失败逐格可见」的载体：
+ *  `remounted=true` 意味着该 server 进程此前已死、会话状态已丢，网关**判该格失败**。 */
+export const StepRecordSchema = z.object({
+  index: z.number(),
+  server: z.string(),
+  tool: z.string(),
+  ok: z.boolean(),
+  error: z.string().nullable(),
+  remounted: z.boolean(),
+});
+export type StepRecord = z.infer<typeof StepRecordSchema>;
+
+export const CellRecordSchema = z.object({
+  index: z.number(),
+  case_id: z.string(),
+  bindings: z.record(z.string(), z.unknown()),
+  cache_key: z.string(),
+  /** `ok` | `failed`（定义层的 `pending` 不会出现在执行结果里） */
+  status: z.string(),
+  steps: z.array(StepRecordSchema),
+  ran_at: z.string().optional(),
+});
+export type CellRecord = z.infer<typeof CellRecordSchema>;
+
+export const ExperimentRunResponseSchema = z.object({
+  experiment: ExperimentSchema,
+  cells: z.array(CellRecordSchema),
+  summary: z.object({
+    cells: z.number(),
+    by_status: z.record(z.string(), z.number()),
+    ok: z.number().optional(),
+    failed: z.number().optional(),
+  }),
+  notes: z.array(z.string()).optional(),
+});
+export type ExperimentRunResponse = z.infer<typeof ExperimentRunResponseSchema>;
+
+/** 结果表列定义（`type` 与 UI 规范 §4.7.4 的 `ResultColumn` 同口径）。 */
+export const ResultColumnSchema = z.object({
+  key: z.string(),
+  title: z.string(),
+  type: z.string(),
+});
+export type ResultColumn = z.infer<typeof ResultColumnSchema>;
+
+export const ResultRowSchema = z.object({
+  index: z.number(),
+  case_id: z.string(),
+  bindings: z.record(z.string(), z.unknown()),
+  cache_key: z.string(),
+  /** `ok` | `failed` | **`never_run`**（当前 `cache_key` 没有存档结果） */
+  status: z.string(),
+  ran_at: z.string().nullable().optional(),
+  /** 扁平化指标（键带 `metric.` 前缀），只含标量与列表长度 */
+  metrics: z.record(z.string(), z.unknown()),
+});
+export type ResultRow = z.infer<typeof ResultRowSchema>;
+
+export const ExperimentResultsResponseSchema = z.object({
+  experiment: ExperimentSchema,
+  columns: z.array(ResultColumnSchema),
+  rows: z.array(ResultRowSchema),
+  summary: z.object({
+    cells: z.number(),
+    by_status: z.record(z.string(), z.number()),
+    /** 存档里不对应任何当前格子的记录数（陈旧结果的**显式**形态） */
+    orphaned: z.number(),
+  }),
+  orphaned_keys: z.array(z.string()),
+  notes: z.array(z.string()).optional(),
+});
+export type ExperimentResultsResponse = z.infer<typeof ExperimentResultsResponseSchema>;
 
 /* ══════════════════ 会话（③ 对话分析）══════════════════ */
 

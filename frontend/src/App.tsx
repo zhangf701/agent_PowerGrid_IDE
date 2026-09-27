@@ -28,10 +28,10 @@ import {
 } from "./components";
 import { crossEngineComparisons, crossEngineSeriesComparisons } from "./results";
 import { useSession } from "./session";
-import { CasesView, ChatView, EnvView, SkillsView } from "./views";
+import { CasesView, ChatView, EnvView, ExperimentsView, SkillsView } from "./views";
 
 type ErrorSig = "violated" | "incident";
-type Tab = "chat" | "skills";
+type Tab = "chat" | "skills" | "experiments";
 /** 校验层展开区的标签（§4.7.1：契约面板 / 跨引擎一致性 / 能力矩阵 / IR 检查器） */
 type VerifyTab = "contracts" | "cross-engine" | "capability" | "ir";
 
@@ -44,11 +44,14 @@ const VERIFY_TABS: readonly [VerifyTab, string][] = [
 
 export default function App() {
   const [dark, setDark] = useState(() => window.location.hash === "#dark");
-  // ③ 对话分析是**主界面**（默认标签）。支持 `#skills` 深链 —— 与 MVP 的
-  // `?selftest` 同性质：既是可用性（可直接分享某个视图），也让无头验证能定位到各标签。
-  const [tab, setTab] = useState<Tab>(() =>
-    window.location.hash.includes("skills") ? "skills" : "chat",
-  );
+  // ③ 对话分析是**主界面**（默认标签）。支持 `#skills` / `#experiments` 深链 ——
+  // 与 MVP 的 `?selftest` 同性质：既是可用性（可直接分享某个视图），也让无头验证能定位到各标签。
+  const [tab, setTab] = useState<Tab>(() => {
+    const h = window.location.hash;
+    if (h.includes("experiments")) return "experiments";
+    if (h.includes("skills")) return "skills";
+    return "chat";
+  });
   const [env, setEnv] = useState<Environment | null>(null);
   const [skills, setSkills] = useState<SkillsResponse | null>(null);
   const [error, setError] = useState<{ message: string; sig: ErrorSig } | null>(null);
@@ -163,6 +166,7 @@ export default function App() {
         {(
           [
             ["chat", "对话"],
+            ["experiments", "实验矩阵"],
             ["skills", "技能手册"],
           ] as const
         ).map(([key, label]) => (
@@ -197,11 +201,9 @@ export default function App() {
           {env && <EnvView env={env} />}
           <CasesView />
         </aside>
-        {tab === "chat" ? (
-          <ChatView session={session} />
-        ) : (
-          skills && <SkillsView data={skills} />
-        )}
+        {tab === "chat" && <ChatView session={session} />}
+        {tab === "skills" && skills && <SkillsView data={skills} />}
+        {tab === "experiments" && <ExperimentsView />}
       </main>
     </div>
   );

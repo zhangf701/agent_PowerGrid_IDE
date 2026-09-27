@@ -14,6 +14,7 @@ export const GATEWAY_PREFIXES = [
   "skills",
   "servers",
   "cases",
+  "experiments",
   "contracts",
   "sessions",
   "modules",

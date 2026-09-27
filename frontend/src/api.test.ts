@@ -201,6 +201,7 @@ describe("apiParsed 的失败语义", () => {
       "skills",
       "servers",
       "cases",
+      "experiments",
       "contracts",
       "sessions",
       "modules",
@@ -219,6 +220,18 @@ describe("apiParsed 的失败语义", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(SchemaDriftError);
     expect(String(err.message)).toContain("/environment");
+  });
+
+  it("★ 空响应体的 5xx → 明确指向「网关没在跑」（dev 代理连不上时的返回）", async () => {
+    // ★ Vite 的 http-proxy 在目标 ECONNREFUSED（网关没起）时返回 **500 + 空体**。
+    //   裸报一个空 detail（「HTTP 500：」）会让用户完全无法判断是网关没起还是代码坏了
+    //   —— 2026-09-27 张老师真机测试踩中。
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("", { status: 500 }))));
+    const err = await apiParsed("/environment", EnvironmentSchema).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(String(err.message)).toContain("网关没在跑");
+    expect(String(err.message)).toContain("8765");
+    expect(String(err.message)).toContain("run_gateway.sh");
   });
 
   it("结构正确 → 返回解析后的数据", async () => {

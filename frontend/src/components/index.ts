@@ -34,6 +34,16 @@ export { SkillCard, KIND_LABEL, KIND_SIG } from "./SkillCard";
 
 export { CaseCard, fmtBytes, parentOf, registrationBasis } from "./CaseCard";
 
+export {
+  ExperimentGrid,
+  cellSignature,
+  bindingText,
+  firstFailure,
+  orderMetricKeys,
+  INLINE_METRIC_LIMIT,
+} from "./ExperimentGrid";
+export type { GridCell, GridStep, GridPlannedStep } from "./ExperimentGrid";
+
 /* ── B 组 · 校验层（默认折叠，能力不丢）── */
 
 export { ContractBadge, CONTRACT_NAMES, signatureKeyOf } from "./ContractBadge";

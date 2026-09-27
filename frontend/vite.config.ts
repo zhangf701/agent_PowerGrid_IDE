@@ -10,6 +10,9 @@ const GATEWAY = "http://127.0.0.1:8765";
 export default defineConfig({
   plugins: [react()],
   server: {
+    // 固定 IPv4，避免 Windows 将 localhost 绑定到 IPv6 (::1)，
+    // 导致用 127.0.0.1 访问开发服务器时出现连接失败。
+    host: "127.0.0.1",
     port: 5173,
     proxy: {
       [`^/(${GATEWAY_PREFIXES.join("|")})`]: {
