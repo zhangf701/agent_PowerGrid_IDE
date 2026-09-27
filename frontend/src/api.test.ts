@@ -170,6 +170,46 @@ describe("apiParsed 的失败语义", () => {
     );
   });
 
+  it("★ 200 但响应不是 JSON（dev 代理漏路径回落 HTML）→ 普通 Error 且**给排查线索**（2026-09-27 实测）", async () => {
+    // 张老师真机踩中：/servers 漏在 vite proxy 正则外 → vite 回落 index.html（200 + HTML）
+    // → 旧实现把字符串传给 schema → 报「可能已漂移」，把排查方向带偏（网关根本没被请求到）。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response("<!doctype html><html>…", {
+            status: 200,
+            headers: { "Content-Type": "text/html" },
+          }),
+        ),
+      ),
+    );
+    const err = await apiParsed("/servers", ServersResponseSchema).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SchemaDriftError); // 不是 schema 漂移 —— 措辞不能误导
+    expect(String(err.message)).toContain("不是 JSON");
+    expect(String(err.message)).toContain("dev 代理");
+  });
+
+  it("★ 守卫：vite dev 代理必须覆盖前端会请求的每一条网关路径（/servers 曾漏）", async () => {
+    const { GATEWAY_PREFIXES } = await import("./gatewayPaths");
+    const covered: readonly string[] = GATEWAY_PREFIXES;
+    // 前端实际请求的全部网关路径前缀（新增端点时必须同步加进 gatewayPaths.ts）
+    for (const p of [
+      "health",
+      "environment",
+      "skills",
+      "servers",
+      "cases",
+      "contracts",
+      "sessions",
+      "modules",
+      "checks",
+    ]) {
+      expect(covered, `dev 代理缺少 "${p}"（dev 下会回落 index.html，表现为「响应不是 JSON」）`).toContain(p);
+    }
+  });
+
   it("HTTP 错误 → 普通 Error，**不是** SchemaDriftError（两类失败用户动作不同）", async () => {
     vi.stubGlobal(
       "fetch",

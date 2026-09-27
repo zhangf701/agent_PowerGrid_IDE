@@ -225,7 +225,7 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8765/checks/run \
 
 ---
 
-## 四、环境坑（四条，都会误导判断）
+## 四、环境坑（五条，都会误导判断）
 
 1. ⚠️ **React dev 只绑 `localhost`（IPv6）** —— 用 `127.0.0.1:5173` 会连不上。
 2. ⚠️ **不要在以 `/` 开头的 shell 参数里写路径** —— MSYS 会把它改写成 Windows 路径
@@ -234,6 +234,11 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8765/checks/run \
 4. ⚠️ **同名工具不同引擎语义不同**（契约 5 的活例子）：surge 的载入是 `load_network`，
    `load_network_from_any` 是 pandapower/andes 的 —— 直构 curl 时写错会报
    「不存在或该 server 未拉起」（✅ 实测踩过）。
+5. ⚠️ **dev 代理必须覆盖前端请求的每条路径** —— `/servers` 曾漏在 vite proxy 正则外，
+   dev 下打到 vite 自己回落 index.html（200 + HTML）→ 能力矩阵面板报
+   「! 事故 响应结构与前端契约不符」。已修（2026-09-27）：清单收敛到
+   `frontend/src/gatewayPaths.ts`（dev 代理与守卫测试共用），且 200+非 JSON 响应
+   现在报「响应不是 JSON…dev 代理未覆盖？」而不是误导性的「可能已漂移」。
 
 ## 五、一键复跑（把 A–F 串起来）
 

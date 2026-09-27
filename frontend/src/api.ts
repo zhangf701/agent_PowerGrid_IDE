@@ -58,10 +58,11 @@ export async function api<T>(path: string, opts?: RequestInit): Promise<T> {
   }
   const text = await resp.text();
   let body: unknown = null;
+  let notJson = false;
   try {
     body = text ? JSON.parse(text) : null;
   } catch {
-    body = text;
+    notJson = true;
   }
   if (!resp.ok) {
     const detail =
@@ -69,6 +70,17 @@ export async function api<T>(path: string, opts?: RequestInit): Promise<T> {
         ? String((body as { detail: unknown }).detail)
         : text.slice(0, 300);
     throw new Error(`${path} → HTTP ${resp.status}：${detail}`);
+  }
+  // ★ 200 却不是 JSON：几乎总是 **dev 代理没覆盖该路径**（vite 回落 index.html，
+  //   2026-09-27 实测：/servers 漏在代理正则外 → 能力矩阵面板「! 事故 expected object,
+  //   received string」）。这不是「网关字段漂移」（schema 漂移的措辞会误导排查方向），
+  //   单独报，给可操作的排查线索。
+  if (notJson && text) {
+    throw new Error(
+      `${path} → 响应不是 JSON（HTTP ${resp.status}）。常见原因：dev 代理` +
+        `（frontend/vite.config.ts 的 proxy 正则）未覆盖该路径，或网关未启动返回了 HTML 页。` +
+        `响应开头：${text.slice(0, 100)}`,
+    );
   }
   return body as T;
 }
