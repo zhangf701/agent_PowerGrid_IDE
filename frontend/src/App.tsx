@@ -134,8 +134,21 @@ export default function App() {
             session.findings.map((f, i) => <ContractCard key={i} finding={f} />)
           ) : (
             <div className="text-bodySm text-text-muted">
-              本次会话还没有契约事件。契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，
-              不在事件流里 —— 看 <code>GET /contracts/t0</code>（能力矩阵标签）。
+              {/* ★ 「无事件」≠「未检查」：契约 3 在网关侧对每次工具调用都校验，
+                  只有违规/无法判定才发事件（proxy.py 的显式设计）。有调用轨迹时
+                  必须把「N 次全部通过」如实说出来 —— 否则空态会被误读成没检查
+                  （2026-09-27 张老师真机测试的疑问，正是这个误读）。 */}
+              {session.rows.length > 0 && (
+                <>
+                  本会话已执行 <strong>{session.rows.length}</strong>{" "}
+                  次工具调用，均未产生契约事件 —— 即每次调用的参数契约（契约 3）都在网关侧校验且
+                  <strong>全部通过</strong>（只有「违规 / 无法判定」才发事件，「全部通过」不发）。
+                  <br />
+                </>
+              )}
+              {session.rows.length === 0 ? "本次会话还没有契约事件。" : ""}
+              契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，不在事件流里 —— 看{" "}
+              <strong>能力矩阵</strong>标签（<code>GET /contracts/t0</code>）。
             </div>
           ))}
         {verifyTab === "cross-engine" && <CrossEnginePanel comparisons={comparisons} />}

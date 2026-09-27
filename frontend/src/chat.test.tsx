@@ -473,4 +473,52 @@ describe("③ 对话分析 端到端（真实 /chat 流）", () => {
     await waitFor(() => expect(screen.getByText(/✖ 1/)).toBeInTheDocument());
     expect(screen.queryByText(/✖ 2/)).toBeNull();
   });
+
+  it("★ 空契约标签 ≠ 未检查：有工具调用轨迹时必须说「N 次全部通过」（2026-09-27 真机疑问）", async () => {
+    // 张老师跑完 N-1 后看到「本次会话还没有契约事件」——事实是每次调用都校验且全通过，
+    // 满意结果不发事件（proxy.py 显式设计）。空态必须把这个差别说出来。
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/sessions")) return json({ id: "s3", servers: ["surge"] });
+        if (url.includes("/cases")) return json(EMPTY_CASES);
+        if (url.includes("/environment")) {
+          return json({
+            gateway: { python: "3.12.6", python_ok: true },
+            powermcp: { root_ok: true },
+            llm: { configured: true, model: "m", endpoint: "e" },
+            paths: { set: true, roots: [] },
+            modules: { enabled: [], failed: [] },
+          });
+        }
+        return json({ skills: [], summary: {}, health: {} });
+      }),
+    );
+
+    render(<App />);
+    await waitFor(() => expect(FakeEventSource.last).not.toBeNull());
+    const es = FakeEventSource.last!;
+
+    // 两次合法的工具调用 —— 不产生任何契约事件
+    for (const seq of [1, 2]) {
+      es.emit(
+        "evidence",
+        JSON.stringify({
+          seq,
+          kind: "tool_call",
+          payload: { server: "surge", tool: "run_n1_branch_contingency", args: {} },
+          at: "t",
+        }),
+      );
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: /展开/ }));
+    // 默认在「契约」标签
+    const panel = await screen.findByText(/次工具调用/);
+    expect(panel.textContent).toContain("2");
+    expect(panel.textContent).toContain("全部通过");
+    expect(panel.textContent).not.toContain("本次会话还没有契约事件");
+  });
 });
