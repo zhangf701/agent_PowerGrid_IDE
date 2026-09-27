@@ -150,6 +150,38 @@ cross-engine-consistency:  slots: []
 
 ⇒ 二者的**运行时契约**（数据形状、渲染入口）尚未成型，不冻结。
 
+### 4.4 候选缺口（冻结后新发现，2026-09-27）：**求解语义契约**
+
+> ⚠️ 本条**不在 v1 冻结范围**（v1 冻结的是清单字段与 checks 契约）；它是冻结之后
+> 由真机测试逼出的**更深一层缺口**，记档为候选，**触发条件满足时再立项**。
+
+**问题**：同名工具在 **schema、参数、返回结构完全一致**的情况下，**求解语义**仍可能不同——
+现有的全部契约（1 接口存在 / 2 能力可核 / 3 参数可验 / 4 状态可读 / 5 命名可辨）都验不出来。
+
+**实测证据**（case39，[结题 journal](journal/2026-09-27-xengine-7e3-rootcause.md)）：
+- `surge.run_ac_power_flow` 与 `pandapower.run_power_flow` schema 一致，但 surge 的 AC 潮流是
+  **distributed slack**（功率失配均摊到全部 10 台机组，每台 Pg 被加 69.5995 MW），
+  pandapower 是标准 **single-slack**（bus31 独自承担 677.87 MW）；
+- 同一算例两解 PQ 电压差 **Δmax = 7.18e-3 pu**；surge 解的**机组 Pg ≠ 文件设定值**
+  ——这是语义级差异，不是数值噪声；
+- 实锤方式：pandapower 构造「每台 gen Pg += 69.5995」后与 surge 解逐位吻合
+  （Δmax = 6.8e-09 pu）；复现脚本 `.superpowers/sdd/m35~m37`（按惯例不入库）。
+
+**候选契约形态**（立项时三选一或组合，此处**不预设结论**）：
+1. **注册期声明**：工具注册时声明求解语义元数据（如 `slack_policy: single | distributed`、
+   `load_model: constant_power | zip`）；未声明 → 前端按「语义未知」标注（Identifier 同款哲学）；
+2. **结果自报**：结果对象携带实际采用的语义（求解器运行时自报，比声明更可信）；
+3. **模块声明**：`requires` 增加 `solver_semantics` 字段，跨引擎模块声明需要的语义，
+   装配期对不满足者告警。
+
+**触发条件**：当研究需要**跨引擎数值可比**时必须解决——`cross-engine-consistency` 模块
+升级 L2、或论文引用跨引擎对比数字，二者任一出现即触发。
+当前**不阻塞**：界面 Δmax 行已能把差异如实暴露为「✖ 不一致」（2026-09-27 交付）。
+
+**最小验证方案**：给 surge 加一个（哪怕硬编码的）`slack_policy: distributed` 声明 +
+pandapower `slack_policy: single`，前端跨引擎 Δ 行显示语义标注；用 case39 的
+`Δmax = 7.18e-3 pu` 复现已知差异即为验证通过（预期值已实锤）。
+
 ---
 
 ## 五、版本策略（冻结项的变更规则）
@@ -175,6 +207,7 @@ cross-engine-consistency:  slots: []
 | checks 契约单一真源 | `gateway/src/powermcp_gateway/checks.py` 模块 docstring |
 | 缺口清单与实测复现 | `modules/README.md` · `.superpowers/sdd/m15-module-gaps.py` |
 | 10 条缺口的处置 | G-1/G-2/G-4/G-5 → `2026-09-25-g1-g5-wiring.md`；G-7~G-10 → `2026-09-25-module-g7-g10-hardening.md` |
+| §4.4 求解语义契约的实测证据 | [journal 2026-09-27-xengine-7e3-rootcause.md](journal/2026-09-27-xengine-7e3-rootcause.md) · 复现脚本 `.superpowers/sdd/m35~m37` · 产物 `work/xengine-diff/` |
 | 内核自证条件 | `/modules` 在四种模块根状态下的行为（已测） |
 
 ---
