@@ -69,7 +69,7 @@ cd D:/coding/powerMcp_Pskills/frontend && npm run dev          # React dev
 |---|---|---|
 ✔| **契约** | 看列表 | 有违规/未知 → 契约事件卡片。**跑了工具但没有卡片 ≠ 没检查**：全部通过时不发事件（网关显式设计），空态会如实显示「本会话已执行 N 次工具调用…参数契约（契约 3）都校验且全部通过」。契约 1/2/5/6/7 是 T0 静态的 → 看**能力矩阵**标签 |
 ✔| **跨引擎一致性** | 直接看 | 无可配对调用时空态文案。**配对已支持真实场景**（2026-09-27 修复：此前 pandapower 的潮流结果形状不被适配层认识，永远配不上）：对话「用 pandapower 和 surge 分别对 case39 跑基态潮流」→ 出现两类行：**逐母线电压 Δmax 行**（实测 `Δmax = 7.18e-3 pu @ 母线 15` → `✖ 不一致`——这是两引擎在 PQ 母线上的**真实解差异**，成因待查；对齐 39 母线，pp 键 +1 口径）+ **标量行**（最低/最高电压，均为设定值 → `Δ = 0 pu`、`✔ 满足`）。⚠️ **标量满足 ≠ 逐点一致**，以 Δmax 行为准；阈值「相对偏差 ≤ 1e-4」随行显示；两引擎最近载入**不同**算例 → 不配对（宁可不比） |
-| **能力矩阵** | 直接看 | 9 行引擎 × 动态列（契约 1/契约 2 徽章，**点击可下钻**看网关原文）× 静态能力列（潮流/OPF/N-1/…）；页首注明「静态能力列是文档知识（v4 §5.3），**不是**运行时探测」；`powerio` 行的契约列显示 **`无记录`**（t0 findings 没有它），不显示成正常 |
+✔| **能力矩阵** | 直接看 | 9 行引擎 × 动态列（契约 1/契约 2 徽章，**点击可下钻**看网关原文）× 静态能力列（潮流/OPF/N-1/…）；页首注明「静态能力列是文档知识（v4 §5.3），**不是**运行时探测」；`powerio` 行的契约列显示 **`无记录`**（t0 findings 没有它），不显示成正常 |
 | **IR 检查器** | 选 `case118` → 点「跑诊断」 | `powerio.BalancedNetwork` · 解析于 … · `ok: no diagnostics（错误 0 · 警告 0 · 备注 0 · 提示 0）`；底部注明 selection 树 / edits 时间线尚未实现；再选 `case14`（未解析）→ 409 原文可见：「该算例尚未解析 —— 先 `POST /cases/{id}/parse`」 |
 
 ### MVP 对照 `http://127.0.0.1:8765/ui/mvp.html`
@@ -150,11 +150,13 @@ curl -s --noproxy '*' -X POST "http://127.0.0.1:8765/sessions/$SID/tools/call" \
 # C2 类型错 → wrong_type
 curl -s --noproxy '*' -X POST "http://127.0.0.1:8765/sessions/$SID/tools/call" \
   -H "Content-Type: application/json" -d '{"server":"surge","tool":"load_network","args":{"file_path":123}}'
+# ✅ 实测：ok:false · remounted:false · wrong_type（期望 string，实际 int）
 
 # C3 ★ 未知参数（方案 §2.3 那个 linearized 事故的复刻）→ unknown_arg
 curl -s --noproxy '*' -X POST "http://127.0.0.1:8765/sessions/$SID/tools/call" \
   -H "Content-Type: application/json" \
   -d '{"server":"surge","tool":"load_network","args":{"file_path":"D:/coding/powerMcp_Pskills/examples/data/case39.m","linearized":true}}'
+# ✅ 实测：ok:false · remounted:false · unknown_arg（`linearized` 不在 input_schema —— 引擎可能静默忽略）
 ```
 
 三条预期都是 `"ok": false`、`"result": null`、`violations` 指出具体参数，
@@ -263,5 +265,14 @@ curl -s --noproxy '*' -X POST "$B/sessions/$SID/tools/call" -H "Content-Type: ap
 ```bash
 cd D:/coding/powerMcp_Pskills/frontend
 npm run build && npm run guard && npx vitest run
-# 三段全绿 = 前端健康（当前基线：126 passed / 7 文件，2026-09-27）
+# 三段全绿 = 前端健康（当前基线：144 passed / 7 文件，2026-09-27）
 ```
+
+## 七、人工测试结果记录（2026-09-27 张老师）
+
+- **界面测试：10/10 项 ✔**（含 N-1 违规表 3 项 ✔、四标签中契约/跨引擎一致性/能力矩阵 ✔）；
+- **IR 检查器**：未标记（未测或存疑，待确认）；
+- **curl 测试**：张老师未手测 —— 全部命令已在 2026-09-27 由助手在运行中的网关上
+  逐条实跑（各段 ✅ 标记），C2/C3 于当日补测通过；
+  人工测试发现并修复的 6 个问题：反馈残留误归因 · 契约空态误读 · pandapower 结果
+  形状缺口 · `/servers` 代理漏 · 逐母线 Δmax 覆盖缺口 · 加载态常驻（均有回归测试）。
