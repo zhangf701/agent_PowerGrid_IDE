@@ -23,6 +23,7 @@ from powermcp_gateway.skills import (
     build_report,
     evaluate_health,
     index_skills,
+    read_skill_doc,
     skills_root,
 )
 
@@ -255,6 +256,39 @@ def test_skills_root_defaults_to_sibling_of_powermcp(monkeypatch):
     monkeypatch.delenv(ENV_SKILLS_ROOT, raising=False)
     cfg = GatewayConfig.discover()
     assert skills_root(cfg) == cfg.powermcp_root.parent / "PowerSkills"
+
+
+# ---------------------------------------------------------------- 文档原文（09-28 裁决）
+
+
+def test_read_skill_doc_returns_full_content(tmp_path, monkeypatch):
+    """★ 摘要不够：按 id 拿到 SKILL.md **原文**与出处路径。"""
+    _write(tmp_path, "powerskills-tool/skills/demo/SKILL.md", TOOL_SKILL)
+    monkeypatch.setenv(ENV_SKILLS_ROOT, str(tmp_path))
+
+    # ★ id 取自 frontmatter 的 `name`（demo-tool），不是目录名（demo）
+    doc = read_skill_doc(GatewayConfig.discover(), "demo-tool")
+    assert doc["id"] == "demo-tool"
+    assert doc["kind"] == KIND_TOOL
+    assert doc["path"] == "powerskills-tool/skills/demo/SKILL.md"
+    assert doc["content"].startswith("---\n")
+    assert "thermal-overload-mitigation" in doc["content"], "必须是一整篇原文，不是摘要"
+
+
+def test_read_skill_doc_unknown_id_raises_keyerror(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV_SKILLS_ROOT, str(tmp_path))
+    with pytest.raises(KeyError):
+        read_skill_doc(GatewayConfig.discover(), "不存在的技能")
+
+
+def test_read_skill_doc_path_comes_from_index_not_client(tmp_path, monkeypatch):
+    """★ 安全不变式：读取目标由索引决定 —— 客户端只给 id，给不了路径（无穿越面）。"""
+    _write(tmp_path, "powerskills-tool/skills/ok/SKILL.md", "---\nname: ok\n---\ncontent")
+    monkeypatch.setenv(ENV_SKILLS_ROOT, str(tmp_path))
+    doc = read_skill_doc(GatewayConfig.discover(), "ok")
+    assert doc["path"].endswith("/ok/SKILL.md")
+    # ★ 原文 = 整个文件（含 frontmatter）—— 摘要才做裁剪
+    assert doc["content"] == "---\nname: ok\n---\ncontent"
 
 
 # ---------------------------------------------------------------- 真实数据不变式

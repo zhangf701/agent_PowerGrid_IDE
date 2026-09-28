@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -49,12 +50,14 @@ from .environment import build_report as build_environment_report
 from .events import format_sse
 from .experiments import (
     EXPORT_FORMATS,
+    Cell as V1Cell,
     ExperimentCaseStateError,
     ExperimentError,
     ExperimentIndexError,
     ExperimentStore,
     ResultsStore,
     StepOutcome,
+    extract_metrics,
     build_report as build_experiments_report,
     build_results_report,
     derive_experiment_id,
@@ -67,6 +70,20 @@ from .experiments import (
     unreferenced_factors,
 )
 from .inventory import build_inventory
+from .experiment_v2 import (
+    COMPILER_VERSION,
+    Observation,
+    ObservationStore,
+    ProposalStore,
+    ProposalValidationError,
+    StoreError,
+    analyze as analyze_v2,
+    commit_proposal,
+    compile_proposal,
+    validate_proposal,
+)
+from .experiment_v2.models import Experiment as V2Experiment, ExperimentProposal, _thaw as _v2_thaw
+from .experiment_v2.compiler import _step_dicts as v2_step_dicts
 from .llm import ChatMessage, LlmConfig, LlmConfigError, OpenAICompatProvider
 from .modules import build_prompt_supplement
 from .modules import build_report as build_modules_report
@@ -74,6 +91,7 @@ from .proxy import CallOutcome, call_tool, result_excerpt
 from .serverpool import ServerPool
 from .session import Channel, SessionStore
 from .skills import build_report as build_skills_report
+from .skills import read_skill_doc
 
 # P1 只挂开源引擎（方案 v3 已移除全部商业引擎）
 OPEN_SOURCE_SERVERS: tuple[str, ...] = (
@@ -129,6 +147,8 @@ _POOL: "ServerPool | None" = None
 #: 正在执行的实验 id（P2-①b）。结果按 `cache_key` 落盘，两个并发 run 会互相覆盖，
 #: 而 §11.2 的并发隔离尚未做 —— 故这里用**进程内标记**做最小防护（单进程本地使用）。
 _RUNNING: set[str] = set()
+#: V2 串行执行的协作式取消标记；只在格子边界生效，不伪装成执行失败。
+_CANCEL_REQUESTED: set[str] = set()
 
 
 def _cfg() -> GatewayConfig:
@@ -977,6 +997,146 @@ def register_check_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+def _v2_root(cfg: GatewayConfig) -> Path:
+    """V2 实验工作区；与 V1 索引隔离，避免迁移期间互相覆盖。"""
+    return experiments_root(cfg) / "v2"
+
+
+def _v2_proposal_store(cfg: GatewayConfig) -> ProposalStore:
+    return ProposalStore(_v2_root(cfg) / "proposals")
+
+
+def _v2_committed_map(cfg: GatewayConfig) -> dict[str, str]:
+    """`proposal_id -> eid` —— 从**已 commit 的实验目录**反查。
+
+    ★ 为什么要反查：提案索引（`proposals/proposals.json`）只记提案本身，不记"是否已 commit"。
+      而 commit 时会把提案原文写到 `<eid>/proposal.json`，所以扫一遍实验目录就能建立映射
+      —— 不必给提案索引加可变状态（那样反而破坏"提案不可变"的语义）。
+    """
+    result: dict[str, str] = {}
+    root = _v2_root(cfg)
+    if not root.is_dir():
+        return result
+    for directory in root.iterdir():
+        if not directory.is_dir() or directory.name == "proposals":
+            continue
+        proposal_file = directory / "proposal.json"
+        if not proposal_file.is_file():
+            continue
+        try:
+            data = json.loads(proposal_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        proposal_id = data.get("proposal_id") if isinstance(data, dict) else None
+        if proposal_id:
+            result[str(proposal_id)] = directory.name
+    return result
+
+
+def _v2_compat_experiment(exp: V2Experiment) -> dict:
+    """V2 定义的 V1 读取兼容视图，保证迁移期矩阵前端继续可读。"""
+    data = exp.to_dict()
+    steps = exp.execution.get("steps", []) if isinstance(exp.execution, Mapping) else []
+    data.update({
+        "id": exp.eid,
+        "label": exp.title,
+        "created_at": str(exp.provenance.get("committed_at", "")),
+        "case_ids": [case.get("case_id", "") for case in data["design"].get("cases", [])],
+        "factors": [
+            {"name": factor.get("name", ""), "values": factor.get("values", [])}
+            for factor in data["design"].get("factors", [])
+        ],
+        "steps": [
+            {"server": step.get("server", ""), "tool": step.get("tool", ""),
+             "args_template": _v2_thaw(step.get("args_template", {}))}
+            for step in steps
+        ],
+        "notes": "V2 编译定义；commit 后不可变。",
+    })
+    return data
+
+
+def _v2_results_report(cfg: GatewayConfig, exp: V2Experiment, eid: str) -> dict:
+    """V2 的格级结果表 —— `/results` 与 `/export` **共用**，避免两处各写一遍而语义漂移。
+
+    ★ 结果来自 **Observation Store**（不是 V1 的 `results.json`）；
+      commit 时冻结的定义与格子身份在这里体现为固定的 `cache_key`。
+    ⚠️ 此前 `/export` 只走 V1 的 `_load_for_read` → 对 V2 实验必然 404「实验不存在」，
+      而 `/results` 却能读 —— 同一个实验"看得见表、导不出来"。
+    """
+    observations = ObservationStore(_v2_root(cfg) / eid).all()
+    by_cell = {o.cell_id: o for o in observations}
+    rows = []
+    metric_names: set[str] = set()
+    for index, cell in enumerate(exp.cells):
+        observation = by_cell.get(cell.cell_id)
+        metrics = dict(observation.metrics) if observation else {}
+        metric_names.update(metrics)
+        rows.append({
+            "index": index, "case_id": cell.case_id, "bindings": cell.to_dict()["bindings"],
+            "cache_key": cell.cache_key,
+            "status": (observation.execution.get("status", "never_run") if observation else "never_run"),
+            "ran_at": (observation.execution.get("ran_at") if observation else None),
+            "metrics": metrics,
+        })
+    columns = [
+        {"key": "index", "title": "格", "type": "number"},
+        {"key": "case_id", "title": "算例", "type": "text"},
+        {"key": "status", "title": "状态", "type": "state"},
+        {"key": "ran_at", "title": "执行时间", "type": "text"},
+    ] + [{"key": name, "title": name, "type": "number"} for name in sorted(metric_names)]
+    status_keys = sorted({row["status"] for row in rows})
+    return {"experiment": _v2_compat_experiment(exp), "columns": columns, "rows": rows,
+            "summary": {"cells": len(rows),
+                        "by_status": {k: sum(1 for row in rows if row["status"] == k) for k in status_keys},
+                        "orphaned": 0}, "orphaned_keys": [],
+            "notes": ["V2 结果来自 Observation Store；定义和格子身份在 commit 时冻结。"]}
+
+
+def _v2_compat_cell(index: int, cell: dict) -> dict:
+    return {"index": index, **cell}
+
+
+def _load_v2_experiment(cfg: GatewayConfig, eid: str) -> V2Experiment | None:
+    definition = _v2_root(cfg) / eid / "definition.json"
+    if not definition.is_file():
+        return None
+    try:
+        payload = json.loads(definition.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("definition.json 必须是对象")
+        return V2Experiment.from_dict(payload)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise StoreError(f"V2 实验定义损坏：{definition}") from exc
+
+
+def _v2_case_inputs(cfg: GatewayConfig, proposal: ExperimentProposal) -> dict[str, dict[str, str]]:
+    """从当前算例登记表读取 commit 所需的内容身份；不信任提案自报的路径/哈希。"""
+    store = CaseStore(cases_root(cfg))
+    result: dict[str, dict[str, str]] = {}
+    for case_ref in proposal.design.cases:
+        try:
+            case = store.get(case_ref.case_id)
+        except KeyError as exc:
+            raise ExperimentCaseStateError(
+                f"算例 {case_ref.case_id!r} 未登记，无法编译 V2 提案"
+            ) from exc
+        view = store.view(case)
+        if not view.available or not view.current_sha256:
+            raise ExperimentCaseStateError(
+                f"算例 {case_ref.case_id} 当前不可读，无法固定 V2 case snapshot"
+            )
+        if not view.within_allowed_roots:
+            raise ExperimentCaseStateError(
+                f"算例 {case_ref.case_id} 不在 `POWERIO_MCP_ALLOWED_ROOTS` 内，无法执行"
+            )
+        result[case_ref.case_id] = {
+            "case_sha256": view.current_sha256,
+            "case_path": case.source_path,
+        }
+    return result
+
+
 def register_experiment_routes(app: FastAPI) -> None:
     """实验矩阵端点（方案 v4 §4.4 · 判据 #2/#3 的落点）。
 
@@ -1079,7 +1239,25 @@ def register_experiment_routes(app: FastAPI) -> None:
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         try:
-            return build_experiments_report(c, _store())
+            report = build_experiments_report(c, _store())
+            v2_items = []
+            v2_root = _v2_root(c)
+            if v2_root.is_dir():
+                for directory in sorted(v2_root.iterdir(), key=lambda item: item.name):
+                    if not directory.is_dir() or directory.name == "proposals":
+                        continue
+                    try:
+                        v2 = _load_v2_experiment(c, directory.name)
+                    except StoreError as exc:
+                        raise HTTPException(status_code=500, detail=str(exc)) from exc
+                    if v2 is not None:
+                        item = _v2_compat_experiment(v2)
+                        item["cell_count"] = len(v2.cells)
+                        v2_items.append(item)
+            report["experiments"].extend(v2_items)
+            report["summary"]["total"] += len(v2_items)
+            report["summary"]["cells"] += sum(item["cell_count"] for item in v2_items)
+            return report
         except ExperimentIndexError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -1089,6 +1267,17 @@ def register_experiment_routes(app: FastAPI) -> None:
             c = _cfg()
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            v2 = _load_v2_experiment(c, eid)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if v2 is not None:
+            return {
+                "experiment": _v2_compat_experiment(v2),
+                "cells": [_v2_compat_cell(i, cell.to_dict()) for i, cell in enumerate(v2.cells)],
+                "summary": {"cells": len(v2.cells), "by_status": {"pending": len(v2.cells)}},
+                "notes": ["V2 实验定义在 commit 时冻结；当前端点不会重新读取算例或重编译格子。"],
+            }
         store = _store()
         try:
             exp = store.get(eid)
@@ -1124,6 +1313,17 @@ def register_experiment_routes(app: FastAPI) -> None:
                 "detail": "该实验正在执行中，不能删除；请等待执行完成后重试",
             })
 
+        try:
+            v2 = _load_v2_experiment(c, eid)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if v2 is not None:
+            try:
+                shutil.rmtree(_v2_root(c) / eid)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"V2 实验清理失败：{exc}") from exc
+            return {"deleted": True, "experiment_id": eid}
+
         store = _store()
         try:
             exp = store.get(eid)
@@ -1147,6 +1347,116 @@ def register_experiment_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {"deleted": True, "experiment_id": exp.id}
 
+    async def _run_v2_experiment_body(c: GatewayConfig, exp: V2Experiment) -> dict:
+        """执行已编译 V2 格子，并把每格结果写成 Observation。"""
+        steps = exp.execution.get("steps", []) if isinstance(exp.execution, Mapping) else []
+        if len(steps) >= 2 and _POOL is None:
+            return JSONResponse(status_code=503, content={
+                "detail": "V2 多步骤实验需要会话级持久连接池（POWERMCP_SESSION_POOL=1）",
+            })
+        if not steps or not exp.cells:
+            return JSONResponse(status_code=409, content={
+                "detail": "V2 实验没有可执行步骤或格子，拒绝执行",
+            })
+        server = str(steps[0].get("server", ""))
+        scratch_sid = _STORE.create((server,)).id
+        try:
+            inv = await build_inventory(c, [server], sid=scratch_sid, pool=_POOL)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        schemas = {(t.server, t.name): t.input_schema for t in inv.tools}
+
+        async def run_step(sid: str, step_server: str, tool: str, args: dict) -> StepOutcome:
+            schema = schemas.get((step_server, tool))
+            if schema is None:
+                return StepOutcome(ok=False, error=(
+                    f"{step_server}.{tool} 不存在或无法取得 input_schema，已跳过该步"
+                ))
+            outcome = await call_with_contracts(
+                sid, step_server, tool, args, get_schema=lambda _s, _t: schema,
+            )
+            return StepOutcome(
+                ok=outcome.ok,
+                error=outcome.error,
+                remounted=outcome.remounted,
+                result_excerpt=(result_excerpt(outcome.result)
+                                if outcome.result is not None else None),
+            )
+
+        v1_cells = tuple(
+            V1Cell(
+                index=index,
+                case_id=cell.case_id,
+                case_sha256=cell.case_sha256,
+                bindings=cell.to_dict()["bindings"],
+                steps=tuple(cell.to_dict()["steps"]),
+                cache_key=cell.cache_key,
+            )
+            for index, cell in enumerate(exp.cells)
+        )
+        records = await execute_cells(
+            v1_cells,
+            new_session=lambda: _STORE.create((server,)).id,
+            run_step=run_step,
+            should_cancel=lambda: exp.eid in _CANCEL_REQUESTED,
+        )
+        observation_store = ObservationStore(_v2_root(c) / exp.eid)
+        observations: list[dict] = []
+        for cell, record in zip(exp.cells, records):
+            status = str(record.get("status", "failed"))
+            if status == "ok":
+                observation_status = "completed"
+            elif status == "cancelled":
+                observation_status = "cancelled"
+            elif any(bool(s.get("remounted")) for s in record.get("steps", [])):
+                observation_status = "failed_environment"
+            elif any("conver" in str(s.get("error", "")).lower() for s in record.get("steps", [])):
+                observation_status = "not_converged"
+            elif any("schema" in str(s.get("error", "")).lower() or "不存在" in str(s.get("error", ""))
+                     for s in record.get("steps", [])):
+                observation_status = "failed_validation"
+            else:
+                observation_status = "failed_execution"
+            metrics: dict = {}
+            for step_record in reversed(record.get("steps", [])):
+                if step_record.get("ok") and step_record.get("result_excerpt") is not None:
+                    metrics = extract_metrics(step_record["result_excerpt"])
+                    break
+            observation = Observation(
+                observation_id=f"obs-{cell.cell_id}",
+                cell_id=cell.cell_id,
+                inputs={"case_id": cell.case_id, **cell.to_dict()["bindings"]},
+                execution={
+                    "status": observation_status,
+                    "duration_s": None,
+                    "session_remounted": any(bool(s.get("remounted")) for s in record.get("steps", [])),
+                    "ran_at": record.get("ran_at"),
+                },
+                metrics=metrics,
+                diagnostics={"steps": record.get("steps", [])},
+                provenance={
+                    "case_sha256": cell.case_sha256,
+                    "experiment_id": exp.eid,
+                    "cell_id": cell.cell_id,
+                    "executor_version": COMPILER_VERSION,
+                },
+            )
+            observation_store.append(observation)
+            observations.append(observation.to_dict())
+        by_status = {}
+        for observation in observations:
+            key = observation["execution"]["status"]
+            by_status[key] = by_status.get(key, 0) + 1
+        return {
+            "experiment": _v2_compat_experiment(exp),
+            "cells": list(records),
+            "observations": observations,
+            "summary": {"cells": len(records), "by_status": by_status,
+                        "completed": by_status.get("completed", 0),
+                        "failed": len(records) - by_status.get("completed", 0)},
+            "notes": ["V2 执行不调用 LLM；每格独立会话，结果写入 observations.jsonl。"],
+        }
+
     @app.post("/experiments/{eid}/run")
     async def run_experiment(eid: str):
         """**串行**执行一个实验的全部格子（P2-①b）。
@@ -1165,6 +1475,20 @@ def register_experiment_routes(app: FastAPI) -> None:
             c = _cfg()
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        try:
+            v2 = _load_v2_experiment(c, eid)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if v2 is not None:
+            if eid in _RUNNING:
+                return JSONResponse(status_code=409, content={"detail": "该实验正在执行中"})
+            _RUNNING.add(eid)
+            try:
+                return await _run_v2_experiment_body(c, v2)
+            finally:
+                _RUNNING.discard(eid)
+                _CANCEL_REQUESTED.discard(eid)
 
         store = _store()
         try:
@@ -1319,14 +1643,14 @@ def register_experiment_routes(app: FastAPI) -> None:
 
     @app.get("/experiments/{eid}/results")
     async def experiment_results(eid: str):
-        """格级结果对比表（P2-①c）。
-
-        ★ 结果按 `cache_key` 与**当前**格子对齐：算例/模板一改，该格显示 `never_run`，
-          旧记录进入 `orphaned` —— 不冒充当前条件，也不丢弃。
-        ⚠️ 越限明细级的 `result_tables` 透视（模块列定义 / G-2 pivot）属 P3 面，未实现。
-
-        错误映射：404 未知实验 · 409 算例已注销 · 500 索引/结果文件损坏 · 503 配置失败。
-        """
+        """格级结果对比表（P2-①c）。"""
+        try:
+            c_v2 = _cfg()
+            v2 = _load_v2_experiment(c_v2, eid)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if v2 is not None:
+            return _v2_results_report(c_v2, v2, eid)
         loaded, resp = _load_for_read(eid)
         if resp is not None:
             return resp
@@ -1343,16 +1667,29 @@ def register_experiment_routes(app: FastAPI) -> None:
 
         ★ 只做**文本格式**：PDF 须走 HTML + Chrome headless（本项目禁用 pandoc），
           属渲染层的事，不在网关进程里做。
+
+        ★ **V1 与 V2 共用同一导出**：V2 的结果来自 Observation Store —— 与 `/results`
+          走同一个 `_v2_results_report`，保证"界面上看到的表"与"导出的文件"一致。
+          ⚠️ 此前本端点只认 V1 索引 → 对 V2 实验必然 404「实验不存在」，
+             而 `/results` 却能读 —— 同一个实验"看得见表、导不出来"。
         """
-        loaded, resp = _load_for_read(eid)
-        if resp is not None:
-            return resp
-        c, exp, cells = loaded
         try:
-            stored = ResultsStore(results_root(c, eid)).all()
-        except ExperimentIndexError as exc:
+            c_v2 = _cfg()
+            v2 = _load_v2_experiment(c_v2, eid)
+        except StoreError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        report = build_results_report(exp, cells, stored)
+        if v2 is not None:
+            report = _v2_results_report(c_v2, v2, eid)
+        else:
+            loaded, resp = _load_for_read(eid)
+            if resp is not None:
+                return resp
+            c, exp, cells = loaded
+            try:
+                stored = ResultsStore(results_root(c, eid)).all()
+            except ExperimentIndexError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            report = build_results_report(exp, cells, stored)
         try:
             text = export_table(report, format)
         except ExperimentError as exc:
@@ -1365,6 +1702,251 @@ def register_experiment_routes(app: FastAPI) -> None:
                 "Content-Disposition": f'attachment; filename="experiment-{eid}.{ext}"',
             },
         )
+
+    # ------------------------------ V2 proposal / immutable experiment API
+    def _proposal_id_for(payload: dict) -> str:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return "proposal-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _proposal_from_payload(payload: dict) -> ExperimentProposal:
+        if not isinstance(payload, dict):
+            raise ProposalValidationError("请求体必须是 JSON 对象")
+        body = dict(payload)
+        body.setdefault("proposal_id", _proposal_id_for(body))
+        return ExperimentProposal.from_dict(body)
+
+    def _proposal_preview(c: GatewayConfig, proposal: ExperimentProposal) -> dict:
+        case_inputs = _v2_case_inputs(c, proposal)
+        report = validate_proposal(
+            proposal, known_servers=OPEN_SOURCE_SERVERS,
+            max_cells=2000,
+        )
+        preview: dict[str, object] = {"cells": [], "cell_count": report.resource_estimate.get("cells", 0)}
+        if report.valid:
+            compiled = compile_proposal(proposal, case_inputs=case_inputs)
+            preview["cells"] = [cell.to_dict() for cell in compiled.cells]
+            preview["experiment_id"] = compiled.eid
+        return {"validation": report.to_dict(), "resource_estimate": report.resource_estimate,
+                "preview": preview}
+
+    @app.post("/experiment-proposals")
+    async def create_experiment_proposal(payload: dict):
+        try:
+            c = _cfg()
+            proposal = _proposal_from_payload(payload)
+            preview = _proposal_preview(c, proposal)
+            if not preview["validation"]["valid"]:
+                return JSONResponse(status_code=400, content={
+                    "detail": "；".join(preview["validation"]["errors"]),
+                    "validation": preview["validation"],
+                })
+            store = _v2_proposal_store(c)
+            try:
+                existing = store.get(proposal.proposal_id)
+            except KeyError:
+                existing = None
+            if existing is not None:
+                return {"created": False, "proposal": existing.to_dict(), **_proposal_preview(c, existing)}
+            store.create(proposal)
+            return JSONResponse(status_code=201, content={
+                "created": True, "proposal": proposal.to_dict(), **preview,
+                "status": "needs_confirmation",
+            })
+        except ExperimentCaseStateError as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
+        except (ProposalValidationError, StoreError) as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/experiment-proposals")
+    async def list_experiment_proposals():
+        """列出**全部**提案（含是否已 commit 及其 eid）。
+
+        ★ 为什么需要它：没有列表出口，"一次只能看到一个提案"就变成系统的硬限制 ——
+          用户无法累积多个提案、看不到历史提案、也无法清理。
+          （`ProposalStore` 本身早就支持多提案，缺的只是这个读出口 + 删除出口。）
+        """
+        try:
+            c = _cfg()
+            committed = _v2_committed_map(c)
+            items = []
+            for proposal in _v2_proposal_store(c).list():
+                data = proposal.to_dict()
+                items.append({
+                    "proposal_id": proposal.proposal_id,
+                    "title": proposal.title,
+                    "research_question": data["research_question"],
+                    "case_ids": [case.get("case_id", "") for case in data["design"].get("cases", [])],
+                    "step_count": len(data["execution"].get("steps", []) or []),
+                    "committed_eid": committed.get(proposal.proposal_id),
+                })
+            return {"proposals": items, "total": len(items)}
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/experiment-proposals/{proposal_id}")
+    async def get_experiment_proposal(proposal_id: str):
+        try:
+            proposal = _v2_proposal_store(_cfg()).get(proposal_id)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验提案不存在"})
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"proposal": proposal.to_dict()}
+
+    @app.post("/experiment-proposals/{proposal_id}/validate")
+    async def validate_experiment_proposal(proposal_id: str):
+        try:
+            c = _cfg()
+            proposal = _v2_proposal_store(c).get(proposal_id)
+            return _proposal_preview(c, proposal)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验提案不存在"})
+        except ExperimentCaseStateError as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
+        except (ProposalValidationError, StoreError) as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.post("/experiment-proposals/{proposal_id}/commit")
+    async def commit_experiment_proposal(proposal_id: str):
+        try:
+            c = _cfg()
+            proposal = _v2_proposal_store(c).get(proposal_id)
+            case_inputs = _v2_case_inputs(c, proposal)
+            experiment, reused = commit_proposal(
+                proposal, root=_v2_root(c), case_inputs=case_inputs,
+            )
+            # ★ 同一提案重复 commit（同一 eid，幂等）→ 200；新提案（新 eid）→ 201。
+            #   实验身份含提案身份（2026-09-28 裁决）：每个提案 = 一个独立实验配置，
+            #   可独立运行、导出、分析 —— 即使执行定义与另一提案完全相同。
+            return JSONResponse(status_code=200 if reused else 201, content={
+                "committed": True,
+                "reused": reused,
+                "experiment": experiment.to_dict(),
+                "manifest": {
+                    "eid": experiment.eid,
+                    "cell_count": len(experiment.cells),
+                    "compiler_version": COMPILER_VERSION,
+                },
+            })
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验提案不存在"})
+        except ExperimentCaseStateError as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
+        except (ProposalValidationError, StoreError) as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.delete("/experiment-proposals/{proposal_id}")
+    async def delete_experiment_proposal(proposal_id: str):
+        """删除一个提案 —— **只删提案索引，不删已 commit 的实验**。
+
+        ⚠️ 若该提案已 commit，实验定义（`definition.json`）与 Observation **仍然存在**：
+          删提案只是把它从「待提交清单」里拿掉，不影响已冻结的实验。
+        """
+        try:
+            c = _cfg()
+            removed = _v2_proposal_store(c).delete(proposal_id)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "实验提案不存在"})
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"deleted": True, "proposal_id": removed.proposal_id,
+                "experiment_kept": _v2_committed_map(c).get(proposal_id)}
+
+    def _v2_or_404(c: GatewayConfig, eid: str):
+        try:
+            experiment = _load_v2_experiment(c, eid)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if experiment is None:
+            return None, JSONResponse(status_code=404, content={"detail": "V2 实验不存在"})
+        return experiment, None
+
+    @app.get("/experiments/{eid}/summary")
+    async def experiment_v2_summary(eid: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        observations = ObservationStore(_v2_root(c) / eid).all()
+        return {"experiment": {"eid": eid, "title": experiment.title},
+                **analyze_v2(observations, experiment=experiment)["summary"]}
+
+    @app.get("/experiments/{eid}/design")
+    async def experiment_v2_design(eid: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        data = experiment.to_dict()
+        return {"eid": eid, "title": experiment.title, "research": data["research"],
+                "design": data["design"], "execution": data["execution"],
+                "observables": data["observables"], "analysis": data["analysis"],
+                "resource_estimate": data["resource_estimate"],
+                "cells": [cell.to_dict() for cell in experiment.cells]}
+
+    @app.get("/experiments/{eid}/observations")
+    async def experiment_v2_observations(eid: str, status: str | None = None,
+                                         case_id: str | None = None, limit: int = 500):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        if limit < 1 or limit > 5000:
+            return JSONResponse(status_code=400, content={"detail": "limit 必须在 1..5000"})
+        store = ObservationStore(_v2_root(c) / eid)
+        observations = store.query(status=status, case_id=case_id)
+        return {"eid": eid, "observations": [o.to_dict() for o in observations[:limit]],
+                "total": len(observations), "limit": limit}
+
+    @app.get("/experiments/{eid}/cells/{cell_id}")
+    async def experiment_v2_cell(eid: str, cell_id: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        cell = next((item for item in experiment.cells if item.cell_id == cell_id), None)
+        if cell is None:
+            return JSONResponse(status_code=404, content={"detail": "格子不存在"})
+        observation = None
+        try:
+            observation = ObservationStore(_v2_root(c) / eid).query(cell_id=cell_id)
+        except StoreError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"cell": cell.to_dict(), "observations": [o.to_dict() for o in observation]}
+
+    @app.get("/experiments/{eid}/cells/{cell_id}/artifacts/{artifact_id}")
+    async def experiment_v2_artifact(eid: str, cell_id: str, artifact_id: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        artifact = _v2_root(c) / eid / "artifacts" / artifact_id
+        if not artifact.is_file():
+            return JSONResponse(status_code=404, content={"detail": "artifact 不存在"})
+        return Response(content=artifact.read_bytes(), media_type="application/octet-stream")
+
+    @app.get("/experiments/{eid}/analysis")
+    async def experiment_v2_analysis(eid: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        observations = ObservationStore(_v2_root(c) / eid).all()
+        return {"eid": eid, "analysis": analyze_v2(observations, experiment=experiment)}
+
+    @app.post("/experiments/{eid}/cancel")
+    async def cancel_experiment(eid: str):
+        c = _cfg()
+        experiment, response = _v2_or_404(c, eid)
+        if response is not None:
+            return response
+        if eid not in _RUNNING:
+            return JSONResponse(status_code=409, content={"detail": "该实验当前未在执行"})
+        _CANCEL_REQUESTED.add(eid)
+        return {"cancel_requested": True, "experiment_id": eid,
+                "detail": "将在当前工具调用完成后于下一个格子边界停止"}
 
 
 def _status_counts(cells) -> dict[str, int]:
@@ -1448,6 +2030,40 @@ def create_app(cfg: GatewayConfig | None = None, *,
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return build_skills_report(c)
+
+    @app.get("/skills/{skill_id}/doc")
+    async def skill_doc(skill_id: str, format: str = "md"):
+        """技能文档原文（2026-09-28 张老师裁决：技能手册只有摘要不够，须给文档链接）。
+
+        - `format=md`（默认）：`SKILL.md` 原文，`text/markdown`（浏览器直接打开）；
+        - `format=json`：`{id, kind, path, content}`（程序化消费）。
+
+        ★ 安全性：文件路径来自**服务端索引**（不信任客户端路径参数）⇒ 无路径穿越面。
+        错误映射：404 未知技能 · 400 未知 format · 500 文件不可读 · 503 配置失败。
+        """
+        try:
+            c = _cfg()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            doc = read_skill_doc(c, skill_id)
+        except KeyError:
+            return JSONResponse(status_code=404, content={
+                "detail": f"技能不存在：{skill_id}",
+            })
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"技能文档读取失败：{exc}") from exc
+        if format == "json":
+            return doc
+        if format == "md":
+            return Response(
+                content=doc["content"],
+                media_type="text/markdown; charset=utf-8",
+                headers={"Content-Disposition": f'inline; filename="{skill_id}-SKILL.md"'},
+            )
+        return JSONResponse(status_code=400, content={
+            "detail": f"未知 format：{format}（支持 md / json）",
+        })
 
     @app.get("/modules")
     async def modules() -> dict:

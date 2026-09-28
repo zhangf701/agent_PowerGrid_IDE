@@ -298,3 +298,27 @@ def build_report(cfg: GatewayConfig) -> dict:
             for s in skills
         ],
     }
+
+
+def read_skill_doc(cfg: GatewayConfig, skill_id: str) -> dict:
+    """`GET /skills/{id}/doc` 的实现体：按 id 取技能的 `SKILL.md` 原文。
+
+    ★ 为什么需要（2026-09-28 张老师裁决）：技能手册此前只有摘要
+      （name / description / 触发表），用户要读**具体方法论**必须能拿到文档原文
+      —— 摘要是"有这个技能"，原文才是"技能内容"。
+
+    ★ 安全性：**路径来自服务端索引**（`index_skills` 扫描出的相对路径），
+      不信任客户端传来的任何路径参数 ⇒ **没有路径穿越面**；
+      id 不存在 → `KeyError`（端点映射 404）；文件读不了 → `OSError`（端点映射 500）。
+    """
+    root = skills_root(cfg)
+    for skill in index_skills(root):
+        if skill.id == skill_id:
+            target = root / skill.path
+            return {
+                "id": skill.id,
+                "kind": skill.kind,
+                "path": skill.path,
+                "content": target.read_text(encoding="utf-8", errors="replace"),
+            }
+    raise KeyError(skill_id)
