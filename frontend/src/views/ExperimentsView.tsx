@@ -38,7 +38,10 @@ import {
   EmptyState,
   ErrorBanner,
   ExperimentGrid,
+  ExperimentProposalCard,
+  INLINE_METRIC_LIMIT,
   LoadingState,
+  ResultTable,
   Signature,
   type GridCell,
 } from "../components";
@@ -183,8 +186,8 @@ export function ExperimentsView() {
       });
       setRun(r);
       setResults(null); // 结果表可能已过时（本轮跑的是当前 cache_key）
-      const ok = r.summary.ok ?? 0;
-      const bad = r.summary.failed ?? 0;
+      const ok = r.summary.ok ?? r.summary.completed ?? 0;
+      const bad = r.summary.failed ?? (r.summary.cells - ok);
       setNote(
         <>
           已串行执行 <strong>{r.summary.cells}</strong> 格：成功 <strong>{ok}</strong> · 失败{" "}
@@ -311,6 +314,25 @@ export function ExperimentsView() {
       )}
 
       {!list && !error && <LoadingState label="加载中…（等待 /experiments）" />}
+
+      <ExperimentProposalCard
+        cases={cases}
+        onError={fail}
+        onCommitted={(eid, reused) => {
+          void reload();
+          void select(eid);
+          setNote(
+            reused ? (
+              <>
+                该提案<strong>之前已提交过</strong> —— 已复用 V2 实验{" "}
+                <span className="font-mono">{eid}</span>（同一提案 = 同一实验，定义已冻结，不重复建）。
+              </>
+            ) : (
+              <>已 commit V2 实验 <span className="font-mono">{eid}</span>，定义已冻结。每个提案是<strong>独立的实验配置</strong>，可独立执行、查看结果与导出。</>
+            ),
+          );
+        }}
+      />
 
       {showForm && (
         <div className="mt-3 rounded-md border border-border-subtle p-3">
@@ -488,6 +510,20 @@ export function ExperimentsView() {
           <div className="mt-2">
             <ExperimentGrid cells={gridCells} orphaned={results?.summary.orphaned ?? 0} />
           </div>
+
+          {/* ★ 完整结果表：网格行内只给 INLINE_METRIC_LIMIT 项「一眼可见」的指标，
+              并提示「见结果表」—— 那张表必须真的存在，否则排在字母序后面的指标
+              （如 `metric.results.n_buses`）在界面上**无处可见**。 */}
+          {results && results.columns.length > 0 && (
+            <div className="mt-3">
+              <div className="text-bodySm font-medium">结果表（完整指标列）</div>
+              <div className="text-caption text-text-muted">
+                网格行内只给 {INLINE_METRIC_LIMIT} 项「一眼可见」的指标；下面是全部列
+                （共 {results.columns.length} 列 · {results.rows.length} 行）。
+              </div>
+              <ResultTable columns={results.columns} rows={results.rows} />
+            </div>
+          )}
 
           {results && results.orphaned_keys.length > 0 && (
             <details className="mt-2 text-caption text-text-muted">

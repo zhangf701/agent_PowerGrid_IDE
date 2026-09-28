@@ -16,6 +16,7 @@ import {
   ExperimentResultsResponseSchema,
   ExperimentRunResponseSchema,
   ExperimentsResponseSchema,
+  V2ProposalsListSchema,
 } from "./api";
 import {
   ExperimentGrid,
@@ -32,6 +33,7 @@ import createFx from "./__fixtures__/gateway/experiment-create.json";
 import detailFx from "./__fixtures__/gateway/experiment-detail.json";
 import detailFailedFx from "./__fixtures__/gateway/experiment-detail-failed.json";
 import listFx from "./__fixtures__/gateway/experiments.json";
+import proposalsFx from "./__fixtures__/gateway/experiment-proposals.json";
 import resultsFx from "./__fixtures__/gateway/experiment-results.json";
 import staleFx from "./__fixtures__/gateway/experiment-results-stale.json";
 import runFailedFx from "./__fixtures__/gateway/experiment-run-failed.json";
@@ -66,6 +68,8 @@ function stub(overrides: Record<string, () => Promise<Response>> = {}) {
         if (url.includes(key)) return handler();
       }
       if (url.includes("/cases")) return json(casesFx);
+      // ★ 提案清单（提案卡挂载时就会请求）—— 不路由会落到 listFx，触发 schema 漂移
+      if (url.includes("/experiment-proposals")) return json(proposalsFx);
       if (url.includes("/experiments/") && url.endsWith("/run")) return json(runFx);
       if (url.includes("/experiments/") && url.endsWith("/results")) return json(resultsFx);
       if (url.includes("/experiments/")) return json(detailFx);
@@ -427,5 +431,60 @@ describe("ExperimentsView", () => {
 
     await waitFor(() => expect(screen.getByText(/不是合法 JSON/)).toBeTruthy());
     expect(calls.some((c) => c.method === "POST")).toBe(false);
+  });
+});
+
+/* ══════════════ ★ 提案可累积多个（F-V2-6 回归）══════════════ */
+
+describe("★ 提案清单：可累积多个、可提交 / 删除", () => {
+  it("夹具来自真实网关且通过 schema（含已提交与未提交两种）", () => {
+    expect(V2ProposalsListSchema.safeParse(proposalsFx).success).toBe(true);
+    expect(proposalsFx.total).toBe(proposalsFx.proposals.length);
+    // ★ 夹具必须两种都含，否则下面「已提交显示 eid / 未提交有提交按钮」的断言会假过
+    expect(proposalsFx.proposals.some((p) => p.committed_eid)).toBe(true);
+    expect(proposalsFx.proposals.some((p) => !p.committed_eid)).toBe(true);
+  });
+
+  it("★ 全部提案都渲染出来（不再「一次只能看到一个」）", async () => {
+    stub();
+    render(<ExperimentsView />);
+    await waitFor(() => expect(screen.getByText(`已有提案（${proposalsFx.total}）`)).toBeTruthy());
+    for (const item of proposalsFx.proposals) {
+      expect(screen.getByText(item.proposal_id)).toBeTruthy();
+    }
+  });
+
+  it("已提交的提案显示其 eid；未提交的有「提交」按钮", async () => {
+    stub();
+    render(<ExperimentsView />);
+    await waitFor(() => expect(screen.getByText(/已有提案/)).toBeTruthy());
+    const committed = proposalsFx.proposals.find((p) => p.committed_eid)!;
+    expect(screen.getByText(committed.committed_eid!)).toBeTruthy();
+    const pending = proposalsFx.proposals.find((p) => !p.committed_eid)!;
+    expect(screen.getByLabelText(`提交提案 ${pending.proposal_id}`)).toBeTruthy();
+  });
+
+  it("删除提案真的发 DELETE 请求（不是只从界面消失）", async () => {
+    const calls = stub();
+    render(<ExperimentsView />);
+    await waitFor(() => expect(screen.getByText(/已有提案/)).toBeTruthy());
+    const target = proposalsFx.proposals[0];
+    fireEvent.click(screen.getByLabelText(`删除提案 ${target.proposal_id}`));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "DELETE" && c.url.includes(`/experiment-proposals/${target.proposal_id}`),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("每个提案都有独立的删除按钮（N 个提案 = N 个删除入口）", async () => {
+    stub();
+    render(<ExperimentsView />);
+    await waitFor(() => expect(screen.getByText(/已有提案/)).toBeTruthy());
+    for (const item of proposalsFx.proposals) {
+      expect(screen.getByLabelText(`删除提案 ${item.proposal_id}`)).toBeTruthy();
+    }
   });
 });

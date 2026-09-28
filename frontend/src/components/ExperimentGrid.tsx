@@ -51,7 +51,13 @@ export type GridCell = {
 /** 格子状态 → 状态签名 + 中文标签（**未知状态不得静默当作正常**）。 */
 const CELL_SIG: Record<string, { sig: SignatureKey; label: string }> = {
   ok: { sig: "satisfied", label: "成功" },
+  completed: { sig: "satisfied", label: "完成" },
   failed: { sig: "violated", label: "失败" },
+  failed_environment: { sig: "degraded", label: "环境失败" },
+  failed_execution: { sig: "violated", label: "执行失败" },
+  failed_validation: { sig: "violated", label: "校验失败" },
+  not_converged: { sig: "degraded", label: "未收敛" },
+  cancelled: { sig: "unknown", label: "已取消" },
   pending: { sig: "unknown", label: "待跑" },
   never_run: { sig: "unknown", label: "未跑" },
 };
@@ -117,7 +123,10 @@ export function ExperimentGrid({
 
   const counts: Record<string, number> = {};
   for (const c of cells) counts[c.status] = (counts[c.status] ?? 0) + 1;
-  const order = ["ok", "failed", "pending", "never_run"];
+  const order = [
+    "ok", "completed", "failed", "failed_environment", "failed_execution",
+    "failed_validation", "not_converged", "cancelled", "pending", "never_run",
+  ];
 
   return (
     <div data-testid="experiment-grid">

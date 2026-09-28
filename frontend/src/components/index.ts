@@ -5,8 +5,8 @@
  *    —— 约束的是**数值与标识符的写法**，在任何视图都适用，故始终可见。
  *  - **B 组 · 校验层**（默认折叠）：`ContractBadge` / `ContractCard` / `ToolCallRow` —— **尚未实现**，
  *    随 ⑥ 校验层视图（S3）落地。
- *  - **C 组 · 研究视图**（§4.7）：`SkillCard` 已落地；`CaseCard` / `ResultTable` / `ModuleBadge`
- *    随所属视图落地，`ExperimentGrid` 归 P2。
+ *  - **C 组 · 研究视图**（§4.7）：`SkillCard` · `CaseCard` · `ExperimentGrid` · `ResultTable` 已落地；
+ *    `ModuleBadge` 随所属视图落地。
  *
  *  ⚠️ **`EngineStatusIndicator`（§4.6.6，规范标为 P1 必做）本步未做** ——
  *    它需要 `EngineStatus` 五值（running/starting/degraded/crashed/circuit-open），
@@ -43,6 +43,9 @@ export {
   INLINE_METRIC_LIMIT,
 } from "./ExperimentGrid";
 export type { GridCell, GridStep, GridPlannedStep } from "./ExperimentGrid";
+export { ExperimentProposalCard } from "./ExperimentProposalCard";
+
+export { ResultTable, cellValue } from "./ResultTable";
 
 /* ── B 组 · 校验层（默认折叠，能力不丢）── */
 

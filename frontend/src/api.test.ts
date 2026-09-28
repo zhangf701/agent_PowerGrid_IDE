@@ -202,6 +202,7 @@ describe("apiParsed 的失败语义", () => {
       "servers",
       "cases",
       "experiments",
+      "experiment-proposals",
       "contracts",
       "sessions",
       "modules",
