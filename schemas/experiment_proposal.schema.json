@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "experiment_proposal.schema.json",
+  "title": "ExperimentProposal",
+  "type": "object",
+  "required": ["proposal_id", "title", "research_question", "hypothesis", "design", "execution", "observables", "analysis"],
+  "additionalProperties": false,
+  "properties": {
+    "proposal_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "research_question": {"anyOf": [{"$ref": "research_question.schema.json"}, {"type": "object", "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}}, "additionalProperties": true}]},
+    "hypothesis": {"anyOf": [{"$ref": "hypothesis.schema.json"}, {"type": "object", "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}}, "additionalProperties": true}]},
+    "design": {"type": "object", "required": ["cases", "factors"], "properties": {"cases": {"type": "array", "minItems": 1}, "factors": {"type": "array"}}, "additionalProperties": true},
+    "execution": {"type": "object", "required": ["steps"], "properties": {"steps": {"type": "array", "minItems": 1}}, "additionalProperties": true},
+    "observables": {"type": ["object", "array"]},
+    "analysis": {"type": "object", "additionalProperties": true},
+    "origin": {"type": "object", "additionalProperties": true}
+  }
+}

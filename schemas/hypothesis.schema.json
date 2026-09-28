@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypothesis.schema.json",
+  "title": "Hypothesis",
+  "type": "object",
+  "required": ["id", "statement"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "statement": {"type": "string", "minLength": 1},
+    "independent_variables": {"type": "array", "items": {"type": "string"}},
+    "dependent_variables": {"type": "array", "items": {"type": "string"}},
+    "controls": {"type": "array", "items": {"type": "string"}},
+    "expected_direction": {"type": "object", "additionalProperties": {"type": "string"}}
+  }
+}

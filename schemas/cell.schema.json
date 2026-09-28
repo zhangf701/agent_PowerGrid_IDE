@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cell.schema.json",
+  "title": "Cell",
+  "type": "object",
+  "required": ["cell_id", "eid", "bindings", "steps", "case_id", "case_sha256", "case_path", "cache_key", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "cell_id": {"type": "string", "minLength": 1}, "eid": {"type": "string", "minLength": 1},
+    "bindings": {"type": "object"}, "steps": {"type": "array", "items": {"type": "object"}},
+    "case_id": {"type": "string", "minLength": 1}, "case_sha256": {"type": "string", "minLength": 1},
+    "case_path": {"type": "string", "minLength": 1}, "cache_key": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pending", "running", "completed", "failed_environment", "failed_execution", "failed_validation", "not_converged", "cancelled"]}
+  }
+}

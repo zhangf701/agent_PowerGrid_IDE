@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "experiment.schema.json",
+  "title": "ImmutableExperiment",
+  "type": "object",
+  "required": ["schema_version", "eid", "title", "research", "design", "execution", "observables", "analysis", "provenance", "cells", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "2.0"}, "eid": {"type": "string", "minLength": 1}, "title": {"type": "string"},
+    "research": {"type": "object"}, "design": {"type": "object"}, "execution": {"type": "object"},
+    "observables": {"type": ["object", "array"]}, "analysis": {"type": "object"}, "provenance": {"type": "object"},
+    "cells": {"type": "array", "items": {"$ref": "cell.schema.json"}},
+    "resource_estimate": {"type": "object"},
+    "status": {"enum": ["registered", "pending", "running", "completed", "failed", "cancelled"]}
+  }
+}

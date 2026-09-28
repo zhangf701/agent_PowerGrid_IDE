@@ -544,6 +544,7 @@ async def execute_cells(
     new_session: Callable[[], str],
     run_step: Callable[[str, str, str, dict], Awaitable[StepOutcome]],
     ran_at: str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[dict, ...]:
     """**串行**执行全部格子，返回逐格执行记录（落盘由调用方决定）。
 
@@ -569,6 +570,18 @@ async def execute_cells(
     started = ran_at or _now()
     records: list[dict] = []
     for cell in cells:
+        if should_cancel is not None and should_cancel():
+            records.append({
+                "index": cell.index,
+                "case_id": cell.case_id,
+                "case_sha256": cell.case_sha256,
+                "bindings": cell.bindings,
+                "cache_key": cell.cache_key,
+                "status": "cancelled",
+                "steps": [],
+                "ran_at": started,
+            })
+            continue
         sid = new_session()
         steps_out: list[dict] = []
         status = "ok"

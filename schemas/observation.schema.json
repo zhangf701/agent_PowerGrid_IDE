@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "observation.schema.json",
+  "title": "Observation",
+  "type": "object",
+  "required": ["observation_id", "cell_id", "inputs", "execution", "metrics", "diagnostics", "artifacts", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "observation_id": {"type": "string", "minLength": 1}, "cell_id": {"type": "string", "minLength": 1},
+    "inputs": {"type": "object"}, "execution": {"type": "object", "required": ["status"]},
+    "metrics": {"type": "object"}, "diagnostics": {"type": "object"}, "artifacts": {"type": "array", "items": {"$ref": "artifact.schema.json"}},
+    "provenance": {"type": "object"}
+  }
+}

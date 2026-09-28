@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "artifact.schema.json",
+  "title": "Artifact",
+  "type": "object",
+  "required": ["artifact_id", "type", "sha256"],
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {"type": "string", "minLength": 1}, "type": {"type": "string", "minLength": 1},
+    "mime_type": {"type": "string"}, "sha256": {"type": "string", "minLength": 1},
+    "cell_id": {"type": "string"}, "created_by": {"type": "string"}, "size_bytes": {"type": "integer", "minimum": 0}
+  }
+}
