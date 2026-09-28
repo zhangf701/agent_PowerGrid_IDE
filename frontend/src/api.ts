@@ -150,6 +150,8 @@ export const SkillSchema = z.object({
   name: z.string(),
   kind: z.string(),
   description: z.string().optional(),
+  /** SKILL.md 相对 PowerSkills 根的 POSIX 路径 —— 文档链接与出处展示用（09-28 裁决） */
+  path: z.string().optional(),
   escalation: z.array(EscalationSchema).optional(),
 });
 
@@ -178,6 +180,29 @@ export const SkillsResponseSchema = z.object({
 export type SkillsResponse = z.infer<typeof SkillsResponseSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type SkillEscalation = z.infer<typeof EscalationSchema>;
+
+/** `GET /skills/{id}/doc?format=json` —— SKILL.md 原文（09-28 裁决 B2：折叠展开）。
+ *  ★ `content` 是**整篇原文**（含 frontmatter），渲染侧负责裁剪与排版；
+ *    与 `/skills` 摘要同源（同一磁盘文件），**无副本漂移**。 */
+export const SkillDocSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  path: z.string(),
+  content: z.string(),
+});
+export type SkillDoc = z.infer<typeof SkillDocSchema>;
+
+/** 取技能文档原文。★ 模块级缓存：同一会话内同一技能只请求一次
+ *  （SKILL.md 是磁盘静态文件，会话内不会变 —— 与「不得缓存」的 `/cases` 现算字段不同类）。 */
+const skillDocCache = new Map<string, SkillDoc>();
+
+export async function fetchSkillDoc(id: string): Promise<SkillDoc> {
+  const cached = skillDocCache.get(id);
+  if (cached) return cached;
+  const doc = await apiParsed(`/skills/${encodeURIComponent(id)}/doc?format=json`, SkillDocSchema);
+  skillDocCache.set(id, doc);
+  return doc;
+}
 
 /* ══════════════════ /cases（② 算例库）══════════════════ */
 
@@ -364,6 +389,7 @@ export const ExperimentRunResponseSchema = z.object({
     by_status: z.record(z.string(), z.number()),
     ok: z.number().optional(),
     failed: z.number().optional(),
+    completed: z.number().optional(),
   }),
   notes: z.array(z.string()).optional(),
 });
@@ -404,6 +430,99 @@ export const ExperimentResultsResponseSchema = z.object({
   notes: z.array(z.string()).optional(),
 });
 export type ExperimentResultsResponse = z.infer<typeof ExperimentResultsResponseSchema>;
+
+/* ══════════════════ V2 研究提案 / 不可变实验 ══════════════════ */
+export const V2ResearchQuestionSchema = z.object({
+  id: z.string(),
+  statement: z.string(),
+  scope: z.record(z.string(), z.unknown()).optional(),
+});
+export const V2HypothesisSchema = z.object({
+  id: z.string(),
+  statement: z.string(),
+  independent_variables: z.array(z.string()).optional(),
+  dependent_variables: z.array(z.string()).optional(),
+  controls: z.array(z.string()).optional(),
+  expected_direction: z.record(z.string(), z.unknown()).optional(),
+});
+export const V2ProposalSchema = z.object({
+  proposal_id: z.string(),
+  title: z.string(),
+  research_question: V2ResearchQuestionSchema,
+  hypothesis: V2HypothesisSchema,
+  design: z.object({
+    cases: z.array(z.unknown()),
+    factors: z.array(z.record(z.string(), z.unknown())),
+  }),
+  execution: z.record(z.string(), z.unknown()),
+  observables: z.unknown(),
+  analysis: z.record(z.string(), z.unknown()),
+  origin: z.record(z.string(), z.unknown()).optional(),
+});
+export const V2ValidationSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(z.string()),
+  warnings: z.array(z.string()),
+  resource_estimate: z.record(z.string(), z.unknown()),
+});
+export const V2ProposalResponseSchema = z.object({
+  created: z.boolean().optional(),
+  proposal: V2ProposalSchema,
+  validation: V2ValidationSchema,
+  resource_estimate: z.record(z.string(), z.unknown()),
+  preview: z.object({
+    cells: z.array(z.record(z.string(), z.unknown())),
+    cell_count: z.number(),
+    experiment_id: z.string().optional(),
+  }),
+  status: z.string().optional(),
+});
+export type V2ProposalResponse = z.infer<typeof V2ProposalResponseSchema>;
+
+export const V2CommitResponseSchema = z.object({
+  committed: z.literal(true),
+  /** ★ `true` = 同一提案重复 commit（同一实验，幂等复用，不重复建）。
+   *  不同提案（即使执行定义相同）→ 不同 eid 的独立实验（2026-09-28 裁决）。 */
+  reused: z.boolean().optional(),
+  experiment: z.object({
+    schema_version: z.string(),
+    eid: z.string(),
+    title: z.string(),
+    cells: z.array(z.record(z.string(), z.unknown())),
+  }),
+  manifest: z.object({
+    eid: z.string(),
+    cell_count: z.number(),
+    compiler_version: z.string(),
+  }),
+});
+export type V2CommitResponse = z.infer<typeof V2CommitResponseSchema>;
+
+/** 提案摘要（`GET /experiment-proposals` 的列表项）。
+ *  `committed_eid` 非空表示该提案已 commit，对应这个已冻结的实验。 */
+export const V2ProposalSummarySchema = z.object({
+  proposal_id: z.string(),
+  title: z.string(),
+  research_question: V2ResearchQuestionSchema,
+  case_ids: z.array(z.string()),
+  step_count: z.number(),
+  committed_eid: z.string().nullable().optional(),
+});
+export type V2ProposalSummary = z.infer<typeof V2ProposalSummarySchema>;
+
+export const V2ProposalsListSchema = z.object({
+  proposals: z.array(V2ProposalSummarySchema),
+  total: z.number(),
+});
+export type V2ProposalsList = z.infer<typeof V2ProposalsListSchema>;
+
+export const V2ProposalDeleteResponseSchema = z.object({
+  deleted: z.literal(true),
+  proposal_id: z.string(),
+  /** 删已 commit 的提案时，被保留的实验 id（实验不因删提案而消失） */
+  experiment_kept: z.string().nullable().optional(),
+});
+export type V2ProposalDeleteResponse = z.infer<typeof V2ProposalDeleteResponseSchema>;
 
 /* ══════════════════ 会话（③ 对话分析）══════════════════ */
 
