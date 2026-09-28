@@ -8,7 +8,21 @@
 
 ## 文档列表（倒序）
 
-### 🚩 2026-09-27 — JOURNAL（**§11.2 并发隔离：会话命名空间 · 租约 · 写串行化**）★ 最新
+### 🚩 2026-09-28 — HANDOFF（**实验矩阵 V2：提案 → 编译 → 不可变实验 → Observation**）★ 最新
+📄 [handoff_2026-09-28_experiment-v2-research-loop.md](handoff_2026-09-28_experiment-v2-research-loop.md)
+
+**接手先读这篇**。实验矩阵已从 V1 的「静态批量执行器 + 结果表」升级为 V2 MVP 的「ExperimentProposal → validate/preview → explicit commit → immutable Experiment → Observation Store → deterministic analysis」闭环。新增 `experiment_v2/` 内核、7 个项目级 JSON Schema、提案/校验/commit/summary/design/observations/cell/artifact/analysis/cancel API；V1 `/experiments*` 保持兼容。网关全量 **651 passed**，实验矩阵 V1/V2 定向 **106 passed**，前端 `tsc --noEmit` 与 Vite build 通过。仍未做：session trace 自动提案、Agent 结果回流、真实 artifact 内容存储、result_tables 透视、实验并发。
+
+---
+
+### 🚩 2026-09-28 — JOURNAL（**实验矩阵 V2 研究闭环实现**）
+📄 [2026-09-28-experiment-v2-research-loop.md](2026-09-28-experiment-v2-research-loop.md)
+
+本次实现按 V2 规格补齐研究层：提案对象与资源估算、确定性编译、commit 时固定算例身份和显式 `cell_id`、不可变 `definition.json`、`observations.jsonl`、结构化状态与确定性分析；前端新增提案 Review/Commit 卡片。执行仍不调用 LLM、保持串行和一格一会话。
+
+---
+
+### 🚩 2026-09-27 — JOURNAL（**§11.2 并发隔离：会话命名空间 · 租约 · 写串行化**）
 📄 [2026-09-27-concurrency-isolation-11-2.md](2026-09-27-concurrency-isolation-11-2.md)
 
 **并发化的前置条件已补齐**（**没有**打开并发开关 —— 执行仍串行）。★ **关键可行性发现**：

@@ -1,8 +1,8 @@
 # React 版测试命令（可直接复制）
 
-> 2026-09-27 更新 · 下列命令**均已实跑验证**（当日记自运行中的网关），预期结果取自实测。
+> 2026-09-28 更新 · V1 React 视图的既有命令与实测预期保留；本次补充实验矩阵 V2 提案/commit/Observation API 的验收入口。
 > 覆盖：环境 · 算例库（含围笼 409 与输入规范化）· 契约拦截 · 对话 · 技能 · 契约 T0 · 模块 · checks
-> · **⑥ 校验层四标签（跨引擎一致性 / 能力矩阵 / IR 检查器）· N-1 违规表（本次新增）**。
+> · **⑥ 校验层四标签（跨引擎一致性 / 能力矩阵 / IR 检查器）· N-1 违规表 · 实验矩阵 V2 提案**。
 >
 > ⚠️ **算例 id 以 `GET /cases` 现查为准** —— id 由路径派生，但索引内容随登记/注销变化。
 > 本次实测时索引为 5 张：`cd4cf1328477`=case39（examples/data）·
@@ -11,19 +11,36 @@
 > `e6abcfc1f695`=围笼测试专用文件（`C:/Users/Z/Downloads/case_fencetest.m`，本次新建）·
 > `e6a7e04090fc`=case14（项目内、**未解析**——IR 检查器的 409 分支用）。
 
-## 一、服务地址
+## 一、服务地址与启动（★ 开发模式必须起**两个**服务）
 
-| 服务 | 地址 | 说明 |
+| 服务 | 地址 | 作用 |
 |---|---|---|
-| 网关 | `http://127.0.0.1:8765` | MVP 页在 `/ui/mvp.html` |
-| React 版 | **`http://localhost:5173`** | ⚠️ **必须用 `localhost`** —— dev server 只绑了 IPv6 `[::1]`，用 `127.0.0.1` 连不上 |
-
-重启命令（若需要）：
+| **网关**（必需） | `http://127.0.0.1:8765` | 提供**全部 API**；MVP 页在 `/ui/mvp.html` |
+| **React dev**（必需） | `http://127.0.0.1:5173` | 提供前端资源，并把 API 请求**代理**到 8765 |
 
 ```bash
-cd D:/coding/powerMcp_Pskills/gateway && ./run_gateway.sh     # 网关
-cd D:/coding/powerMcp_Pskills/frontend && npm run dev          # React dev
+# 终端 1 —— 网关
+cd D:/coding/powerMcp_Pskills/gateway && ./run_gateway.sh
+
+# 终端 2 —— 前端（★ 务必带 --strictPort，否则端口被占用时会静默换到 5174/5175）
+cd D:/coding/powerMcp_Pskills/frontend && npm run dev -- --port 5173 --strictPort
 ```
+
+### ★ 为什么必须起两个（不是配置错误）
+
+- **Vite dev 只做两件事**：给前端资源 + 把页面的数据请求（`/cases`、`/experiments`…）**代理**到 `127.0.0.1:8765`。
+- **只起 Vite、不起网关** → 代理失败 → 页面**如实提示「网关没在跑」**（不是白屏，是刻意做的提示；起上网关刷新即可）。
+- **只起网关、不起 Vite** → **不能**用 `http://127.0.0.1:8765/ui/`：网关挂的是**前端源码目录**（`frontend/`），
+  其 `index.html` 引 `/src/main.tsx` —— 实测该路径返回 `application/octet-stream` 的 **TSX 源码**，浏览器执行不了
+  → 必须由 Vite 编译。
+
+> ⚠️ **与设计方案的关系**：§八「形态 A」要求**仅绑定 `127.0.0.1`** —— 这一条**已满足**；
+> §九「构建产物由 FastAPI **单进程** serve」是**目标形态**，**当前未落地**（`_mount_ui` 挂的是源码目录）。
+> ⇒ **开发/测试期必须起两个服务**。
+
+> ✅ **地址实测（2026-09-28）**：`vite.config.ts` 已固定 `host: "127.0.0.1"`（**IPv4**），
+> `http://127.0.0.1:5173` 与 `http://localhost:5173` **都能访问**。
+> ⚠️ 本文旧版曾写「**必须用 `localhost`** —— dev server 只绑了 IPv6 `[::1]`」—— 那是**固定 host 之前**的配置，**已过时**。
 
 ⚠️ **诊断网关问题先看启动日志的 `fence =` 一行** —— 它必须是 `D:/coding/...` 形态；
 若是 `/d/coding/...`，说明用了旧版脚本，围笼会整体失效（缺陷 F-1，已修）。
@@ -32,7 +49,7 @@ cd D:/coding/powerMcp_Pskills/frontend && npm run dev          # React dev
 
 ## 二、界面测试（点着看）
 
-### React 版 `http://localhost:5173`
+### React 版 `http://127.0.0.1:5173`
 
 默认落在**对话**标签（③ 是主界面）。逐项看：
 
@@ -229,7 +246,8 @@ curl -s --noproxy '*' -X POST http://127.0.0.1:8765/checks/run \
 
 ## 四、环境坑（五条，都会误导判断）
 
-1. ⚠️ **React dev 只绑 `localhost`（IPv6）** —— 用 `127.0.0.1:5173` 会连不上。
+1. ⚠️ **必须起两个服务**（见 §一）—— 只起 Vite 会提示「网关没在跑」；只起网关则 `/ui/` 不可用（挂的是源码目录）。
+   ✅ 地址实测：`127.0.0.1:5173` 与 `localhost:5173` **都能访问**（`vite.config.ts` 已固定 `host: "127.0.0.1"`，**IPv4**）。
 2. ⚠️ **不要在以 `/` 开头的 shell 参数里写路径** —— MSYS 会把它改写成 Windows 路径
    （实测：`curl -w "/contracts/t0 …"` 里的格式串被吃掉）。
 3. ⚠️ **Windows 反斜杠路径在 shell 里可能被改写** —— 一律用正斜杠 `D:/...`。

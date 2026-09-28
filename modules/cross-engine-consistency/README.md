@@ -12,7 +12,7 @@
 | `module.yaml` | 清单：14 个工具（powerio + pandapower/pypsa/surge）· 3 技能 · 1 实体 · 1 结果表 · 2 自检 · 1 报告模板 |
 | `schema/consistency_run.json` | 领域实体：一次多引擎对比（含 **`identifier_convention` 必填**） |
 | `schema/delta_columns.json` | 结果表列定义（**长格式** —— 见下方已知限制） |
-| `prompts/cross_engine_compare.md` | 比对提示词（⚠️ **尚无引擎读取**） |
+| `prompts/cross_engine_compare.md` | 比对提示词（✅ G-4 已接线，注入 `/chat` system 消息） |
 | `checks/*.py` | 2 条领域自检（⚠️ **尚无执行引擎**）；可单独跑：`python checks/xxx.py` |
 | `templates/consistency_report.md` | 报告模板（⚠️ **尚无渲染器**） |
 

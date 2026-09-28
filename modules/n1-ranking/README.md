@@ -12,7 +12,7 @@
 | `module.yaml` | 清单：8 个 surge 工具 · 3 个技能 · 1 实体 · 1 结果表 · 2 自检 · 1 报告模板 |
 | `schema/contingency_set.json` | 领域实体：一次 N-1 扫描要跑哪些开断、按什么限值判定 |
 | `schema/n1_columns.json` | 结果表列定义（`quantity` 列带 unit + criterion；`identifier` 列带 engine） |
-| `prompts/n1_scan.md` | 扫描提示词（⚠️ **尚无引擎读取**） |
+| `prompts/n1_scan.md` | 扫描提示词（✅ G-4 已接线，注入 `/chat` system 消息） |
 | `checks/*.py` | 2 条领域自检（⚠️ **尚无执行引擎**）；可单独跑：`python checks/xxx.py` |
 | `templates/n1_report.md` | 报告模板（⚠️ **尚无渲染器**） |
 

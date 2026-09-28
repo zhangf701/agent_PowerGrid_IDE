@@ -110,9 +110,11 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 
 ### 4.4 ④ 实验矩阵
 
-- **能力**：参数网格定义（算例 × 因子 × **步骤序列**）× 串行执行 × 逐格进度 × 结果表 × 失败逐格可见 × 导出
-- **依据**：科研 8（批量算例扫描与数据集构建，🚧 需先构造数据集）
-- **数据来源**：`POST /experiments` · `GET /experiments` · `GET /experiments/{id}` · **`POST /experiments/{id}/run`** · `GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv|md`（**均已交付**）
+- **能力**：参数网格定义（算例 × 因子 × **步骤序列**）× 串行执行 × 逐格进度 × 结果表 × 失败逐格可见 × 导出；V2 增加提案校验、资源预览、commit 冻结、Observation 与确定性分析
+- **★ 定位（2026-09-28 核实补记）**：**内核通用能力，不与任何具体研究方向绑定**。抽象只有「算例 × 因子（标签维度）× 步骤序列（显式声明的工具调用）」。跨引擎一致性（`cross-engine-consistency`）与 N-1 排序（`n1-ranking`）都是**可插拔模块**，**不是**实验矩阵的前提；无任何模块时实验矩阵依然可用。指标由内核**通用提取**（不发明派生量），领域列定义由模块声明。
+- **V2 研究层（✅ 2026-09-28 已交付 MVP）**：`ExperimentProposal → validate/preview → explicit commit → immutable Experiment → Observation Store → deterministic analysis`；提案不会自动 commit，commit 时固定算例身份、展开格子和 `cell_id`。
+- **依据**：科研 8（批量算例扫描与数据集构建，🚧 需先构造数据集）+ Agentic Research Experiment V2 规格
+- **数据来源**：V1 `POST /experiments` · `GET /experiments` · `GET /experiments/{id}` · **`POST /experiments/{id}/run`** · `GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv|md`；V2 `POST/GET /experiment-proposals*`、`GET /experiments/{id}/summary|design|observations|analysis`、`GET /experiments/{id}/cells/{cell_id}`、`POST /experiments/{id}/cancel`（V2 MVP 已交付）
 - ✅ **2026-09-27 视图已交付**：`views/ExperimentsView.tsx` + `components/ExperimentGrid.tsx`（导航「实验矩阵」，
   深链 `#experiments/<eid>`）。UI 规范 §4.7.5 三条约束逐条落地：失败逐格可见 / 结果绑 `cache_key`
   （`never_run` + `orphaned` 显式标注）/ 串行优先（无并发控件）。
@@ -180,6 +182,8 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 | `POST /experiments` · `GET /experiments` · `GET /experiments/{id}` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付定义与登记层**（P2-①a；★ 同日扩展为**步骤序列 `steps[]`**，P2-①b 前置核实所得） |
 | `POST /experiments/{id}/run` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付**（P2-①b：**串行**执行，**一格一会话**，`remounted` 判失败，多步无会话池显式 503） |
 | `GET /experiments/{id}/results` · `GET /experiments/{id}/export?format=csv\|md` | ④ 实验矩阵 | P2 | ✅ **2026-09-27 交付**（P2-①c：格级对比表；结果按 `cache_key` 对齐，旧结果入 `orphaned`。⚠️ 越限明细级 `result_tables` 透视属 P3） |
+| `POST /experiment-proposals` · `GET/POST /experiment-proposals/{proposal_id}/*` | ④ 实验矩阵 | P2 | ✅ **2026-09-28 交付 V2 提案层**（校验、预览、资源估算、显式 commit；不自动执行） |
+| `GET /experiments/{id}/summary|design|observations|analysis` · `GET /experiments/{id}/cells/{cell_id}` · `POST /experiments/{id}/cancel` | ④ 实验矩阵 | P2 | ✅ **2026-09-28 交付 V2 查询/取消层**（Observation Store + 确定性分析） |
 | `POST /sessions/{sid}/chat` | ③ 对话分析 | P1 | ✅ **2026-09-25 交付**（原提案漏列；实测发现网关当时**没有 LLM 层**） |
 
 **已交付可直接复用**：`POST /sessions` · `GET /sessions/{sid}/events` · `POST /sessions/{sid}/tools/call` · `GET /health` · `GET /servers` · `GET /contracts/t0`
@@ -193,8 +197,8 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 | 阶段 | 范围 | 交付 | 前置 |
 |---|---|---|---|
 | **P1** | 设计系统（通用部分）· 环境就绪 · 算例库 · 对话分析 · **技能手册** | 能跑通「载入算例 → 提问 → 拿结果 → 查手册」的完整闭环 | 无（底座已交付） |
-| **P2** | 实验矩阵 · 并发隔离（§11.2）· 校验层迁移 | 能批量跑并沉淀数据集 | §11.2 完成 |
-| **P3** | 导出报告 · 可复现记录（实验级）· 进程监管对接 | 研究交付物与长期可复现 | 子项目 4 |
+| **P2** | 实验矩阵 V1/V2 · 并发隔离（§11.2）· 校验层迁移 | 已具备提案→冻结→批量执行→Observation/确定性分析的 MVP；并发开关仍关闭 | §11.2 前置条件已补齐，仍保持串行 |
+| **P3** | Agent 结果回流 · session trace 提案生成 · artifact / result_tables · 导出报告 · 进程监管对接 | 研究交付物、洞察闭环与长期可复现 | 子项目 4 + V2 后续层 |
 
 > **与旧路线的关键差别**：旧 P1 是「契约引擎 + 契约面板」（服务论文）；新 P1 是「算例 → 对话 → 技能」（服务研究）。
 > **进程监管（子项目 4）** 在两条路线中都是 P1 级 —— 没有它，任何一次引擎僵死都会让工作台不可用。
@@ -233,10 +237,14 @@ PowerSkills 的 **11 个软件工作流技能 + 10 个缓解手册**在方案中
 
 ---
 
-## 十、本提案明确**未**做的事
+## 十、本提案明确**未**做的事（提案撰写时的边界）
 
-- 未修改任何现有文档（`前端设计方案` / `UI设计规范` / `tokens.json` 均未动）
-- 未写任何代码，未新增任何实验或数据
-- 未验证 5 个新视图的可行性（本提案只做信息架构层面的重设计）
-- 未决定论文选题的后续方向（已解绑，另行处理）
-- 未核验「算例库独立目录」是否构成对 `PowerMCP/` 的事实改动 —— **需在实施前实测确认**
+以下内容描述的是本提案最初撰写时的边界，不应被误读为当前仓库状态：
+
+- 提案撰写时未修改现有文档、未写代码、未新增实验或数据；
+- 提案撰写时未验证 5 个新视图的可行性；
+- 论文选题仍与工作台解绑，后续由模块和研究问题分别承载；
+- `PowerMCP/` 与 `PowerSkills/` 仍遵守上游冻结约定。
+
+**当前实现状态（2026-09-28）**：P2 实验矩阵 V1/V2 MVP 已落地，详见
+`docs/journal/handoff_2026-09-28_experiment-v2-research-loop.md`。尚未完成的是 session trace 自动提案、Observation 回流 Agent、真实 artifact 与 `result_tables` 透视，以及实验并发。
