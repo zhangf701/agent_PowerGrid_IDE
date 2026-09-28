@@ -13,7 +13,13 @@
  *  ★ 诚实边界（比「慢」更危险的「错配」）：
  *    - 配对只在 `label + 单位 + 判据 + 算例标识` 全同时发生；
  *    - 参数里找不到算例标识的组标 `caseVerified=false` —— Δ 照显，**判定一栏
- *      是「无法判定」而不是拍一个结论**（unknown 哲学：宁可未知，不可猜错）。
+ *      是「无法判定」而不是拍一个结论**（unknown 哲学：宁可未知，不可猜错）；
+ *    - ★ **能力范围（2026-09-28 张老师裁决补记）**：自动配对当前**只覆盖潮流电压维度**
+ *      （标量 + 逐母线 Δmax，来自 `extractPowerFlow` / `extractSeries` 的两种真实形状）。
+ *      surge 的 DC 潮流**没有 vm**（只有相角 + 支路 MW）→ 无可比项；N-1 只有
+ *      `run_n1_branch_contingency`（surge）被结构化，pandapower 的
+ *      `run_contingency_analysis` 无形状适配 ⇒ **N-1 永远配不成跨引擎对** ——
+ *      空态文案必须如实写明，不得写成"跑同一类分析就会出 Δ"的过度承诺。
  */
 import type { CrossEngineComparison, SeriesComparison } from "../results";
 import { CONSISTENCY_TOLERANCE } from "../results";
@@ -32,8 +38,12 @@ export function CrossEnginePanel({
   if (!comparisons.length && !seriesComparisons.length) {
     return (
       <div className="text-bodySm text-text-muted">
-        本会话还没有可配对的跨引擎结果。让两个不同引擎（如 pandapower 与 surge）对
-        <strong>同一算例</strong>跑同一类分析后，这里会自动出现 Δ 对比。
+        本会话还没有可配对的跨引擎结果。★ 当前自动配对<strong>只覆盖潮流的电压维度</strong>：
+        让两个引擎对<strong>同一算例</strong>各跑一次 <strong>AC 潮流</strong>（surge 的
+        <code> run_ac_power_flow</code> 与 pandapower 的 <code>run_power_flow</code>），
+        这里会自动出现最低 / 最高电压 Δ 与逐母线电压 Δmax。
+        ⚠️ <strong>DC 潮流不算电压幅值</strong>（只有相角与支路潮流），配不出 Δ；
+        N-1 等其他分析目前只有 surge 侧有结构化形状，暂无跨引擎配对。
       </div>
     );
   }

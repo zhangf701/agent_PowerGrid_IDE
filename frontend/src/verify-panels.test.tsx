@@ -202,8 +202,14 @@ describe("CrossEnginePanel", () => {
     expect(screen.getByTestId("cross-engine-panel").textContent).toContain("无法判定");
   });
 
-  it("空配对 → 引导文案（说明数据从哪来）", () => {
+  it("空配对 → 引导文案（说明数据从哪来 + ★ 能力范围不过度承诺）", () => {
     render(<CrossEnginePanel comparisons={[]} />);
-    expect(document.body.textContent).toContain("跨引擎结果");
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("跨引擎结果");
+    // ★ 2026-09-28 张老师裁决：空态必须写明「只覆盖潮流电压维度」——
+    //   旧文案「跑同一类分析后这里会自动出现 Δ 对比」是过度承诺
+    //   （DC 潮流无 vm 配不出；N-1 只有 surge 侧有结构化形状）。
+    expect(text).toContain("只覆盖潮流的电压维度");
+    expect(text).toContain("DC 潮流不算电压幅值");
   });
 });

@@ -1,16 +1,19 @@
 /** IrInspectorPanel —— ⑥ 校验层 · IR 检查器（方案 §5.4）。
  *
- *  ★ 数据来源：`GET /cases`（选算例）→ `GET /cases/{id}/diagnostics`（诊断）。
- *    诊断是网关现算的（含 `stale` 陈旧检测：源文件在解析后又变过 → 结论来自旧数据）。
+ *  ★ 能力范围（2026-09-28 张老师裁决：注释必须写明，与能力矩阵同口径）——
  *
- *  ★ §5.4 表格的**本步落地范围**（诚实边界，写进界面）：
- *    - ✅ `value_type` / `diagnostics`（按 severity 排序，含 code / target / suggested action）
- *      / 陈旧标记 / counts 摘要；
- *    - ⏳ `selection` 树形展开（IR 全文 ~52 KB，交互式树是独立工程）、`fidelity` 徽章、
- *      `edits` 编辑轨迹时间线 —— 网关侧尚无对应数据源（edits 需要网关记录编辑操作），
- *      现在做就是对着不存在的数据定型。
+ *  **做什么**：对**算例库**里选定的**一个算例**，检查 PowerIO IR 的解析质量：
+ *    ① `GET /cases` 列出算例 → 用户下拉选一个 → `GET /cases/{id}/diagnostics` 现算诊断；
+ *    ② 展示 `value_type`、诊断明细（按 severity 排序：错误→警告→备注→提示；
+ *       每条含 code / target / message / 建议动作）、counts 摘要
+ *       —— 空诊断如实显示网关 status 原文，**不渲染绿灯**（P5：没检查 ≠ 检查过且正常）；
+ *    ③ `stale` 陈旧检测：源文件在解析之后又变过 → 结论来自旧数据 → 标「结果已陈旧」
+ *       （unknown 签名，不是纯色）。
  *
- *  ★ 未解析的算例点诊断 → 网关 409 —— 错误原样显示（可执行指引在 detail 里），不吞。
+ *  **不做什么**（§5.4 规划了但网关侧无数据源；现在做 = 对着不存在的数据定型）：
+ *    selection 树形展开（IR 全文 ~52 KB 交互树）、fidelity 徽章、edits 编辑轨迹时间线。
+ *
+ *  **错误路径**：未解析的算例点诊断 → 网关 409 —— 错误原样显示（detail 里带可执行指引），不吞。
  */
 import { useCallback, useEffect, useState } from "react";
 

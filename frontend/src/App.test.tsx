@@ -69,6 +69,7 @@ function stubFetch(envOk: boolean, skillsOk: boolean) {
               name: "run_power_flow",
               kind: "tool",
               description: "基态潮流",
+              path: "powerskills-tool/skills/run_power_flow/SKILL.md",
               escalation: [{ observation: "不收敛", escalate_to: "solver-guide" }],
             },
           ],
@@ -100,6 +101,78 @@ describe("App 骨架冒烟", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("/environment");
     expect(screen.queryByText(/加载中/)).toBeNull();
+  });
+
+  it("★ 技能卡给文档出处路径 + 新标签兜底链接（09-28 裁决）", async () => {
+    stubFetch(true, true);
+    render(<App />);
+    await screen.findByText("环境就绪");
+    gotoSkills();
+    const link = await screen.findByRole("link", { name: "新标签打开" });
+    // 兜底链接走网关端点（按 id 定位，无路径穿越），新标签打开 markdown 原文
+    expect(link).toHaveAttribute("href", "/skills/surge.run_power_flow/doc");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(
+      screen.getByText("powerskills-tool/skills/run_power_flow/SKILL.md"),
+    ).toBeInTheDocument();
+  });
+
+  it("★ 方法手册就地折叠展开（B2：运行时取原文，会话内缓存；09-28 裁决）", async () => {
+    const docPayload = {
+      id: "surge.run_power_flow",
+      kind: "tool",
+      path: "powerskills-tool/skills/run_power_flow/SKILL.md",
+      content:
+        "---\nname: run_power_flow\n---\n# 基态潮流手册\n\n1. 先载入算例。\n2. 检查收敛。\n\n## Escalation triggers\n\n| Observation | Escalate to |\n|---|---|\n| `不收敛` | `convergence-failure-mitigation` |\n",
+    };
+    const docFetch = vi.fn(() => jsonResponse(docPayload));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.includes("/doc")) return docFetch();
+        if (path.includes("/sessions")) return jsonResponse(SESSION);
+        if (path.includes("/cases")) return jsonResponse(EMPTY_CASES);
+        if (path.includes("/environment")) {
+          return jsonResponse({
+            gateway: { python: "3.12.6", python_ok: true },
+            powermcp: { root_ok: true },
+            llm: { configured: true, model: "m", endpoint: "x", required_env: [] },
+            paths: { set: true, roots: ["D:/x"], env_var: "E", note: "" },
+            modules: { enabled: [], failed: [] },
+          });
+        }
+        return jsonResponse({
+          skills: [
+            {
+              id: "surge.run_power_flow",
+              name: "run_power_flow",
+              kind: "tool",
+              description: "基态潮流",
+              path: "powerskills-tool/skills/run_power_flow/SKILL.md",
+            },
+          ],
+          summary: { total: 1, by_kind: { tool: 1 }, with_escalation: 0 },
+          health: { level: "unknown", signals: {} },
+        });
+      }),
+    );
+    render(<App />);
+    await screen.findByText("环境就绪");
+    gotoSkills();
+    // 默认折叠：正文不可见
+    expect(screen.queryByTestId("skill-doc-body")).toBeNull();
+    // 展开 → 取原文 → 渲染标题与列表（frontmatter 不显示）
+    fireEvent.click(screen.getByTestId("skill-doc-toggle"));
+    expect(await screen.findByTestId("skill-doc-body")).toHaveTextContent("基态潮流手册");
+    expect(screen.getByTestId("skill-doc-body")).toHaveTextContent("先载入算例");
+    expect(screen.getByTestId("skill-doc-body")).not.toHaveTextContent("name: run_power_flow");
+    // 再次点击 → 收起；再展开 → **不再发请求**（会话内缓存）
+    fireEvent.click(screen.getByTestId("skill-doc-toggle"));
+    expect(screen.queryByTestId("skill-doc-body")).toBeNull();
+    fireEvent.click(screen.getByTestId("skill-doc-toggle"));
+    expect(await screen.findByTestId("skill-doc-body")).toHaveTextContent("基态潮流手册");
+    expect(docFetch).toHaveBeenCalledTimes(1);
   });
 
   it("筛选框命中名称/描述/触发表，未命中显示空态（对齐 MVP 行为）", async () => {

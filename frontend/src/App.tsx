@@ -133,11 +133,25 @@ export default function App() {
           ))}
         </div>
 
-        {verifyTab === "contracts" &&
-          (session.findings.length ? (
-            session.findings.map((f, i) => <ContractCard key={i} finding={f} />)
-          ) : (
-            <div className="text-bodySm text-text-muted">
+        {/* ★ 契约面板 · 能力范围（2026-09-28 张老师裁决：注释与界面都必须写明）——
+         *    **做什么**：显示**本会话**工具调用的**契约 3（参数契约）**结果。
+         *      数据来自 evidence 事件流：网关在每次工具调用前校验参数，
+         *      **只有违规（`contract_violation`）/ 无法判定（`contract_unknown`）才发事件**，
+         *      全部通过不发 ⇒ 「无事件 + 有调用轨迹」= 已校验且全部通过（空态如实说明）。
+         *    **不做什么**：契约 1/2/5/6/7/8（工具实现可判定性、README 一致性、运行时依赖等
+         *      T0 静态评估）不在事件流里 —— 它们在**能力矩阵**标签（`GET /contracts/t0`）；
+         *      跨会话历史审计在网关 NDJSON 落盘，本面板不读。 */}
+        {verifyTab === "contracts" && (
+          <>
+            <div className="mb-1.5 text-caption text-text-muted">
+              本标签只显示<strong>本会话</strong>工具调用的<strong>契约 3（参数契约）</strong>事件
+              （违规 / 无法判定才发，全部通过不发）；契约 1/2/5/6/7/8 的 T0 静态评估在
+              <strong>能力矩阵</strong>标签。
+            </div>
+            {session.findings.length ? (
+              session.findings.map((f, i) => <ContractCard key={i} finding={f} />)
+            ) : (
+              <div className="text-bodySm text-text-muted">
               {/* ★ 「无事件」≠「未检查」：契约 3 在网关侧对每次工具调用都校验，
                   只有违规/无法判定才发事件（proxy.py 的显式设计）。有调用轨迹时
                   必须把「N 次全部通过」如实说出来 —— 否则空态会被误读成没检查
@@ -151,10 +165,10 @@ export default function App() {
                 </>
               )}
               {session.rows.length === 0 ? "本次会话还没有契约事件。" : ""}
-              契约 1/2/5/6/7 是 <strong>T0 静态</strong>的，不在事件流里 —— 看{" "}
-              <strong>能力矩阵</strong>标签（<code>GET /contracts/t0</code>）。
             </div>
-          ))}
+            )}
+          </>
+        )}
         {verifyTab === "cross-engine" && (
           <CrossEnginePanel comparisons={comparisons} seriesComparisons={seriesComparisons} />
         )}
